@@ -7,7 +7,7 @@
     <a href="./README_cn.md">简体中文</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.1.0-7C3AED?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.1.5-7C3AED?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/python-%E2%89%A5%203.9-0EA5E9?style=flat-square" alt="Python">
   </p>
   <p>
@@ -84,6 +84,7 @@ awewarm run [--dry-run]          # one scheduler tick (launchd calls this)
 awewarm activate <id> --confirm  # send one real request now
 awewarm verify <id> [--confirm] [--duration N --user-confirm]
 awewarm enable <id> [--mode fixed|interval|hybrid]
+awewarm times <id> [HH:MM...]  # show or set fixed times, e.g. 06:35 11:40 16:45
 awewarm disable <id>
 awewarm remove <id>
 awewarm install / uninstall      # launchd scheduler agent (macOS)

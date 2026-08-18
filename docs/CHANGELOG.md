@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.1.5
+
+Fixes and configuration improvements over v0.1.0.
+
+### Highlights
+
+- **Fix: scheduler ticks couldn't find local CLIs.** launchd runs with a
+  minimal `PATH` that lacks user-local install dirs, so every tick failed
+  with "claude not found in PATH" and interval renewal degraded after three
+  failures. Discovery now stores each CLI's absolute path in the connection,
+  and `awewarm install` propagates the installing shell's `PATH` as a
+  fallback for existing configs (re-run `awewarm install` to pick it up).
+- **Fix: `awewarm status` advertised skipped slots as next due.** Slots
+  skipped as "recently-activated" are now excluded, and slot lists are
+  evaluated chronologically instead of in config order.
+- **Add: multi-slot fixed times are now configurable.** The interactive
+  prompts accept comma-separated times (e.g. `06:35, 11:40, 16:45`), and
+  `awewarm times <id> [HH:MM...]` shows or replaces them after onboarding.
+
 ## v0.1.0
 
 Initial release: connect once, keep AI coding-plan subscription windows warm.
