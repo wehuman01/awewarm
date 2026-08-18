@@ -10,8 +10,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Verify tag matches pyproject version
@@ -42,7 +42,7 @@ jobs:
           notes = text[start:end].split("\n", 1)[1].strip() if end != -1 else text[start:].split("\n", 1)[1].strip()
           Path("release-notes.md").write_text(notes + "\n")
           EOF
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
       - name: Build and publish to PyPI
