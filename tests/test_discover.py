@@ -12,10 +12,20 @@ class DiscoverTests(IsolatedTestCase):
         super().setUp()
         # Point ~ at the temp home so credential-file checks stay isolated;
         # `security` is made unreachable so the keychain path is skipped.
-        self._home = os.environ.get("HOME")
-        os.environ["HOME"] = str(self.tmp_path / "home")
-        os.makedirs(os.environ["HOME"])
-        self.addCleanup(lambda: os.environ.__setitem__("HOME", self._home) if self._home else os.environ.pop("HOME", None))
+        # USERPROFILE matters too: Windows expanduser() ignores HOME.
+        self._saved_home = {key: os.environ.get(key) for key in ("HOME", "USERPROFILE")}
+        home = str(self.tmp_path / "home")
+        os.makedirs(home)
+        os.environ["HOME"] = home
+        os.environ["USERPROFILE"] = home
+        self.addCleanup(self._restore_home)
+
+    def _restore_home(self):
+        for key, value in self._saved_home.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def _which(self, found):
         return mock.patch("awewarm.discover.shutil.which", side_effect=lambda cmd: found.get(cmd))

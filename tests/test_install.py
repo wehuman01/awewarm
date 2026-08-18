@@ -12,6 +12,10 @@ def ok_run(returncode=0, stderr=""):
     return mock.Mock(returncode=returncode, stdout="", stderr=stderr)
 
 
+# os.getuid does not exist on Windows; the darwin-mocked tests still reach it.
+posix_uid = mock.patch("awewarm.install.os.getuid", return_value=501, create=True)
+
+
 class BuildPlistTests(IsolatedTestCase):
     def test_plist_shape(self):
         plist = install.build_plist("/usr/local/bin/awewarm")
@@ -45,10 +49,11 @@ class BuildPlistTests(IsolatedTestCase):
 
 
 class InstallTests(IsolatedTestCase):
+    @posix_uid
     @mock.patch("awewarm.install.sys.platform", "darwin")
     @mock.patch("awewarm.install.shutil.which", return_value="/usr/local/bin/awewarm")
     @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
-    def test_install_writes_plist_and_bootstraps(self, run, which):
+    def test_install_writes_plist_and_bootstraps(self, run, which, uid):
         plist = install.install_scheduler()
         self.assertTrue(plist.exists())
         data = plistlib.loads(plist.read_bytes())
@@ -69,10 +74,11 @@ class InstallTests(IsolatedTestCase):
         with self.assertRaises(SystemExit):
             install.install_scheduler()
 
+    @posix_uid
     @mock.patch("awewarm.install.sys.platform", "darwin")
     @mock.patch("awewarm.install.shutil.which", return_value="/usr/local/bin/awewarm")
     @mock.patch("awewarm.install.subprocess.run")
-    def test_install_falls_back_to_legacy_load(self, run, which):
+    def test_install_falls_back_to_legacy_load(self, run, which, uid):
         run.side_effect = [
             ok_run(),  # bootout
             ok_run(returncode=1, stderr="bootstrap failed"),  # bootstrap
@@ -81,10 +87,11 @@ class InstallTests(IsolatedTestCase):
         plist = install.install_scheduler()
         self.assertTrue(plist.exists())
 
+    @posix_uid
     @mock.patch("awewarm.install.sys.platform", "darwin")
     @mock.patch("awewarm.install.shutil.which", return_value="/usr/local/bin/awewarm")
     @mock.patch("awewarm.install.subprocess.run")
-    def test_install_all_launchctl_failures_die(self, run, which):
+    def test_install_all_launchctl_failures_die(self, run, which, uid):
         run.side_effect = [
             ok_run(),
             ok_run(returncode=1, stderr="bootstrap failed"),
@@ -95,9 +102,10 @@ class InstallTests(IsolatedTestCase):
 
 
 class UninstallTests(IsolatedTestCase):
+    @posix_uid
     @mock.patch("awewarm.install.sys.platform", "darwin")
     @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
-    def test_uninstall_removes_plist(self, run):
+    def test_uninstall_removes_plist(self, run, uid):
         plist = install.plist_path()
         plist.parent.mkdir(parents=True, exist_ok=True)
         plist.write_bytes(b"placeholder")
@@ -105,9 +113,10 @@ class UninstallTests(IsolatedTestCase):
         self.assertFalse(plist.exists())
         self.assertFalse(install.scheduler_installed())
 
+    @posix_uid
     @mock.patch("awewarm.install.sys.platform", "darwin")
     @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
-    def test_uninstall_when_absent(self, run):
+    def test_uninstall_when_absent(self, run, uid):
         self.assertFalse(install.uninstall_scheduler())
 
 

@@ -53,7 +53,9 @@ class SurfaceTests(IsolatedTestCase):
     def test_entry_point_and_dependency_pinned(self):
         data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
         self.assertIn('awewarm = "awewarm.cli:main"', data)
-        self.assertIn('dependencies = ["click>=8.1"]', data)
+        self.assertIn('click>=8.1', data)
+        # Windows has no system tz database; zoneinfo needs the tzdata package
+        self.assertIn("tzdata; platform_system == 'Windows'", data)
 
 
 class DiscoverCommandTests(IsolatedTestCase):
