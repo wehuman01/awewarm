@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.0
+
+`v0.2.0` makes PyPI the advertised install path (v0.1.5 is already published) and adds agent-facing docs, update reminders, and self-update.
+
+### PyPI install as the default path
+
+README install steps now say `pip3 install awewarm` (the old text still pointed at a source install), and badges switched to PyPI (dynamic version badge, downloads, stars). The platform badge now states macOS honestly — the scheduler installer is launchd-only for now; Linux users can cron `awewarm run`.
+
+### Highlights
+
+- **Add: `awewarm self-update`** upgrades to the latest PyPI release (`--check` to preview), detecting pipx installs via `sys.prefix`.
+- **Add: background update reminder.** Interactive commands check PyPI at most once a day (cached next to the config; network failures back off 6 h) and print a reminder to stderr. Scheduler ticks (`awewarm run`) never check. Opt out with `AWEWARM_NO_UPDATE_CHECK=1`.
+- **Add: `awewarm config path`** prints config, state, and log locations.
+- **Add: AI agent bootstrap guide (`README.ai.md`) and bundled skill (`resources/skills/awewarm/SKILL.md`)** with explicit quota-safety boundaries: agents manage schedules locally but never send real requests (`activate`/`verify`/bare `run`) or run the interactive `init`/`add plan`.
+- READMEs gained a "let an agent set it up" quick start, a Companion Tools section (aweswitch pairing), a Self-Update section, and a Support section; added `.github/FUNDING.yml`.
+
 ## v0.1.5
 
 Fixes and configuration improvements over v0.1.0.

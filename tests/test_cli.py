@@ -8,7 +8,7 @@ from helpers import IsolatedTestCase, account_connection, plan_connection
 
 import awewarm
 from awewarm import config as cfg
-from awewarm.cli import cli
+from awewarm.cli import cli, main
 
 RUNNER = CliRunner()
 
@@ -42,7 +42,7 @@ class SurfaceTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Usage: awewarm [OPTIONS] COMMAND [ARGS]...", result.output)
         self.assertIn("-v, --version", result.output)
-        for command in ("init", "discover", "status", "run", "activate", "verify", "install"):
+        for command in ("init", "discover", "status", "run", "activate", "verify", "install", "config", "self-update"):
             self.assertIn(command, result.output)
 
     def test_version_prints_bare_number(self):
@@ -373,6 +373,69 @@ class InspectTests(IsolatedTestCase):
         conn = payload["config"]["connections"]["glm-coding-plan"]
         self.assertEqual(conn["auth"]["tokenRef"], "<redacted>")
         self.assertEqual(payload["scheduler"]["installed"], False)
+
+
+class ConfigPathTests(IsolatedTestCase):
+    def test_config_path_prints_all_paths(self):
+        result = invoke(["config", "path"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn(str(cfg.config_path()), result.output)
+        self.assertIn(str(cfg.state_path()), result.output)
+        self.assertIn(str(cfg.log_path()), result.output)
+
+
+class SelfUpdateTests(IsolatedTestCase):
+    @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
+    def test_check_when_up_to_date(self, _pypi):
+        result = invoke(["self-update", "--check"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("up to date", result.output)
+
+    @mock.patch("awewarm.cli.subprocess.run")
+    @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
+    def test_check_shows_latest_without_updating(self, _pypi, run):
+        result = invoke(["self-update", "--check"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("9.9.9", result.output)
+        run.assert_not_called()
+
+    @mock.patch("awewarm.cli.subprocess.run")
+    @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
+    def test_self_update_runs_pip(self, _pypi, run):
+        run.return_value = mock.Mock(returncode=0)
+        result = invoke(["self-update"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        command = " ".join(run.call_args[0][0])
+        self.assertIn("awewarm", command)
+        self.assertNotIn("pipx", command)
+
+    @mock.patch("awewarm.cli.get_pypi_latest", side_effect=OSError("offline"))
+    def test_self_update_dies_on_network_failure(self, _pypi):
+        result = invoke(["self-update", "--check"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("failed to check PyPI", output_of(result))
+
+
+class MainReminderTests(IsolatedTestCase):
+    @mock.patch("click.echo")
+    @mock.patch("awewarm.cli.check_async", return_value=lambda: "Update available: 0.1 → 9.9")
+    @mock.patch("sys.argv", ["awewarm", "status"])
+    def test_main_prints_reminder_after_interactive_command(self, _check, echo):
+        try:
+            main()
+        except SystemExit:
+            pass
+        echoed = [str(call.args[0]) for call in echo.call_args_list]
+        self.assertTrue(any("Update available" in text for text in echoed), echoed)
+
+    @mock.patch("awewarm.cli.check_async", return_value=lambda: None)
+    @mock.patch("sys.argv", ["awewarm", "run"])
+    def test_main_passes_argv_so_run_ticks_can_be_skipped(self, check):
+        try:
+            main()
+        except SystemExit:
+            pass
+        check.assert_called_once_with(["run"])
 
 
 if __name__ == "__main__":

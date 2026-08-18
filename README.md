@@ -8,13 +8,19 @@
     <a href="./README_cn.md">简体中文</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.1.5-7C3AED?style=flat-square" alt="Version">
+    <a href="https://ko-fi.com/mugpeng"><img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Ko-fi"></a>
+  </p>
+  <p>
+    <img src="https://img.shields.io/pypi/v/awewarm?style=flat-square&color=7C3AED" alt="Version">
     <img src="https://img.shields.io/badge/python-%E2%89%A5%203.9-0EA5E9?style=flat-square" alt="Python">
+    <img src="https://img.shields.io/badge/license-MPL--2.0-22C55E?style=flat-square" alt="License">
   </p>
   <p>
     <img src="https://img.shields.io/badge/status-alpha-c96a3d?style=flat-square" alt="Status">
     <img src="https://img.shields.io/badge/install-pip-22C55E?style=flat-square" alt="pip install">
-    <img src="https://img.shields.io/badge/platform-terminal-334155?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/badge/platform-macOS-334155?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/pepy/dt/awewarm?style=flat-square" alt="PyPI downloads">
+    <img src="https://img.shields.io/github/stars/wehuman01/awewarm?style=flat-square" alt="GitHub stars">
   </p>
 </div>
 
@@ -29,14 +35,27 @@ It schedules those requests in three modes — `fixed`, `interval`, and `hybrid`
 
 ## Install
 
-Requires Python ≥ 3.9. Until the first PyPI release, install from source:
+Requires Python ≥ 3.9:
 
 ```bash
-git clone <repo-url> && cd awewarm
-pip install .
+pip3 install awewarm
 ```
 
+The scheduler installer is macOS-only for now (launchd). The CLI core is platform-neutral — on Linux, cron the tick instead: `* * * * * awewarm run`.
+
 ## Quick Start
+
+### Let an AI agent set it up
+
+Working in Claude Code, Codex, or another coding agent? Tell it:
+
+```text
+Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm.
+```
+
+The agent installs the CLI, scans your local accounts (read-only), and tunes schedules on request. Onboarding itself (`awewarm init`, `awewarm add plan`) stays in your terminal — it prompts for choices and tokens. After setup you can ask things like "when is the next warm-up?" or "set claude-code to 06:35 and 12:35".
+
+### Manual setup
 
 ```bash
 awewarm init        # scan local accounts, pick a schedule, install the scheduler
@@ -50,6 +69,15 @@ awewarm add plan
 ```
 
 You will be asked for the API base URL, token, protocol, and model; awewarm tests the endpoint with one minimal request, then stores the token in the Keychain.
+
+## Companion Tools
+
+awewarm is part of a small tool family for AI coding agents:
+
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath. If you launch coding-plan profiles with aweswitch, awewarm is the piece that keeps those 5-hour windows from going cold overnight.
+- **[aweskill](https://github.com/Webioinfo01/aweskill)** — CLI skill package manager for AI agents (47+ agents).
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — session bookmark manager for Claude Code and Codex.
+- **[awerouter](https://github.com/mugpeng/awerouter)** — smart LLM router: flash/pro split by structural signals.
 
 ## Scheduling Modes
 
@@ -139,7 +167,31 @@ awewarm disable <id>
 awewarm remove <id>
 awewarm install / uninstall      # launchd scheduler agent (macOS)
 awewarm inspect [<id>] [--json]  # redacted capability dump
+awewarm config path              # config / state / log locations
+awewarm self-update [--check]    # upgrade to the latest PyPI release
 ```
+
+## Self-Update
+
+awewarm checks PyPI in the background — at most once a day, and never during scheduler ticks. When a newer release exists, interactive commands print a reminder to stderr.
+
+```bash
+awewarm self-update            # upgrade to the latest release
+awewarm self-update --check    # show versions only
+```
+
+To disable the background check:
+
+```bash
+export AWEWARM_NO_UPDATE_CHECK=1
+```
+
+## Support
+
+If awewarm saves your quota, consider supporting it:
+
+- ⭐ Star the repo — it helps others find it.
+- ☕ [Ko-fi](https://ko-fi.com/mugpeng) — buy me a coffee.
 
 ## Development
 

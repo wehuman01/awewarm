@@ -8,13 +8,19 @@
     <strong>简体中文</strong>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.1.5-7C3AED?style=flat-square" alt="Version">
+    <a href="https://ko-fi.com/mugpeng"><img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Ko-fi"></a>
+  </p>
+  <p>
+    <img src="https://img.shields.io/pypi/v/awewarm?style=flat-square&color=7C3AED" alt="Version">
     <img src="https://img.shields.io/badge/python-%E2%89%A5%203.9-0EA5E9?style=flat-square" alt="Python">
+    <img src="https://img.shields.io/badge/license-MPL--2.0-22C55E?style=flat-square" alt="License">
   </p>
   <p>
     <img src="https://img.shields.io/badge/status-alpha-c96a3d?style=flat-square" alt="Status">
     <img src="https://img.shields.io/badge/install-pip-22C55E?style=flat-square" alt="pip install">
-    <img src="https://img.shields.io/badge/platform-terminal-334155?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/badge/platform-macOS-334155?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/pepy/dt/awewarm?style=flat-square" alt="PyPI downloads">
+    <img src="https://img.shields.io/github/stars/wehuman01/awewarm?style=flat-square" alt="GitHub stars">
   </p>
 </div>
 
@@ -29,14 +35,27 @@ awewarm 管理两类连接：
 
 ## 安装
 
-需要 Python ≥ 3.9。首个 PyPI 版本发布前，从源码安装：
+需要 Python ≥ 3.9：
 
 ```bash
-git clone <repo-url> && cd awewarm
-pip install .
+pip3 install awewarm
 ```
 
+调度器安装目前仅支持 macOS（launchd）。CLI 核心本身跨平台 —— Linux 上可以用 cron 触发 tick：`* * * * * awewarm run`。
+
 ## 快速开始
+
+### 让 AI agent 代装
+
+在 Claude Code、Codex 或其他编程 agent 里，对它说：
+
+```text
+阅读 https://github.com/wehuman01/awewarm/blob/main/README.ai.md 并按其指引安装和配置 awewarm。
+```
+
+Agent 会安装 CLI、只读扫描本机账号，并按你的要求调整调度。引导流程本身（`awewarm init`、`awewarm add plan`）留在你的终端完成 —— 它需要交互式输入选项和 token。装好之后可以直接问“下次保温是什么时候？”或“把 claude-code 改成 06:35 和 12:35”。
+
+### 手动安装
 
 ```bash
 awewarm init        # 扫描本机账号、选择调度、安装后台调度器
@@ -50,6 +69,15 @@ awewarm add plan
 ```
 
 依次输入 API base URL、token、协议和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 token 存入钥匙串。
+
+## 配套工具
+
+awewarm 是 AI 编程 agent 工具家族的一员：
+
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** —— Claude Code / Codex / OpenCode 的 agent profile 切换器。aweswitch 管理会话用哪个 provider 启动；awewarm 让该 provider 的订阅窗口在底下一直开着。如果你用 aweswitch 启动 coding-plan 套餐，awewarm 就是让这些 5 小时窗口夜里不凉掉的那一块拼图。
+- **[aweskill](https://github.com/Webioinfo01/aweskill)** —— AI agent 的 CLI skill 包管理器（支持 47+ agent）。
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** —— Claude Code / Codex 的会话书签管理器。
+- **[awerouter](https://github.com/mugpeng/awerouter)** —— 智能 LLM 路由器：按结构化信号切分 flash/pro。
 
 ## 调度模式
 
@@ -139,7 +167,31 @@ awewarm disable <id>
 awewarm remove <id>
 awewarm install / uninstall      # launchd 调度器（macOS）
 awewarm inspect [<id>] [--json]  # 脱敏能力信息
+awewarm config path              # 配置 / 状态 / 日志路径
+awewarm self-update [--check]    # 升级到最新 PyPI 版本
 ```
+
+## 自动更新
+
+awewarm 会在后台检查 PyPI —— 每天至多一次，且绝不在调度器 tick 里检查。有新版本时，交互式命令会在结束后向 stderr 打印一条提醒。
+
+```bash
+awewarm self-update            # 升级到最新版本
+awewarm self-update --check    # 只看版本，不升级
+```
+
+关闭后台检查：
+
+```bash
+export AWEWARM_NO_UPDATE_CHECK=1
+```
+
+## 支持
+
+如果 awewarm 帮你省下了配额，欢迎支持：
+
+- ⭐ 给仓库点 Star —— 让更多人看到它。
+- ☕ [Ko-fi](https://ko-fi.com/mugpeng) —— 请我喝杯咖啡。
 
 ## 开发
 

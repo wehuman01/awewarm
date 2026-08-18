@@ -53,6 +53,10 @@ first.
   logs never contain tokens or auth headers.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.
+- **Update checks never run on scheduler ticks**: `update_check.check_async`
+  is wired into `main()` and skips `run` (and `self-update`/help/version),
+  checks PyPI at most once a day, and backs off 6 h on network failure.
+  Opt-out: `AWEWARM_NO_UPDATE_CHECK=1`.
 
 ## Code style
 

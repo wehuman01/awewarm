@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """awewarm CLI: interactive onboarding plus the scheduler tick."""
 import json
+import shutil
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import click
 
 from . import __version__, discover, install, keychain, schedule, transport
+from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
     DEFAULT_CATCHUP_MINUTES,
     DEFAULT_FIXED_AT,
@@ -692,6 +697,53 @@ def inspect(connection, as_json):
     click.echo(f"\nscheduler: {'installed' if install.scheduler_installed() else 'not installed'}")
 
 
-def main():
-    """Console entry point."""
-    return cli(prog_name="awewarm")
+@cli.group()
+def config():
+    """Show where awewarm keeps its files."""
+
+
+@config.command("path")
+def config_path_command():
+    """Print config, state, and log paths."""
+    click.echo(f"config: {config_path()}")
+    click.echo(f"state:  {state_path()}")
+    click.echo(f"log:    {log_path()}")
+
+
+@cli.command("self-update")
+@click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
+def self_update_command(check_only):
+    """Update awewarm to the latest PyPI release."""
+    try:
+        latest = get_pypi_latest()
+    except Exception as exc:
+        die(f"failed to check PyPI: {exc}")
+    if version_gte(__version__, latest):
+        click.echo(f"awewarm is up to date ({__version__}).")
+        return
+    click.echo(f"Current: {__version__}  Latest: {latest}")
+    if check_only:
+        return
+
+    if Path(sys.prefix, "pyvenv.cfg").exists() and "pipx" in sys.prefix:
+        cmd = [shutil.which("pipx") or "pipx", "upgrade", "awewarm"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "awewarm"]
+
+    click.echo(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    if result.returncode == 0:
+        click.echo("Done. The scheduler tick picks up the new version on its next run.")
+    else:
+        raise SystemExit(result.returncode)
+
+
+def main(argv=None):
+    """Console entry point; prints an update reminder after interactive commands."""
+    get_reminder = check_async(sys.argv[1:] if argv is None else argv)
+    try:
+        return cli.main(args=argv, prog_name="awewarm")
+    finally:
+        reminder = get_reminder()
+        if reminder:
+            click.echo(f"⚠  {reminder}", err=True)
