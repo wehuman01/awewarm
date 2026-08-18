@@ -25,7 +25,7 @@ awewarm 管理两类连接：
 - **账号** —— 本机的 `claude` / `codex` CLI 登录。awewarm 复用它们的登录态，发送一条最小的无头请求（`Reply with exactly: ok`），不保存任何凭据。
 - **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + token）。token 存入 macOS 钥匙串，绝不落盘。
 
-调度分三种模式：`fixed`（绝对时间表，如 06:35 / 11:40 / 16:45）、`interval`（每次成功后 5 小时 + 安全余量续期）、`hybrid`（fixed 锚定 + interval 续期，推荐默认）。interval 只有在窗口语义已验证或用户确认后才解锁；fixed 模式始终安全。
+调度分三种模式：`fixed` / `interval` / `hybrid`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
 
 ## 安装
 
@@ -50,6 +50,55 @@ awewarm add plan
 ```
 
 依次输入 API base URL、token、协议和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 token 存入钥匙串。
+
+## 调度模式
+
+三种模式发送的都是同一条最小请求，区别只在触发时机。用 `awewarm enable <id> --mode fixed|interval|hybrid` 切换；用 `awewarm status` 查看当前模式和下一次触发时间。
+
+| 模式 | 触发时机 | 需要已验证窗口 | 适用场景 |
+| --- | --- | --- | --- |
+| `fixed` | 每天固定时间点 | 否 | 作息规律；窗口语义未验证的套餐 |
+| `interval` | 每次成功后 窗口时长 + 余量 | 是 | 常开机器的全天候保温 |
+| `hybrid` | 两者兼有 | 是 | 推荐默认 |
+
+### `fixed` —— 绝对时间，始终安全
+
+在每个固定本地时间点（`weekday` 或 `every-day`）各发一条请求，每次命中开启一个新窗口。
+
+- 时间点到了但机器在睡眠？在补跑窗口内（默认 45 分钟）仍会补发；超时则记为跳过。
+- 距离上一次成功不足 30 分钟的时间点会自动跳过 —— 绝不重复为一个还热着的窗口买单。
+- 唯一在窗口语义未知时也能用的模式，未验证的套餐因此从这里起步。
+
+```bash
+awewarm times claude-code 06:35 11:40 16:45   # 间隔 5 小时 5 分钟：工作日窗口首尾相接
+awewarm enable claude-code --mode fixed
+```
+
+**案例** —— 晚上合盖的笔记本：06:35 / 11:40 / 16:45 三个时间点让每个工作日从 06:35 到约 21:45 都有窗口开着，机器只需在每个时间点后 45 分钟内醒来。
+
+### `interval` —— 滚动续期
+
+每次成功后，下一条请求排在「窗口时长 + 余量」之后（默认 300 分钟 + 75 秒，另加最多 30 秒抖动）。余量加在旧窗口**关闭之后** —— 提前发只会落进旧窗口，什么也开启不了。还没有成功记录时，会立即发一条作为首个锚点。
+
+```bash
+awewarm verify my-plan --confirm                      # 1. 发一条最小请求并记下时间
+# ...观察套餐配额何时重置，记下经过的分钟数...
+awewarm verify my-plan --duration 300 --user-confirm  # 2. 记录窗口时长（解锁 interval）
+awewarm enable my-plan --mode interval                # 3. 滚动续期
+```
+
+**案例** —— 一台常开的机器，希望夜里和周末也持续保温。连续失败 3 次后续期会自动暂停（status 显示 `degraded`），下次成功即恢复。
+
+### `hybrid` —— fixed 锚定 + interval 续期（推荐）
+
+两个引擎同时运转：interval 让链条不断，fixed 时间点在确定时刻重新锚定 —— 即使机器睡过了 interval 的到期时间，每个工作日仍从预期时刻开始。落在最近一次成功后 30 分钟内的时间点会自动跳过。
+
+```bash
+awewarm enable claude-code --mode hybrid   # init 时窗口已验证
+awewarm times claude-code 06:35            # 每个工作日早晨一个锚点
+```
+
+**案例** —— 已验证的账号配一个 06:35 工作日锚点：interval 全天续期（续期不受 weekday 规则限制，周末也持续），无论夜里发生了什么，周一 06:35 都会把链条重新锚定。
 
 ## 配置
 

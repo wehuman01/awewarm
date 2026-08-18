@@ -25,7 +25,7 @@ awewarm manages two kinds of connections:
 - **Account** — your local `claude` / `codex` CLI logins. awewarm reuses their login state and sends one minimal headless request (`Reply with exactly: ok`). No credentials are stored.
 - **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + token. The token goes to the macOS Keychain, never to disk.
 
-It schedules those requests in three modes — `fixed` (absolute times, e.g. 06:35 / 11:40 / 16:45), `interval` (renew 5 h + a grace margin after each success), and `hybrid` (fixed anchor + interval renewal, the recommended default). Interval mode stays locked until the window semantics are verified or user-confirmed; fixed mode is always safe.
+It schedules those requests in three modes — `fixed`, `interval`, and `hybrid` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
 
 ## Install
 
@@ -50,6 +50,55 @@ awewarm add plan
 ```
 
 You will be asked for the API base URL, token, protocol, and model; awewarm tests the endpoint with one minimal request, then stores the token in the Keychain.
+
+## Scheduling Modes
+
+All modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm enable <id> --mode fixed|interval|hybrid`; see the current mode and next due moment with `awewarm status`.
+
+| Mode | Fires when | Needs a verified window | Best for |
+| --- | --- | --- | --- |
+| `fixed` | fixed times each day | no | predictable hours; unverified plans |
+| `interval` | window + grace after each success | yes | 24/7 warmth on an always-on machine |
+| `hybrid` | both of the above | yes | recommended default |
+
+### `fixed` — absolute times, always safe
+
+One request at each fixed local time (`weekday` or `every-day`); each hit opens a fresh window.
+
+- If the machine was asleep at the slot time, the slot still fires late within the catch-up window (default 45 min); past that it is recorded as skipped.
+- A slot landing within 30 min of a previous success is skipped — never pay for two windows at once.
+- The only mode that works while window semantics are unknown, which is why unverified plans start here.
+
+```bash
+awewarm times claude-code 06:35 11:40 16:45   # 5 h + 5 min apart: windows chain across a workday
+awewarm enable claude-code --mode fixed
+```
+
+**Example** — a laptop that sleeps at night: slots at 06:35 / 11:40 / 16:45 keep a window open from 06:35 to ~21:45 every weekday. The machine only needs to be awake within 45 min of each slot.
+
+### `interval` — rolling renewal
+
+After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor.
+
+```bash
+awewarm verify my-plan --confirm                      # 1. one minimal request, timestamped
+# ...watch when the plan's quota resets, note the elapsed minutes...
+awewarm verify my-plan --duration 300 --user-confirm  # 2. record the window (unlocks interval)
+awewarm enable my-plan --mode interval                # 3. rolling renewal
+```
+
+**Example** — an always-on machine you want warm around the clock, nights and weekends included. After 3 consecutive failures renewal pauses itself (status shows `degraded`) and resumes on the next success.
+
+### `hybrid` — fixed anchor + interval renewal (recommended)
+
+Both engines run together: interval keeps the chain unbroken, while fixed slots re-anchor it at deterministic times — so each workday still starts where you expect even if the machine slept through the interval due. A slot within 30 min of a recent interval success is skipped automatically.
+
+```bash
+awewarm enable claude-code --mode hybrid   # window already verified at init
+awewarm times claude-code 06:35            # one anchor per workday morning
+```
+
+**Example** — a verified account with a 06:35 weekday anchor: interval renews all day (renewal ignores the weekday rule and continues over the weekend), and Monday 06:35 re-anchors the chain no matter what happened overnight.
 
 ## Config
 
