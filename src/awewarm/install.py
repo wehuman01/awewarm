@@ -30,6 +30,10 @@ def build_plist(exe):
         for key, value in os.environ.items()
         if key.startswith("AWEWARM_") and value
     }
+    # launchd's default PATH (/usr/bin:/bin:...) lacks user-local install
+    # dirs, so bare CLI names like "claude" would not resolve inside ticks.
+    if os.environ.get("PATH"):
+        environment["PATH"] = os.environ["PATH"]
     return {
         "Label": LABEL,
         "ProgramArguments": [exe, "run"],

@@ -94,6 +94,13 @@ class FixedTests(unittest.TestCase):
         )
         self.assertTrue(all(a["type"] != "activate" for a in actions))
 
+    def test_unsorted_slot_list_activates_earliest_due(self):
+        conn = account_connection(fixed_at=("16:45", "06:35"), days="every-day")
+        actions = schedule.plan_actions(conn, default_conn_state(), at(WEDNESDAY, "07:00"))
+        activates = [a for a in actions if a["type"] == "activate"]
+        self.assertEqual(len(activates), 1)
+        self.assertEqual(activates[0]["slot"], "06:35")
+
 
 class IntervalTests(unittest.TestCase):
     def interval_conn(self, **kwargs):
@@ -230,6 +237,25 @@ class EdgeTests(unittest.TestCase):
         conn = account_connection(mode="fixed")
         due_at, _ = schedule.next_due(conn, default_conn_state(), at(WEDNESDAY, "23:00"))
         self.assertEqual(due_at, at(date(2026, 8, 20), "06:35"))
+
+    def test_next_due_ignores_already_skipped_slot(self):
+        # interval renewed at 06:30, so the 06:35 fixed slot got skipped as
+        # "recently-activated" — status must advertise the interval renewal,
+        # not a fixed slot that will never fire
+        conn = account_connection(mode="hybrid")
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "06:30"), "interval")
+        schedule.record_skip(conn_state, at(WEDNESDAY, "06:35"), "06:35", "recently-activated")
+        due_at, kind = schedule.next_due(conn, conn_state, at(WEDNESDAY, "06:40"))
+        self.assertEqual(kind, "interval")
+        # due = 06:30 + 300 min + 75 s grace (+ up to 30 s jitter) ≈ 11:31
+        self.assertGreaterEqual(due_at, at(WEDNESDAY, "11:31"))
+        self.assertLess(due_at, at(WEDNESDAY, "11:32"))
+
+    def test_next_due_picks_earliest_slot_from_unsorted_list(self):
+        conn = account_connection(mode="fixed", fixed_at=("16:45", "11:40"))
+        due_at, kind = schedule.next_due(conn, default_conn_state(), at(WEDNESDAY, "05:00"))
+        self.assertEqual((due_at, kind), (at(WEDNESDAY, "11:40"), "fixed"))
 
     def test_next_due_interval_without_anchor(self):
         conn = account_connection(mode="interval", fixed_at=())

@@ -112,10 +112,17 @@ def _fmt_moment(moment, now):
     return moment.strftime("%Y-%m-%d %H:%M")
 
 
-def _slot_proc(value):
-    if not SLOT_RE.match(str(value)):
-        raise ValueError("time must look like 06:35")
-    return str(value)
+def _slots_proc(value):
+    """Parse one or more comma/space-separated HH:MM times into a sorted list."""
+    slots = []
+    for part in str(value).replace(",", " ").split():
+        if not SLOT_RE.match(part):
+            raise ValueError(f"times must look like 06:35 (got {part})")
+        if part not in slots:
+            slots.append(part)
+    if not slots:
+        raise ValueError("enter at least one time like 06:35")
+    return sorted(slots)
 
 
 def _nonempty_proc(value):
@@ -137,7 +144,8 @@ def _positive_int_proc(value):
 
 def _prompt_fixed_settings():
     fixed_at = click.prompt(
-        "Fixed activation time", default=DEFAULT_FIXED_AT, value_proc=_slot_proc
+        "Fixed activation times (one or more, comma-separated)",
+        default=DEFAULT_FIXED_AT, value_proc=_slots_proc,
     )
     days_choice = click.prompt(
         "Days\n  1. weekday (Mon-Fri)\n  2. every day",
@@ -148,7 +156,7 @@ def _prompt_fixed_settings():
 
 def _fixed_block(fixed_at, days):
     return {
-        "at": [fixed_at],
+        "at": list(fixed_at),
         "days": days,
         "catchUpWindowMinutes": DEFAULT_CATCHUP_MINUTES,
         "skipIfActivatedWithinMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
@@ -171,7 +179,7 @@ def _account_connection(conn_id, finding, mode, fixed_at, days):
         "transport": {
             "kind": discover.PROVIDER_TRANSPORTS[provider],
             "baseUrl": None,
-            "cliCommand": finding["cliCommand"],
+            "cliCommand": finding.get("cliPath") or finding["cliCommand"],
         },
         "plan": {"url": None, "label": None},
         "window": window,
@@ -262,10 +270,10 @@ def init():
         if mode in ("fixed", "hybrid"):
             fixed_at, days = _prompt_fixed_settings()
         else:
-            fixed_at, days = DEFAULT_FIXED_AT, "weekday"
+            fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
         conn_id = unique_connection_id(config, finding["label"])
         config["connections"][conn_id] = _account_connection(conn_id, finding, mode, fixed_at, days)
-        added.append(f"✓ {finding['label']} added — mode {mode}, fixed {fixed_at} {days}")
+        added.append(f"✓ {finding['label']} added — mode {mode}, fixed {', '.join(fixed_at)} {days}")
     if not added and not config["connections"]:
         click.echo("No manageable local accounts found.")
         click.echo("Add a subscription endpoint instead: awewarm add plan")
@@ -336,7 +344,7 @@ def plan():
     mode_choice = click.prompt("Select", type=click.Choice(["1", "2", "3"]), default="1", show_choices=False)
     window = _unknown_window()
     mode = "fixed"
-    fixed_at, days = DEFAULT_FIXED_AT, "weekday"
+    fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     config = load_config()
     conn_id = unique_connection_id(config, label)
     state = load_state()
@@ -583,6 +591,39 @@ def disable(connection):
     conn["enabled"] = False
     save_config(config)
     click.echo(f"✓ {conn_id} disabled — run: awewarm enable {conn_id}")
+
+
+@cli.command()
+@click.argument("connection")
+@click.argument("times", nargs=-1)
+def times(connection, times):
+    """Show or set the fixed activation times, e.g. 06:35 11:40 16:45."""
+    config = load_config()
+    conn_id, conn = _find_connection(config, connection)
+    fixed = conn["schedule"].get("fixed") or {}
+    if not times:
+        current = ", ".join(fixed.get("at") or []) or "none"
+        click.echo(f"Fixed times for {conn_id}: {current} ({fixed.get('days', 'weekday')})")
+        click.echo(f"Set them with: awewarm times {conn_id} 06:35 11:40 16:45")
+        return
+    slots = []
+    for value in times:
+        if not SLOT_RE.match(value):
+            die(f"time must look like 06:35 (got {value})")
+        if value not in slots:
+            slots.append(value)
+    if conn["schedule"]["mode"] not in ("fixed", "hybrid"):
+        click.echo(
+            f"note: {conn_id} is in {conn['schedule']['mode']} mode — "
+            f"these times apply after: awewarm enable {conn_id} --mode fixed|hybrid"
+        )
+    fixed = conn["schedule"].setdefault("fixed", {})
+    fixed.setdefault("days", "weekday")
+    fixed.setdefault("catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES)
+    fixed.setdefault("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES)
+    fixed["at"] = sorted(slots)
+    save_config(config)
+    click.echo(f"✓ Fixed times for {conn_id}: {', '.join(fixed['at'])}")
 
 
 @cli.command()

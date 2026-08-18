@@ -90,6 +90,7 @@ class InitTests(IsolatedTestCase):
                 "provider": "claude-code",
                 "label": "Claude Code",
                 "cliCommand": "claude",
+                "cliPath": "/Users/x/.local/bin/claude",
                 "installed": True,
                 "version": "1.0.66",
                 "authFound": True,
@@ -105,6 +106,7 @@ class InitTests(IsolatedTestCase):
                 "provider": "codex",
                 "label": "Codex",
                 "cliCommand": "codex",
+                "cliPath": None,
                 "installed": False,
                 "version": None,
                 "authFound": False,
@@ -120,6 +122,9 @@ class InitTests(IsolatedTestCase):
         conn = data["connections"]["claude-code"]
         self.assertEqual(conn["schedule"]["mode"], "hybrid")
         self.assertEqual(conn["window"]["durationMinutes"], 300)
+        # absolute path, not the bare name — launchd ticks can't resolve bare
+        # names from user-local install dirs
+        self.assertEqual(conn["transport"]["cliCommand"], "/Users/x/.local/bin/claude")
         self.assertIn("mode hybrid", result.output)
 
 
@@ -154,6 +159,16 @@ class AddPlanTests(IsolatedTestCase):
         self.assertEqual(conn["window"]["status"], "unknown")
         self.assertEqual(conn["auth"]["tokenRef"], "${AWEWARM_TOKEN_GLM_CODING_PLAN}")
         self.assertIn("Keychain unavailable", result.output)
+
+    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
+    @mock.patch("awewarm.transport.send_activation")
+    def test_add_plan_accepts_multiple_fixed_times(self, send, keychain_available):
+        send.return_value = {"ok": True, "detail": "ok"}
+        multi = self.INPUT.replace("glm-4.7\n\n\n", "glm-4.7\n\n16:45, 06:35, 11:40\n")
+        result = invoke(["add", "plan"], input=multi)
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        (conn_id, conn), = cfg.load_config()["connections"].items()
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "11:40", "16:45"])
 
     @mock.patch("awewarm.transport.send_activation")
     def test_add_plan_endpoint_failure_decline_aborts(self, send):
@@ -296,6 +311,39 @@ class LifecycleTests(IsolatedTestCase):
         self.assertEqual(cfg.load_config()["connections"], {})
         self.assertEqual(cfg.load_state()["connections"], {})
         delete_token.assert_called_once_with("glm-coding-plan")
+
+
+class TimesTests(IsolatedTestCase):
+    def test_show_without_args(self):
+        write_config(account_connection(mode="hybrid"))
+        result = invoke(["times", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("06:35", result.output)
+        self.assertIn("weekday", result.output)
+
+    def test_set_multiple_times_sorted_and_deduped(self):
+        write_config(account_connection(mode="hybrid"))
+        result = invoke(["times", "claude-code-main", "16:45", "06:35", "16:45", "11:40"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "11:40", "16:45"])
+
+    def test_invalid_time_dies_without_saving(self):
+        write_config(account_connection(mode="hybrid"))
+        result = invoke(["times", "claude-code-main", "6:35"])
+        self.assertNotEqual(result.exit_code, 0)
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35"])
+
+    def test_interval_mode_connection_notes_mode_switch(self):
+        conn = account_connection(mode="interval")
+        write_config(conn)
+        result = invoke(["times", "claude-code-main", "06:35", "11:40"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("--mode", result.output)
+        saved = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(saved["schedule"]["fixed"]["at"], ["06:35", "11:40"])
+        self.assertEqual(saved["schedule"]["fixed"]["days"], "weekday")
 
 
 class StatusTests(IsolatedTestCase):

@@ -1,3 +1,4 @@
+import os
 import plistlib
 import unittest
 from unittest import mock
@@ -22,8 +23,9 @@ class BuildPlistTests(IsolatedTestCase):
 
     def test_plist_passes_awewarm_env_through(self):
         plist = install.build_plist("/usr/local/bin/awewarm")
+        env = plist["EnvironmentVariables"]
         self.assertEqual(
-            plist["EnvironmentVariables"],
+            {key: value for key, value in env.items() if key.startswith("AWEWARM_")},
             {
                 "AWEWARM_CONFIG": str(self.tmp_path / "config.json"),
                 "AWEWARM_STATE": str(self.tmp_path / "state.json"),
@@ -31,6 +33,12 @@ class BuildPlistTests(IsolatedTestCase):
                 "AWEWARM_PLIST": str(self.tmp_path / "agent.plist"),
             },
         )
+
+    def test_plist_carries_path_for_cli_resolution(self):
+        # launchd's default PATH lacks user-local install dirs; the installer
+        # must propagate the current PATH or CLIs like `claude` never resolve.
+        plist = install.build_plist("/usr/local/bin/awewarm")
+        self.assertEqual(plist["EnvironmentVariables"].get("PATH"), os.environ["PATH"])
 
     def test_plist_path_env_override(self):
         self.assertEqual(install.plist_path(), self.tmp_path / "agent.plist")

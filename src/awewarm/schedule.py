@@ -96,7 +96,7 @@ def _due_fixed(connection, conn_state, now):
     last_ok = _last_success(conn_state)
     pending_skip = []
     activate = None
-    for hhmm in at_times:
+    for hhmm in sorted(at_times):
         if hhmm in done or hhmm in skipped:
             continue
         slot_at = slot_datetime(now.date(), hhmm, now.tzinfo)
@@ -215,9 +215,10 @@ def next_due(connection, conn_state, now):
         for _ in range(8):  # scan up to a week ahead for the next active day
             if is_active_day(day, fixed.get("days", "weekday")):
                 day_key = day.strftime("%Y-%m-%d")
-                done = set((conn_state.get("completedSlots") or {}).get(day_key, []))
-                for hhmm in fixed.get("at") or []:
-                    if hhmm in done:
+                blocked = set((conn_state.get("completedSlots") or {}).get(day_key, []))
+                blocked |= set((conn_state.get("skippedSlots") or {}).get(day_key, []))
+                for hhmm in sorted(fixed.get("at") or []):
+                    if hhmm in blocked:
                         continue
                     slot_at = slot_datetime(day, hhmm, now.tzinfo)
                     if slot_at is None:

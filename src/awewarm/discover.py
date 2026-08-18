@@ -74,11 +74,15 @@ def discover_accounts():
     """Scan local CLIs. Pure reads; no request is ever sent here."""
     findings = []
     for provider, command in PROVIDER_CLIS.items():
+        cli_path = shutil.which(command)
         finding = {
             "provider": provider,
             "label": PROVIDER_LABELS[provider],
             "cliCommand": command,
-            "installed": shutil.which(command) is not None,
+            # launchd's PATH lacks user-local install dirs, so connections
+            # must store the absolute path or ticks can't find the CLI.
+            "cliPath": cli_path,
+            "installed": cli_path is not None,
             "version": None,
             "authFound": False,
             "authDetail": None,

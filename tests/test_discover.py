@@ -26,8 +26,17 @@ class DiscoverTests(IsolatedTestCase):
         for finding in findings:
             self.assertFalse(finding["installed"])
             self.assertFalse(finding["authFound"])
+            self.assertIsNone(finding["cliPath"])
             lines = discover.describe_finding(finding)
             self.assertIn("not found", lines[0])
+
+    def test_installed_cli_reports_absolute_path(self):
+        # The absolute path is what goes into config: launchd's minimal PATH
+        # cannot resolve bare names like "claude" installed in ~/.local/bin.
+        with self._which({"claude": "/Users/x/.local/bin/claude"}):
+            with mock.patch("awewarm.discover.subprocess.run", return_value=mock.Mock(returncode=0, stdout="1.0.66\n", stderr="")):
+                findings = discover.discover_accounts()
+        self.assertEqual(findings[0]["cliPath"], "/Users/x/.local/bin/claude")
 
     def test_claude_found_with_credentials_file(self):
         cred = os.path.join(os.environ["HOME"], ".claude", ".credentials.json")
