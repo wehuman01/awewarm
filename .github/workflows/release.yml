@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify tag matches pyproject version
+        run: |
+          import sys, tomllib
+          from pathlib import Path
+          tag = "${{ github.ref_name }}"
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if tag != f"v{version}":
+              sys.exit(f"tag {tag} does not match pyproject version {version}")
+        shell: python
+      - run: pip install -e .
+      - run: python -m unittest discover -s tests
+      - name: Extract release notes from CHANGELOG
+        run: |
+          python - <<'EOF'
+          import sys
+          from pathlib import Path
+          tag = "${{ github.ref_name }}"
+          text = Path("docs/CHANGELOG.md").read_text()
+          marker = f"## {tag.lstrip('v')}"
+          start = text.find(marker)
+          if start == -1:
+              start = text.find(f"## {tag}")
+          if start == -1:
+              sys.exit(f"no CHANGELOG section for {tag}")
+          end = text.find("\n## ", start + 1)
+          notes = text[start:end].split("\n", 1)[1].strip() if end != -1 else text[start:].split("\n", 1)[1].strip()
+          Path("release-notes.md").write_text(notes + "\n")
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+      - name: Build and publish to PyPI
+        run: |
+          pip install build twine
+          python -m build
+          twine upload dist/* -u __token__ -p ${{ secrets.PYPI_API_TOKEN }}

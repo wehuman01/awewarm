@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awewarm"
+version = "0.1.0"
+description = "Keep AI coding-plan subscription windows warm with minimal scheduled requests."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["click>=8.1"]
+authors = [
+  { name = "Peng" }
+]
+license = "MPL-2.0"
+keywords = ["ai", "agent", "claude", "codex", "cli", "scheduler", "keep-alive"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Utilities"
+]
+
+[project.scripts]
+awewarm = "awewarm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
