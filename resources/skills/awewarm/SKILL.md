@@ -112,5 +112,5 @@ awewarm remove <id>
 2. `init` and `add plan` belong in the user's terminal; they are interactive.
 3. Read state through `status` / `inspect`; never hand-edit config.json or state.json.
 4. Tokens are Keychain-only or `${ENV_VAR}` refs. Never ask the user to paste tokens into chat; never echo them.
-5. `awewarm run` is the scheduler tick (once a minute, launchd on macOS / Task Scheduler on Windows). Don't run it manually to "test" — use `awewarm run --dry-run`.
+5. `awewarm run` is the scheduler tick (once a minute: launchd on macOS, Task Scheduler on Windows, systemd user timer on Linux). Don't run it manually to "test" — use `awewarm run --dry-run`.
 6. If a command fails, report the exact command and error. Do not silently retry.

@@ -155,7 +155,7 @@ This scans for local `claude` / `codex` CLIs and their login state. No network r
 
 For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + token), the command is `awewarm add plan` — also interactive (token prompt), so it also belongs in the user's terminal.
 
-Platform note: the scheduler installs on macOS (launchd) and Windows (Task Scheduler). On Windows there is no Keychain, so subscription tokens use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_TOKEN_<PLAN> "..."` (scheduler tasks inherit user env vars). On Linux, tell the user to cron the tick: `* * * * * awewarm run`.
+Platform note: the scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer). On Windows there is no Keychain, so subscription tokens use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_TOKEN_<PLAN> "..."` (scheduler tasks inherit user env vars). On headless Linux/SSH accounts, the user may need `loginctl enable-linger $USER` first; without systemd, cron the tick: `* * * * * awewarm run`.
 
 ---
 
@@ -200,7 +200,7 @@ awewarm times <id> HH:MM...         # set fixed times
 awewarm enable <id> [--mode ...]    # enable / switch mode
 awewarm disable <id>                # pause scheduling
 awewarm remove <id>                 # delete connection + stored token (confirm first)
-awewarm install / uninstall         # background scheduler (launchd / Task Scheduler)
+awewarm install / uninstall         # background scheduler (launchd / Task Scheduler / systemd)
 awewarm self-update                 # upgrade awewarm
 ```
 

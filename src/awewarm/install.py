@@ -1,14 +1,21 @@
-"""System scheduler installation: launchd on macOS, Task Scheduler on Windows.
+"""System scheduler installation: launchd on macOS, Task Scheduler on Windows,
+systemd user timer on Linux.
 
 The agent simply invokes `awewarm run` once a minute; all scheduling state
-lives in state.json, so the task definition itself is static. Linux users
-can cron the same command until a systemd installer lands.
+lives in state.json, so the task definition itself is static. Where systemd
+is unavailable (e.g. some servers or containers), cron the same command.
 
 Windows notes: schtasks tasks run in the user context and inherit user env
 vars (what `setx` writes), so unlike the launchd plist nothing needs to bake
 PATH or AWEWARM_* into the task; connections already store absolute CLI
 paths. The task's stdout is not captured by Task Scheduler — awewarm's own
 event log (`awewarm.log`) is the audit trail.
+
+Linux notes: the user manager's environment is sparser than a login shell
+(same problem as launchd's PATH), so AWEWARM_* and PATH are written into the
+service unit as Environment= lines. SSH-only accounts may need
+`loginctl enable-linger $USER` before the user manager runs without a
+session; `awewarm install` says so when systemctl cannot reach the bus.
 """
 import os
 import plistlib
@@ -27,6 +34,20 @@ def plist_path():
     return Path(
         os.environ.get("AWEWARM_PLIST", f"~/Library/LaunchAgents/{LABEL}.plist")
     ).expanduser()
+
+
+def unit_dir():
+    return Path(
+        os.environ.get("AWEWARM_SYSTEMD_DIR", "~/.config/systemd/user")
+    ).expanduser()
+
+
+def service_path():
+    return unit_dir() / "awewarm.service"
+
+
+def timer_path():
+    return unit_dir() / "awewarm.timer"
 
 
 def build_plist(exe):
@@ -66,9 +87,12 @@ def install_scheduler():
         return _install_launchd()
     if sys.platform == "win32":
         return _install_windows()
+    if sys.platform.startswith("linux"):
+        return _install_linux()
     die(
-        "automatic scheduler install supports macOS (launchd) and Windows (Task Scheduler)\n"
-        "on Linux, cron the tick instead:\n  * * * * * awewarm run"
+        "automatic scheduler install supports macOS (launchd), Windows (Task Scheduler),\n"
+        "and Linux (systemd user timer)\n"
+        "elsewhere, cron the tick instead:\n  * * * * * awewarm run"
     )
 
 
@@ -77,7 +101,9 @@ def uninstall_scheduler():
         return _uninstall_launchd()
     if sys.platform == "win32":
         return _schtasks(["/Delete", "/F", "/TN", LABEL]).returncode == 0
-    die("scheduler uninstall supports macOS (launchd) and Windows (Task Scheduler)")
+    if sys.platform.startswith("linux"):
+        return _uninstall_linux()
+    die("scheduler uninstall supports macOS, Windows, and Linux (systemd)")
 
 
 def scheduler_installed():
@@ -88,6 +114,8 @@ def scheduler_installed():
             return _schtasks(["/Query", "/TN", LABEL]).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
+    if sys.platform.startswith("linux"):
+        return timer_path().exists()
     return False
 
 
@@ -153,3 +181,81 @@ def _install_windows():
             f'  schtasks /Create /SC MINUTE /TN {LABEL} /TR "{exe} run"'
         )
     return LABEL
+
+
+def build_service(exe):
+    lines = [
+        "[Unit]",
+        "Description=awewarm scheduler tick",
+        "[Service]",
+        "Type=oneshot",
+        f"ExecStart={exe} run",
+    ]
+    # Same reasoning as the launchd plist: the user manager's environment is
+    # sparser than a login shell, so propagate AWEWARM_* and PATH explicitly.
+    for key, value in sorted(os.environ.items()):
+        if key.startswith("AWEWARM_") and value:
+            lines.append(f'Environment="{key}={value}"')
+    if os.environ.get("PATH"):
+        lines.append(f'Environment="PATH={os.environ["PATH"]}"')
+    return "\n".join(lines) + "\n"
+
+
+def build_timer():
+    # AccuracySec tightens systemd's default 1-minute coalescing window so
+    # ticks keep a ~60s cadence. Missed ticks are recovered from state.json
+    # (catch-up windows), so no Persistent=true is needed.
+    return (
+        "[Unit]\n"
+        "Description=Run the awewarm scheduler tick every minute\n"
+        "[Timer]\n"
+        "OnStartupSec=1min\n"
+        f"OnUnitActiveSec={TICK_SECONDS}s\n"
+        "AccuracySec=5s\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+
+def _systemctl(argv):
+    return subprocess.run(
+        ["systemctl", "--user", *argv], capture_output=True, text=True, timeout=30
+    )
+
+
+def _install_linux():
+    if shutil.which("systemctl") is None:
+        die(
+            "systemctl not found — this system has no systemd\n"
+            "cron the tick instead:\n  * * * * * awewarm run"
+        )
+    exe = resolve_exe()
+    unit_dir().mkdir(parents=True, exist_ok=True)
+    service_path().write_text(build_service(exe))
+    timer_path().write_text(build_timer())
+    reload = _systemctl(["daemon-reload"])
+    enable = _systemctl(["enable", "--now", "awewarm.timer"])
+    if reload.returncode != 0 or enable.returncode != 0:
+        stderr = (reload.stderr or "") + (enable.stderr or "")
+        hint = ""
+        if "Failed to connect to bus" in stderr:
+            hint = (
+                "\nfix: the systemd user manager is not running for this account;\n"
+                "  enable lingering (survives logout): loginctl enable-linger $USER\n"
+                "  then re-run: awewarm install"
+            )
+        die(
+            f"systemctl failed to enable the awewarm timer\n{stderr.strip()}{hint}\n"
+            "or cron the tick instead:\n  * * * * * awewarm run"
+        )
+    return timer_path()
+
+
+def _uninstall_linux():
+    _systemctl(["disable", "--now", "awewarm.timer"])
+    was_present = timer_path().exists() or service_path().exists()
+    for path in (timer_path(), service_path()):
+        if path.exists():
+            path.unlink()
+    _systemctl(["daemon-reload"])
+    return was_present

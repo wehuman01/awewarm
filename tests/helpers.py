@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-ENV_KEYS = ("AWEWARM_CONFIG", "AWEWARM_STATE", "AWEWARM_LOG", "AWEWARM_PLIST")
+ENV_KEYS = ("AWEWARM_CONFIG", "AWEWARM_STATE", "AWEWARM_LOG", "AWEWARM_PLIST", "AWEWARM_SYSTEMD_DIR")
 
 
 class IsolatedTestCase(unittest.TestCase):
@@ -23,6 +23,7 @@ class IsolatedTestCase(unittest.TestCase):
             "AWEWARM_STATE": str(base / "state.json"),
             "AWEWARM_LOG": str(base / "awewarm.log"),
             "AWEWARM_PLIST": str(base / "agent.plist"),
+            "AWEWARM_SYSTEMD_DIR": str(base / "systemd-user"),
         }
         self._saved = {key: os.environ.get(key) for key in ENV_KEYS}
         os.environ.update(overrides)

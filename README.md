@@ -18,7 +18,7 @@
   <p>
     <img src="https://img.shields.io/badge/status-alpha-c96a3d?style=flat-square" alt="Status">
     <img src="https://img.shields.io/badge/install-pip-22C55E?style=flat-square" alt="pip install">
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-334155?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-334155?style=flat-square" alt="Platform">
     <img src="https://img.shields.io/pepy/dt/awewarm?style=flat-square" alt="PyPI downloads">
     <img src="https://img.shields.io/github/stars/wehuman01/awewarm?style=flat-square" alt="GitHub stars">
   </p>
@@ -41,7 +41,7 @@ Requires Python ≥ 3.9:
 pip3 install awewarm
 ```
 
-The background scheduler installs on macOS (launchd) and Windows (Task Scheduler). On Linux, cron the tick instead: `* * * * * awewarm run`.
+The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm run`.
 
 Windows note: there is no Keychain there, so subscription tokens use `${ENV_VAR}` references — persist them with `setx AWEWARM_TOKEN_<PLAN> "..."` (scheduler tasks inherit user env vars).
 
@@ -167,7 +167,7 @@ awewarm enable <id> [--mode fixed|interval|hybrid]
 awewarm times <id> [HH:MM...]  # show or set fixed times, e.g. 06:35 11:40 16:45
 awewarm disable <id>
 awewarm remove <id>
-awewarm install / uninstall      # background scheduler (macOS launchd, Windows Task Scheduler)
+awewarm install / uninstall      # background scheduler (launchd / Task Scheduler / systemd)
 awewarm inspect [<id>] [--json]  # redacted capability dump
 awewarm config path              # config / state / log locations
 awewarm self-update [--check]    # upgrade to the latest PyPI release

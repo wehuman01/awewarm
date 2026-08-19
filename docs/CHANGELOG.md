@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.6
+
+`v0.2.6` adds Linux support for the background scheduler, completing platform coverage (macOS, Windows, Linux).
+
+### Linux scheduler (systemd user timer)
+
+`awewarm install` on Linux writes `~/.config/systemd/user/awewarm.{service,timer}` and enables a per-minute user timer via `systemctl --user` — no root required. Like the launchd plist, `AWEWARM_*` and `PATH` are baked into the service unit because the user manager's environment is sparser than a login shell. On SSH-only/headless accounts where the user manager is not running, the installer's error suggests `loginctl enable-linger $USER`; systems without systemd get the cron fallback hint (`* * * * * awewarm run`). Missed ticks are recovered from `state.json` catch-up windows, so the timer needs no `Persistent=true`.
+
+### Highlights
+
+- **Add: Linux scheduler** — systemd user timer (oneshot service + 60 s `OnUnitActiveSec`, 5 s `AccuracySec`), install/uninstall/installed-detection.
+- Actionable `enable-linger` hint when `systemctl --user` cannot reach the bus.
+- Platform badge and docs updated to `macOS | Windows | Linux` across READMEs, README.ai.md, SKILL.md, CONTRIBUTING, and the design spec.
+- 9 new tests (unit file contents, env propagation, enable/disable flows, linger hint, cron fallback); suite now at 171 tests.
+
 ## v0.2.5
 
 `v0.2.5` adds Windows support for the background scheduler, makes PyPI the advertised install path (v0.1.5 is already published), and adds agent-facing docs, update reminders, and self-update.

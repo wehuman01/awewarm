@@ -5,6 +5,7 @@ from unittest import mock
 
 from helpers import IsolatedTestCase
 
+from awewarm import config as cfg
 from awewarm import install
 
 
@@ -35,6 +36,7 @@ class BuildPlistTests(IsolatedTestCase):
                 "AWEWARM_STATE": str(self.tmp_path / "state.json"),
                 "AWEWARM_LOG": str(self.tmp_path / "awewarm.log"),
                 "AWEWARM_PLIST": str(self.tmp_path / "agent.plist"),
+                "AWEWARM_SYSTEMD_DIR": str(self.tmp_path / "systemd-user"),
             },
         )
 
@@ -70,7 +72,14 @@ class InstallTests(IsolatedTestCase):
             install.install_scheduler()
 
     @mock.patch("awewarm.install.sys.platform", "linux")
-    def test_install_refuses_non_macos(self):
+    @mock.patch("awewarm.install.shutil.which", return_value=None)
+    def test_install_without_systemctl_dies_with_cron_hint(self, which):
+        with self.assertRaises(SystemExit) as raised:
+            install.install_scheduler()
+        self.assertIn("cron", str(raised.exception))
+
+    @mock.patch("awewarm.install.sys.platform", "freebsd")
+    def test_install_refuses_unsupported_platform(self):
         with self.assertRaises(SystemExit):
             install.install_scheduler()
 
@@ -169,6 +178,79 @@ class WindowsUninstallTests(IsolatedTestCase):
         argv = run.call_args[0][0]
         self.assertIn("/Delete", argv)
         self.assertIn(install.LABEL, argv)
+
+
+class LinuxUnitTests(IsolatedTestCase):
+    def test_service_exec_start_and_env(self):
+        text = install.build_service("/home/x/.local/bin/awewarm")
+        self.assertIn("ExecStart=/home/x/.local/bin/awewarm run", text)
+        self.assertIn("Type=oneshot", text)
+        # sparse user-manager env gets AWEWARM_* and PATH baked in, like the plist
+        self.assertIn(f'Environment="AWEWARM_CONFIG={cfg.config_path()}"', text)
+        self.assertIn('Environment="PATH=', text)
+
+    def test_timer_cadence(self):
+        text = install.build_timer()
+        self.assertIn(f"OnUnitActiveSec={install.TICK_SECONDS}s", text)
+        self.assertIn("OnStartupSec=1min", text)
+        self.assertIn("WantedBy=timers.target", text)
+
+    def test_installed_detected_by_timer_file(self):
+        with mock.patch("awewarm.install.sys.platform", "linux"):
+            self.assertFalse(install.scheduler_installed())
+            install.timer_path().parent.mkdir(parents=True, exist_ok=True)
+            install.timer_path().write_text(install.build_timer())
+            self.assertTrue(install.scheduler_installed())
+
+
+class LinuxInstallTests(IsolatedTestCase):
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    @mock.patch("awewarm.install.shutil.which", return_value="/home/x/.local/bin/awewarm")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_install_writes_units_and_enables_timer(self, run, which):
+        timer = install.install_scheduler()
+        self.assertTrue(timer.exists())
+        self.assertTrue(install.service_path().exists())
+        self.assertIn("ExecStart=/home/x/.local/bin/awewarm run", timer.parent.joinpath("awewarm.service").read_text())
+        commands = [call[0][0] for call in run.call_args_list]
+        self.assertTrue(any("daemon-reload" in argv for argv in commands))
+        self.assertTrue(any("enable" in argv and "awewarm.timer" in argv for argv in commands))
+        self.assertTrue(all(argv[:2] == ["systemctl", "--user"] for argv in commands))
+        self.assertTrue(install.scheduler_installed())
+
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    @mock.patch("awewarm.install.shutil.which", side_effect=lambda cmd: "/usr/bin/systemctl" if cmd == "systemctl" else None)
+    def test_install_without_awewarm_exe_dies(self, which):
+        with self.assertRaises(SystemExit):
+            install.install_scheduler()
+
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    @mock.patch("awewarm.install.shutil.which", return_value="/home/x/.local/bin/awewarm")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run(returncode=1, stderr="Failed to connect to bus: no medium found"))
+    def test_install_bus_failure_hints_linger(self, run, which):
+        with self.assertRaises(SystemExit) as raised:
+            install.install_scheduler()
+        self.assertIn("enable-linger", str(raised.exception))
+        self.assertIn("cron", str(raised.exception))
+
+
+class LinuxUninstallTests(IsolatedTestCase):
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_uninstall_removes_units(self, run):
+        install.unit_dir().mkdir(parents=True, exist_ok=True)
+        install.service_path().write_text(install.build_service("/x/awewarm"))
+        install.timer_path().write_text(install.build_timer())
+        self.assertTrue(install.uninstall_scheduler())
+        self.assertFalse(install.timer_path().exists())
+        self.assertFalse(install.service_path().exists())
+        commands = [call[0][0] for call in run.call_args_list]
+        self.assertTrue(any("disable" in argv for argv in commands))
+
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_uninstall_when_absent(self, run):
+        self.assertFalse(install.uninstall_scheduler())
 
 
 if __name__ == "__main__":
