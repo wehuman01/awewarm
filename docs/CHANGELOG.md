@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.7
+
+`v0.2.7` renames subscription secrets from "token" to "API key" across the codebase and docs, adds a cold-gap warning when a user-confirmed duration is shorter than the verified window, and improves `add plan` UX with protocol-first prompting and base URL examples.
+
+### Terminology: token → API key
+
+All user-facing and config references to subscription secrets now say "API key": prompts, error messages, env-var references (`AWEWARM_API_KEY_*`), and the JSON key (`apiKeyRef`).
+
+### Cold-gap warning on `verify --user-confirm`
+
+When the recorded duration is shorter than the previously verified window (and not covered by grace), awewarm now warns that renewal will fire inside the still-open window, leaving a cold gap each cycle.
+
+### `add plan` UX
+
+Protocol selection now comes first (defaulting to OpenAI Chat Completions), and the base URL prompt shows protocol-specific examples.
+
+### Highlights
+
+- **Change: terminology rename** — `token` → `API key` across CLI, keychain, transport, tests, README, and CHANGELOG.
+- **Add: cold-gap warning** — `window_override_notice()` detects when a shorter user-confirmed duration leaves a gap inside the old verified window.
+- **Improve: `add plan` prompts** — protocol first with default 1 (OpenAI Chat), base URL examples per protocol.
+- **Add: hero2 logo** — compressed WebP hero image and original PNG asset.
+
 ## v0.2.6
 
 `v0.2.6` adds Linux support for the background scheduler, completing platform coverage (macOS, Windows, Linux).
