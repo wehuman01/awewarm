@@ -325,20 +325,22 @@ def plan():
         "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
     )
     protocol_choice = click.prompt(
-        "Select protocol (1/2/3)", type=click.Choice(["1", "2", "3"]), default="1", show_choices=False
+        "Select protocol [default 1]",
+        type=click.Choice(["1", "2", "3"]),
+        show_choices=False,
+        value_proc=lambda v: "1" if v.strip() == "" else v.strip(),
     )
     transport_kind = PROTOCOL_CHOICES[protocol_choice]
-    base_url = click.prompt(f"API base URL ({_base_url_example(transport_kind)})").strip()
+    base_url = click.prompt(f"API / plan URL ({_base_url_example(transport_kind)})").strip()
     if not base_url.startswith(("http://", "https://")):
         die("API base URL must start with http:// or https://")
     api_key = click.prompt("API key", hide_input=True).strip()
     if not api_key:
         die("API key must not be empty")
-    plan_url = click.prompt("Plan URL (optional, kept as evidence)", default="", show_default=False)
     model = click.prompt("Model for warm-up requests", value_proc=_nonempty_proc, show_default=False)
 
     draft = _plan_connection(
-        "draft", label, base_url, None, plan_url, transport_kind, model,
+        "draft", label, base_url, None, base_url, transport_kind, model,
         "fixed", _unknown_window(), DEFAULT_FIXED_AT, "weekday",
     )
     click.echo("\nTesting endpoint...")
@@ -424,7 +426,7 @@ def plan():
                 f"  Export it before awewarm runs:\n  export {api_key_var}=<your-api-key>"
             )
     config["connections"][conn_id] = _plan_connection(
-        conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model,
+        conn_id, label, base_url, api_key_ref, base_url, transport_kind, model,
         mode, window, fixed_at, days,
     )
     save_config(config)
