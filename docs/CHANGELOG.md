@@ -2,11 +2,50 @@
 
 ## Unreleased
 
-- **Change: `run <id>` fires directly** — `awewarm run --now <id> --confirm` collapses to `awewarm run <id>`: the positional connection id fires that one connection immediately, no `--now`, no `--confirm`. Bare `awewarm run` stays the scheduler tick the background agents invoke.
-- **Change: manual fires no longer shift the schedule** — a successful `run <id>` used to push the interval chain's next due a full window out; it now leaves `nextDueAt` untouched, so a manual test run doesn't move the renewal cadence (fixed-slot skip logic still sees the fresh success). `run <id> --reset-due` opts back into the old behavior. Scheduled activations (fixed/interval/first-anchor) keep rolling the chain as before.
-- **Add: activation test during `init` / `config add`** — every added connection, local accounts included, gets one minimal test request through its configured transport and model before being saved. On failure the detail is shown and the user chooses whether to keep the connection (endpoints already had this; accounts did not, which let a broken model name — e.g. Claude Code rejecting `kimi-k3` — surface only as repeated 6 a.m. activation failures).
-- **Change: flat v2 config format** — `config.json` connections collapse from a 4-level nested shape (kind/auth/transport/plan/window/activation/schedule) to one flat level: `label`, `url`+`apiKey`+`protocol` (subscription) or `cli` (local account), `model`, `windowMinutes`, `mode`, `times`, `days`. Presence of `url`+`apiKey` marks a subscription; `windowMinutes` present means the window is verified/user-confirmed. Tuning knobs (catch-up, skip-if-activated, grace, jitter) stay at code defaults and land on disk only when changed. Unread fields (`plan.*`, `auth.status`, `window.startRule`) are gone. v1 files upgrade in place on first load; the runtime shape the code reads is unchanged (load expands, save compacts).
-- **Change: API key storage without the Keychain** — pasted keys now go to `~/.config/awewarm/secrets.json` (created with chmod 600), and env-var references are a first-class option in both notations, `$GLM_API_KEY` and `${GLM_API_KEY}`: `config add` accepts an env ref in the key prompt, and `config set <id> --api-key <key>` / `--api-key-env <VAR>` manage the source non-interactively. `config path` prints the secrets file location. Legacy `keychain:` refs migrate into secrets.json on first load; the Keychain code is removed — its `security -i` write path truncated stored keys to a single character and the truncation went unnoticed (activation failures surfaced as HTTP 401). Stored keys are read back and verified on save.
+## v0.3.1
+
+`v0.3.1` replaces the macOS Keychain with a cross-platform `secrets.json` store, collapses the CLI surface to seven commands with legacy aliases, simplifies the manual-fire path to `run <id>`, and adds a macOS wake schedule so fixed-time warm-ups fire with the lid closed.
+
+### API key storage (no Keychain)
+
+Pasted keys now go to `~/.config/awewarm/secrets.json` (created with `chmod 600`). Env-var references in either `$GLM_API_KEY` or `${GLM_API_KEY}` form are first-class citizens: `config add` accepts them inline, and `config set --api-key-env VAR` manages them non-interactively. Legacy `keychain:` refs migrate into `secrets.json` on first load. The Keychain code is removed — its `security -i` write path was truncating stored keys to a single character, and the truncation went unnoticed because activations surfaced only as HTTP 401.
+
+### Flat v2 config format
+
+`config.json` connections collapse from a 4-level nested shape (`kind` / `auth` / `transport` / `plan` / `window` / `activation` / `schedule`) to one flat level: `label`, `url` + `apiKey` + `protocol` (subscription) or `cli` (local account), `model`, `windowMinutes`, `mode`, `times`, `days`. Presence of `url` + `apiKey` marks a subscription; `windowMinutes` present means the window is verified / user-confirmed. Tuning knobs (catch-up, skip-if-activated, grace, jitter) stay at code defaults and land on disk only when changed. v1 files upgrade in place on first load.
+
+### `run <id>` simplification
+
+`awewarm run --now <id> --confirm` collapses to `awewarm run <id>`: the positional connection id fires that one connection immediately, no `--now`, no `--confirm`. Bare `awewarm run` stays the scheduler tick the background agents invoke.
+
+### Manual fires no longer shift the schedule
+
+A successful `run <id>` used to push the interval chain's next due a full window out; it now leaves `nextDueAt` untouched, so a manual test run doesn't move the renewal cadence (fixed-slot skip logic still sees the fresh success). `run <id> --reset-due` opts back into the old behavior. Scheduled activations (fixed / interval / first-anchor) keep rolling the chain as before.
+
+### Activation test during setup
+
+Every added connection — local accounts included — gets one minimal test request through its configured transport and model before being saved. On failure the detail is shown and the user chooses whether to keep the connection (endpoints already had this; accounts did not, which let a broken model name surface only as repeated 6 a.m. activation failures).
+
+### macOS wake schedule
+
+On macOS, `scheduler install` can now register a `pmset repeat wakeorpoweron` event for the earliest fixed slot across all enabled connections, so fixed-time warm-ups fire on schedule even with the lid closed. `scheduler uninstall` cancels it (only if the live schedule still matches what awewarm set). The choice is remembered in `global.wakeWhenAsleep` and can be overridden per-install with `--wake` / `--no-wake`.
+
+### CLI polish
+
+- `config show` / `config edit` — print or edit `config.json` in `$VISUAL` / `$EDITOR` / `nano`; `edit` validates on exit.
+- `scheduler install --wake/--no-wake` — macOS wake schedule control.
+- Every pre-0.3 command name still works as a hidden alias that prints its new spelling; they are removed in v1.0.
+
+### Highlights
+
+- **Change: Keychain → secrets.json** — cross-platform API key storage with `chmod 600`, env-var refs, and automatic migration from legacy `keychain:` entries.
+- **Change: flat v2 config format** — one-level connections, v1 auto-upgrade on load.
+- **Change: `run <id>`** — positional immediate fire, no `--now` / `--confirm`.
+- **Change: manual fires preserve `nextDueAt`** — test runs no longer shift the renewal chain; `--reset-due` restores old behavior.
+- **Add: setup activation test** — every added connection is exercised once before save.
+- **Add: macOS wake schedule** — `pmset repeat wakeorpoweron` for fixed slots with the lid closed.
+- **Add: `config show` / `config edit`** — inspect or edit config with editor validation.
+- **Add: WeChat support** — donation QR code in README Support section.
 
 ## v0.3.0
 
