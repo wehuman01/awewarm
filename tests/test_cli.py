@@ -134,10 +134,10 @@ class AddPlanTests(IsolatedTestCase):
     INPUT = "\n".join(
         [
             "GLM Coding Plan",
+            "3",  # protocol -> Anthropic Messages (no default; must be explicit)
             "https://open.bigmodel.cn/api/anthropic",
             "tok-123",
             "",  # plan URL optional
-            "",  # protocol -> default 3 (anthropic)
             "glm-4.7",
             "",  # warm-up mode -> default 1 (fixed)
             "",  # fixed time -> default 06:35

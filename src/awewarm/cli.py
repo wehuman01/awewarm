@@ -45,6 +45,16 @@ PROTOCOL_CHOICES = {
     "3": "anthropic-messages",
 }
 
+BASE_URL_EXAMPLES = {
+    "openai-chat": "e.g. https://api.openai.com/v1",
+    "openai-responses": "e.g. https://api.openai.com/v1",
+    "anthropic-messages": "e.g. https://api.anthropic.com",
+}
+
+
+def _base_url_example(transport_kind):
+    return BASE_URL_EXAMPLES.get(transport_kind, "e.g. https://your-endpoint/v1")
+
 
 def _tz(config):
     name = timezone_name(config)
@@ -309,22 +319,22 @@ def add():
 
 @add.command()
 def plan():
-    """Add a subscription endpoint (API base URL + token + protocol)."""
+    """Add a subscription endpoint (protocol + API base URL + token)."""
     label = click.prompt("Plan name")
-    base_url = click.prompt("API base URL").strip()
+    click.echo(
+        "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
+    )
+    protocol_choice = click.prompt(
+        "Select protocol (1/2/3)", type=click.Choice(["1", "2", "3"]), default="1", show_choices=False
+    )
+    transport_kind = PROTOCOL_CHOICES[protocol_choice]
+    base_url = click.prompt(f"API base URL ({_base_url_example(transport_kind)})").strip()
     if not base_url.startswith(("http://", "https://")):
         die("API base URL must start with http:// or https://")
     token = click.prompt("Token", hide_input=True).strip()
     if not token:
         die("token must not be empty")
     plan_url = click.prompt("Plan URL (optional, kept as evidence)", default="", show_default=False)
-    click.echo(
-        "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
-    )
-    protocol_choice = click.prompt(
-        "Select", type=click.Choice(["1", "2", "3"]), default="3", show_choices=False
-    )
-    transport_kind = PROTOCOL_CHOICES[protocol_choice]
     model = click.prompt("Model for warm-up requests", value_proc=_nonempty_proc, show_default=False)
 
     draft = _plan_connection(

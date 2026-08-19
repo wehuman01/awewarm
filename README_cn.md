@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo/hero.png" alt="awewarm" width="860">
+  <img src="logo/hero2.webp" alt="awewarm" width="860">
   <h1>awewarm：订阅窗口保温器</h1>
   <p><strong>用一条最小请求，让 AI 编程套餐的窗口一直是热的。</strong></p>
   <p>接入一次；awewarm 自动检测你的 Claude Code / Codex 账号或订阅 endpoint 的能力，然后确保下一个用量窗口永远是已开启状态。</p>

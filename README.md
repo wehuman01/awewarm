@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo/hero.png" alt="awewarm" width="860">
+  <img src="logo/hero2.webp" alt="awewarm" width="860">
   <h1>awewarm: Subscription Window Warmer</h1>
   <p><strong>Keep AI coding-plan windows warm with one minimal request.</strong></p>
   <p>Connect once; awewarm detects what your Claude Code / Codex account or subscription endpoint can do, then makes sure the next usage window is always already open.</p>
