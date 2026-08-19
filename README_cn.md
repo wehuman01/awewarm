@@ -109,7 +109,7 @@ awewarm config set claude-code --mode fixed
 
 ### `interval` —— 滚动续期
 
-每次成功后，下一条请求排在「窗口时长 + 余量」之后（默认 300 分钟 + 75 秒，另加最多 30 秒抖动）。余量加在旧窗口**关闭之后** —— 提前发只会落进旧窗口，什么也开启不了。还没有成功记录时，会立即发一条作为首个锚点。
+每次成功后，下一条请求排在「窗口时长 + 余量」之后（默认 300 分钟 + 75 秒，另加最多 30 秒抖动）。余量加在旧窗口**关闭之后** —— 提前发只会落进旧窗口，什么也开启不了。还没有成功记录时，会立即发一条作为首个锚点 —— 也可以用 `--start HH:MM` 把这个起点推后：该时刻之前不发射任何请求（今天已过则顺延到明天），越过它的第一个 tick 开锚，首次成功后该门槛自动清除。
 
 ```bash
 awewarm run my-plan                        # 1. 发一条最小请求并记下时间
@@ -162,7 +162,7 @@ awewarm config set my-plan --mode interval # 3. 滚动续期
 awewarm init                          # 交互式引导：扫描账号、选择调度、安装后台调度器
 awewarm discover                      # 纯读扫描本机 CLI 与登录态
 awewarm config add                    # 添加连接：本机账号或订阅 endpoint
-awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--anchor、--window
+awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--anchor、--start、--window
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径

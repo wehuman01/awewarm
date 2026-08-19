@@ -180,6 +180,9 @@ def interval_thaw_at(connection, conn_state):
 
 
 def _due_interval(connection, conn_state, now):
+    defer = parse_ts(conn_state.get("deferUntil"))
+    if defer is not None and now < defer:
+        return None
     thaw_at = interval_thaw_at(connection, conn_state)
     if thaw_at is not None and now < thaw_at:
         return None
@@ -229,6 +232,7 @@ def apply_user_anchor(conn_state, connection, reset_at):
     conn_state["lastError"] = None
     conn_state["consecutiveFailures"] = 0
     conn_state["intervalDisabledAt"] = None
+    conn_state["deferUntil"] = None
     conn_state["nextDueAt"] = iso(compute_next_due(connection, opened_at, jitter_seconds=0))
     _push_history(conn_state, opened_at, "user-anchor", "success", None)
 
@@ -248,6 +252,7 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True)
     conn_state["lastError"] = None
     conn_state["consecutiveFailures"] = 0
     conn_state["intervalDisabledAt"] = None
+    conn_state["deferUntil"] = None
     if kind == "fixed" and slot:
         day_key = now.strftime("%Y-%m-%d")
         slots = conn_state["completedSlots"].setdefault(day_key, [])
@@ -323,15 +328,20 @@ def next_due(connection, conn_state, now):
                     break
             day += timedelta(days=1)
     if mode == "interval":
+        defer = parse_ts(conn_state.get("deferUntil"))
         thaw_at = interval_thaw_at(connection, conn_state)
         if thaw_at is not None and now < thaw_at:
+            if defer is not None and defer > thaw_at:
+                thaw_at = defer
             candidates.append((thaw_at, "interval (probing after pause)"))
         elif _last_success(conn_state) is None:
-            candidates.append((now, "interval (first anchor)"))
+            candidates.append((defer or now, "interval (first anchor)"))
         else:
             due = parse_ts(conn_state.get("nextDueAt"))
             if due is None:
                 due = compute_next_due(connection, _last_success(conn_state), jitter_seconds=0)
+            if defer is not None and defer > due:
+                due = defer
             candidates.append((due, "interval"))
     if not candidates:
         return None, None

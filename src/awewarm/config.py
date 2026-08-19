@@ -89,6 +89,7 @@ def default_conn_state():
         "consecutiveFailures": 0,
         "intervalDisabledAt": None,
         "nextDueAt": None,
+        "deferUntil": None,
         "completedSlots": {},
         "skippedSlots": {},
         "history": [],

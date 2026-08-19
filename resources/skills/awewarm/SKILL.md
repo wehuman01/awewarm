@@ -20,7 +20,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Category | Commands |
 |---|---|
 | Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm update --check` |
-| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--window`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
+| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 
@@ -68,7 +68,7 @@ Gating rule: `interval` is locked until the window is verified or user-confirmed
 awewarm status
 ```
 
-Per connection: mode, window, last activation, next due moment; last line shows whether the background scheduler is installed. `awewarm status <id>` shows one connection in detail (transport, evidence, fixed times). `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
+Per connection: mode, schedule line (fixed times in fixed mode; window in interval mode), last activation, next due moment; last line shows whether the background scheduler is installed. `awewarm status <id>` shows one connection in detail (transport, evidence, plus the schedule info the summary omits). `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
 
 ### Change fixed times
 
@@ -101,6 +101,14 @@ awewarm config set <id> --anchor HH:MM
 ```
 
 Tells awewarm when the current window closes; renewal starts right after it instead of firing inside it. No request is sent.
+
+### Defer interval's first fire
+
+```bash
+awewarm config set <id> --start HH:MM
+```
+
+One-time gate: no request fires before that moment (today, or tomorrow if it has passed) — covers the first anchor and any stale chain due. The first tick past it opens the chain; the gate clears on the first success (`--anchor` clears it too). Requires interval mode; combine with the switch: `awewarm config set <id> --mode interval --start HH:MM`.
 
 ### Remove a connection
 

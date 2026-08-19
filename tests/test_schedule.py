@@ -132,6 +132,48 @@ class IntervalTests(unittest.TestCase):
         conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
         self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "12:10")), [])
 
+    def test_start_gate_blocks_first_anchor(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        self.assertEqual(schedule.plan_actions(self.interval_conn(), conn_state, at(WEDNESDAY, "08:59")), [])
+
+    def test_start_gate_blocks_due_chain(self):
+        conn_state = default_conn_state()
+        conn = self.interval_conn()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "02:00"), "interval")
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))  # set after: success clears it
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "08:00")), [])
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "09:30"))
+        self.assertEqual(actions[0]["reason"], "interval")
+
+    def test_start_gate_clears_on_success(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        schedule.record_success(conn_state, self.interval_conn(), at(WEDNESDAY, "09:01"), "first-anchor")
+        self.assertIsNone(conn_state.get("deferUntil"))
+
+    def test_user_anchor_clears_start_gate(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        schedule.apply_user_anchor(conn_state, self.interval_conn(), at(WEDNESDAY, "13:27"))
+        self.assertIsNone(conn_state.get("deferUntil"))
+
+    def test_next_due_shows_deferred_first_anchor(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        moment, kind = schedule.next_due(self.interval_conn(), conn_state, at(WEDNESDAY, "08:00"))
+        self.assertEqual(moment, at(WEDNESDAY, "09:00"))
+        self.assertIn("first anchor", kind)
+
+    def test_next_due_chain_capped_by_gate(self):
+        conn_state = default_conn_state()
+        conn = self.interval_conn()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "02:00"), "interval")
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        moment, kind = schedule.next_due(conn, conn_state, at(WEDNESDAY, "08:00"))
+        self.assertEqual(moment, at(WEDNESDAY, "09:00"))
+        self.assertEqual(kind, "interval")
+
     def test_compute_next_due_formula(self):
         conn = self.interval_conn()
         success = at(WEDNESDAY, "07:05")

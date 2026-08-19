@@ -110,7 +110,7 @@ awewarm config set claude-code --mode fixed
 
 ### `interval` — rolling renewal
 
-After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor.
+After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor — unless you defer that start with `--start HH:MM`: no request fires before that moment (today, or tomorrow if it has passed), the first tick after it opens the chain, and the gate clears on the first success.
 
 ```bash
 awewarm run my-plan                        # 1. one minimal request, timestamped
@@ -173,7 +173,7 @@ A connection with `url` + `apiKey` is a subscription; one with `cli` is a local 
 awewarm init                          # interactive onboarding: scan accounts, pick schedules, install scheduler
 awewarm discover                      # read-only scan of local CLIs and logins
 awewarm config add                    # add a connection: a detected account or a subscription endpoint
-awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --anchor, --window
+awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --anchor, --start, --window
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations

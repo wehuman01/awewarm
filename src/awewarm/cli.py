@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -73,6 +73,14 @@ def _tz(config):
 
 def _now(config):
     return datetime.now(_tz(config))
+
+
+def _next_occurrence(hhmm, now):
+    """Next wall-clock occurrence of HH:MM: today when still ahead, else tomorrow."""
+    moment = schedule.slot_datetime(now.date(), hhmm, now.tzinfo)
+    if moment is not None and moment > now:
+        return moment
+    return schedule.slot_datetime(now.date() + timedelta(days=1), hhmm, now.tzinfo)
 
 
 def log_event(message):
@@ -645,14 +653,22 @@ def _status_block(conn_id, conn, state, now, detailed):
     window_line = window["status"] if window["status"] in ("verified", "user-confirmed") else "unknown"
     if window.get("durationMinutes"):
         window_line = f"{window['durationMinutes']} minutes, {window_line}"
-    click.echo(f"  Mode: {conn['schedule']['mode']}" + (" (interval paused after failures)" if degraded else ""))
-    click.echo(f"  Window: {window_line}" + (f" (evidence: {window['evidence']})" if detailed else ""))
+    fixed = conn["schedule"].get("fixed") or {}
+    times_line = f"{', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})"
+    mode = conn["schedule"]["mode"]
+    click.echo(f"  Mode: {mode}" + (" (interval paused after failures)" if degraded else ""))
+    if mode == "fixed":
+        click.echo(f"  Times: {times_line}")
+    else:
+        click.echo(f"  Window: {window_line}" + (f" (evidence: {window['evidence']})" if detailed else ""))
     if detailed:
         target = conn["transport"].get("baseUrl") or conn["transport"].get("cliCommand")
         click.echo(f"  Transport: {conn['transport']['kind']}" + (f" → {target}" if target else ""))
         click.echo(f"  Kind: {conn['kind']}, model: {conn['activation'].get('model') or 'cli default'}")
-        fixed = conn["schedule"].get("fixed") or {}
-        click.echo(f"  Fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
+        if mode == "fixed":
+            click.echo(f"  Window: {window_line} (evidence: {window['evidence']})")
+        else:
+            click.echo(f"  Fixed times: {times_line}")
     last = schedule.parse_ts(cs.get("lastActivationAt"))
     click.echo(f"  Last activation: {_fmt_moment(last, now)}")
     due_at, due_kind = schedule.next_due(conn, cs, now)
@@ -769,7 +785,7 @@ Offers detected local accounts plus a manual subscription endpoint."""
     _config_add()
 
 
-def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key):
+def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     slots = []
@@ -778,7 +794,7 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
             slots = _slots_proc(times)
         except ValueError as exc:
             die(str(exc))
-    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, window_minutes, api_key)):
+    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key)):
         _show_settings(conn_id, conn)
         return
     if api_key is not None:
@@ -819,6 +835,17 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
             die("that time already passed today — enter a later time today")
         schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
         state_changed = True
+    if start_hhmm is not None:
+        if not SLOT_RE.match(start_hhmm):
+            die("use HH:MM, e.g. 08:00")
+        if conn["schedule"]["mode"] != "interval":
+            die(f"{conn_id}: --start only defers interval activation\n"
+                f"  fix: run: awewarm config set {conn_id} --mode interval --start {start_hhmm}")
+        start_now = _now(config)
+        conn_state(state, conn_id)["deferUntil"] = schedule.iso(
+            _next_occurrence(start_hhmm, start_now)
+        )
+        state_changed = True
     if window_minutes is not None:
         if window_minutes <= 0:
             die("--window needs the duration in minutes you verified (greater than 0)")
@@ -846,6 +873,9 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
     if anchor_hhmm is not None:
         next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
         click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, anchor_now)} (interval)")
+    if start_hhmm is not None:
+        defer = schedule.parse_ts(conn_state(state, conn_id)["deferUntil"])
+        click.echo(f"✓ {conn_id} interval deferred until {_fmt_moment(defer, start_now)} — no request fires before then")
     if window_minutes is not None:
         click.echo(f"✓ Window recorded as {window_minutes} minutes, user-confirmed.")
         if window_notice:
@@ -864,13 +894,14 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
 @click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
 @click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection.")
 @click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
+@click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer interval activation until this time (today, or tomorrow if passed).")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
-def config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key):
+def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
-    _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key)
+    _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key)
 
 
 def _config_remove(connection):
@@ -1158,7 +1189,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
     if user_confirm:
         if not duration or duration <= 0:
             die("--user-confirm needs --duration <minutes> (the window length you verified)")
-        _config_set(connection, None, None, None, None, None, duration, None)
+        _config_set(connection, None, None, None, None, None, None, duration, None)
         return
     if confirm:
         _activate_now(connection, reset_due=True)
@@ -1187,7 +1218,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
 def legacy_enable(connection, mode):
     """Legacy alias: config set <id> --on [--mode M]."""
     _moved(f"enable {connection}", f"config set {connection} --on")
-    _config_set(connection, None, None, mode, True, None, None, None)
+    _config_set(connection, None, None, mode, True, None, None, None, None)
 
 
 @cli.command("anchor", hidden=True)
@@ -1196,7 +1227,7 @@ def legacy_enable(connection, mode):
 def legacy_anchor(connection, reset_hhmm):
     """Legacy alias: config set <id> --anchor HH:MM."""
     _moved(f"anchor {connection}", f"config set {connection} --anchor {reset_hhmm}")
-    _config_set(connection, None, None, None, None, reset_hhmm, None, None)
+    _config_set(connection, None, None, None, None, reset_hhmm, None, None, None)
 
 
 @cli.command("disable", hidden=True)
@@ -1204,7 +1235,7 @@ def legacy_anchor(connection, reset_hhmm):
 def legacy_disable(connection):
     """Legacy alias: config set <id> --off."""
     _moved(f"disable {connection}", f"config set {connection} --off")
-    _config_set(connection, None, None, None, False, None, None, None)
+    _config_set(connection, None, None, None, False, None, None, None, None)
 
 
 @cli.command("times", hidden=True)
@@ -1213,7 +1244,7 @@ def legacy_disable(connection):
 def legacy_times(connection, times):
     """Legacy alias: config set <id> --times HH:MM...."""
     _moved(f"times {connection}", f"config set {connection} --times HH:MM...")
-    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None)
+    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None, None)
 
 
 @cli.command("remove", hidden=True)

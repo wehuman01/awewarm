@@ -2,7 +2,7 @@
 
 ## v0.3.5
 
-`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
+`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, defers interval's first fire with `--start`, retunes `status` to show the active schedule, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
 
 ### hybrid mode removed — fixed and interval only
 
@@ -15,6 +15,14 @@ Three scheduling modes collapsed to two. The combination mode was the source of 
 ### pmset wake removal (macOS)
 
 The launchd `StartCalendarInterval` entries cover every fixed slot at its exact time with no sudo; the pmset `wakeorpoweron` fallback covered only the earliest slot, needed sudo, and duplicated schedule state. It is removed. `awewarm update`, `scheduler install`, and `scheduler uninstall` cancel a pmset repeat left behind by earlier versions — only if it is still the one awewarm set, and a failed cancel (no sudo password) is retried by the next of those commands. If the state record was already lost, cancel manually: `sudo pmset repeat cancel` (safe when awewarm's is the only repeating event). Calendar entries now fire every day regardless of the slot's day rule; the tick applies the day rule, so a weekend wake for a weekday-only slot is a no-op. `schedule.wakeLeadMinutes` and `scheduler install --wake/--no-wake` are gone. A fully shut-down Mac no longer auto-boots; the first tick after power-on still catches up slots inside the catch-up window.
+
+### Status shows the active schedule
+
+`awewarm status` now prints the schedule line that actually drives the connection. Fixed mode shows `Times: 06:19, 11:24, 16:29, 21:34 (every-day)` — the window said nothing about when fixed mode fires. Interval mode keeps `Window: 300 minutes, user-confirmed`, since the window is its renewal clock. The detailed view (`status <id>`) still shows the other one, with evidence.
+
+### Interval start gate (`--start`)
+
+`config set <id> --start HH:MM` defers interval activation: no request fires before that moment — not the first anchor of a fresh connection, not a renewal whose due has passed, and not a stale `nextDueAt` left over from mode switches. The time resolves to the next occurrence (today when still ahead, otherwise tomorrow), the first tick past it opens the chain, and the gate clears on the first success. `--anchor` clears it too, since anchoring seeds the whole chain explicitly. `--start` requires interval mode (the effective mode after any `--mode` flag in the same call), matching `--anchor`'s strictness; `status` shows the deferred moment as the next due.
 
 ## v0.3.1
 

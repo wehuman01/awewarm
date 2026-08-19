@@ -544,8 +544,31 @@ class StatusTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Claude Code (claude-code-main) — connected", result.output)
         self.assertIn("Mode: fixed", result.output)
-        self.assertIn("300 minutes, user-confirmed", result.output)
+        self.assertIn("Times: 06:35 (weekday)", result.output)
+        self.assertNotIn("Window:", result.output)
         self.assertIn("Scheduler: not installed", result.output)
+
+    def test_status_fixed_detail_keeps_window(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["status", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Times: 06:35 (weekday)", result.output)
+        self.assertIn("Window: 300 minutes, user-confirmed (evidence: user-confirmed)", result.output)
+
+    def test_status_interval_shows_window_not_times(self):
+        write_config(account_connection(mode="interval"))
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Mode: interval", result.output)
+        self.assertIn("Window: 300 minutes, user-confirmed", result.output)
+        self.assertNotIn("Times:", result.output)
+
+    def test_status_interval_detail_keeps_fixed_times(self):
+        write_config(account_connection(mode="interval"))
+        result = invoke(["status", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Window: 300 minutes, user-confirmed (evidence: user-confirmed)", result.output)
+        self.assertIn("Fixed times: 06:35 (weekday)", result.output)
 
     def test_status_single_connection_shows_detail(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
@@ -553,7 +576,7 @@ class StatusTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Transport: anthropic-messages", result.output)
         self.assertIn("evidence:", result.output)
-        self.assertIn("Fixed times: 06:35", result.output)
+        self.assertIn("Times: 06:35", result.output)
         self.assertIn("Next due:", result.output)
 
     def test_status_json_redacts_api_key_ref(self):
@@ -796,6 +819,62 @@ class AnchorTests(IsolatedTestCase):
         self.assertEqual(conn["schedule"]["mode"], "interval")
         cs = cfg.load_state()["connections"]["claude-code-main"]
         self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
+
+
+class StartTests(IsolatedTestCase):
+    def interval_conn(self):
+        return write_config(
+            plan_connection(mode="interval", fixed_at=(), window_status="user-confirmed", duration=300)
+        )
+
+    def test_start_defers_until_later_today(self):
+        self.interval_conn()
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--start", "13:27"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("deferred until", result.output)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(schedule.parse_ts(cs["deferUntil"]).strftime("%H:%M"), "13:27")
+
+    def test_start_rolls_to_tomorrow_when_passed(self):
+        self.interval_conn()
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--start", "06:00"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        defer = schedule.parse_ts(cs["deferUntil"])
+        self.assertEqual(defer.strftime("%m-%d %H:%M"), "08-20 06:00")
+
+    def test_start_rejects_bad_format(self):
+        self.interval_conn()
+        result = invoke(["config", "set", "claude-code-main", "--start", "25:00"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("HH:MM", result.output)
+
+    def test_start_requires_interval_mode(self):
+        write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
+        result = invoke(["config", "set", "claude-code-main", "--start", "23:00"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--mode interval", result.output)
+
+    def test_mode_and_start_combine_in_one_call(self):
+        write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--mode", "interval", "--start", "13:27"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["mode"], "interval")
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(schedule.parse_ts(cs["deferUntil"]).strftime("%H:%M"), "13:27")
 
 
 class ConfigSetWakeRefreshTests(IsolatedTestCase):
