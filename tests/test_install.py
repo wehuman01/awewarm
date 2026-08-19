@@ -253,5 +253,101 @@ class LinuxUninstallTests(IsolatedTestCase):
         self.assertFalse(install.uninstall_scheduler())
 
 
+class WakeSpecTests(IsolatedTestCase):
+    def _config(self, times, days="weekday", mode="fixed", enabled=True):
+        window = {
+            "status": "user-confirmed", "startRule": "unknown",
+            "durationMinutes": 300, "evidence": "user-confirmed",
+        } if mode == "interval" else {
+            "status": "unknown", "startRule": "unknown",
+            "durationMinutes": None, "evidence": "none",
+        }
+        cfg.save_config({"version": 2, "global": {}, "connections": {
+            "c1": {
+                "label": "c1", "kind": cfg.KIND_ACCOUNT, "enabled": enabled,
+                "auth": {"type": "local-cli", "status": "valid", "apiKeyRef": None},
+                "transport": {"kind": "claude-cli", "baseUrl": None, "cliCommand": "/usr/local/bin/claude"},
+                "window": window,
+                "activation": {"model": None, "prompt": cfg.DEFAULT_PROMPT, "maxTokens": cfg.DEFAULT_MAX_TOKENS},
+                "schedule": {"mode": mode, "fixed": {
+                    "at": times, "days": days,
+                    "catchUpWindowMinutes": cfg.DEFAULT_CATCHUP_MINUTES,
+                    "skipIfActivatedWithinMinutes": cfg.DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
+                }, "interval": {
+                    "graceSeconds": cfg.DEFAULT_GRACE_SECONDS,
+                    "jitterSeconds": cfg.DEFAULT_JITTER_SECONDS,
+                }},
+            }
+        }})
+
+    def test_earliest_slot_with_lead_and_weekday_letters(self):
+        self._config(["11:40", "06:00"])
+        self.assertEqual(install.build_wake_spec(cfg.load_config()), ("MTWRF", "05:55:00"))
+
+    def test_every_day_wins_when_any_connection_uses_it(self):
+        self._config(["06:00"], days="every-day")
+        self.assertEqual(install.build_wake_spec(cfg.load_config()), ("MTWRFSU", "05:55:00"))
+
+    def test_lead_wraps_past_midnight(self):
+        self._config(["00:03"])
+        self.assertEqual(install.build_wake_spec(cfg.load_config()), ("MTWRF", "23:58:00"))
+
+    def test_none_without_fixed_connections(self):
+        self._config(["06:00"], mode="interval")
+        self.assertIsNone(install.build_wake_spec(cfg.load_config()))
+
+    def test_disabled_connections_are_ignored(self):
+        self._config(["06:00"], enabled=False)
+        self.assertIsNone(install.build_wake_spec(cfg.load_config()))
+
+
+class WakeScheduleTests(IsolatedTestCase):
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_set_writes_state_on_success(self, run):
+        self.assertTrue(install.set_wake_schedule(("MTWRF", "05:55:00")))
+        self.assertEqual(
+            cfg.load_state()["wakeSchedule"],
+            {"type": install.WAKE_TYPE, "days": "MTWRF", "time": "05:55:00"},
+        )
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:2], ["sudo", "-n"])
+        self.assertIn("wakeorpoweron", argv)
+
+    @mock.patch("awewarm.install.subprocess.run")
+    def test_set_fails_after_both_sudo_attempts(self, run):
+        run.return_value = ok_run(returncode=1, stderr="no tty")
+        self.assertFalse(install.set_wake_schedule(("MTWRF", "05:55:00")))
+        self.assertEqual(run.call_count, 2)
+        self.assertNotIn("wakeSchedule", cfg.load_state())
+
+    def _recorded_state(self):
+        state = cfg.load_state()
+        state["wakeSchedule"] = {"type": install.WAKE_TYPE, "days": "MTWRF", "time": "05:55:00"}
+        cfg.save_state(state)
+
+    @mock.patch("awewarm.install._current_repeat_line", return_value="")
+    def test_cancel_without_state_is_none(self, line):
+        self.assertEqual(install.cancel_wake_schedule()[0], "none")
+
+    @mock.patch("awewarm.install._current_repeat_line", return_value="Repeating power event: wake at 05:55:00 every day (MTWRF)")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_cancel_matches_and_cancels(self, run, line):
+        self._recorded_state()
+        status, spec = install.cancel_wake_schedule()
+        self.assertEqual(status, "cancelled")
+        argv = run.call_args[0][0]
+        self.assertIn("cancel", argv)
+        self.assertNotIn("wakeSchedule", cfg.load_state())
+
+    @mock.patch("awewarm.install._current_repeat_line", return_value="Repeating power event: wake at 07:30:00 every day (MTWRF)")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_cancel_skips_user_owned_schedule(self, run, line):
+        self._recorded_state()
+        status, _ = install.cancel_wake_schedule()
+        self.assertEqual(status, "changed")
+        # no pmset mutation, only state cleanup
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -358,6 +358,12 @@ def timezone_name(config):
     return (config.get("global") or {}).get("timezone")
 
 
+def wake_when_asleep(config):
+    """Global macOS wake-schedule preference; defaults to on."""
+    value = (config.get("global") or {}).get("wakeWhenAsleep")
+    return True if value is None else bool(value)
+
+
 def slugify(label):
     slug = re.sub(r"[^a-z0-9]+", "-", (label or "").lower()).strip("-")
     return slug or "plan"

@@ -39,6 +39,7 @@ from .config import (
     state_path,
     timezone_name,
     unique_connection_id,
+    wake_when_asleep,
 )
 
 LOG_ROTATE_BYTES = 5 * 1024 * 1024
@@ -627,8 +628,7 @@ def init_command():
     for line in added:
         click.echo(line)
     if click.confirm("\nInstall the background scheduler now (runs `awewarm run` every minute)?", default=True):
-        plist = install.install_scheduler()
-        click.echo(f"✓ Scheduler installed: {plist}")
+        _scheduler_install()
     else:
         click.echo("Scheduler not installed — start it later with: awewarm scheduler install")
     click.echo("\nRun `awewarm status` anytime to see the plan.")
@@ -925,10 +925,45 @@ that one connection immediately — a real request that consumes plan quota."""
     _tick(dry_run)
 
 
-def _scheduler_install():
+def _wake_flow(wake):
+    """Offer the macOS pmset wake schedule; `wake` is a --wake/--no-wake override."""
+    if sys.platform != "darwin":
+        return
+    config = load_config()
+    spec = install.build_wake_spec(config)
+    if spec is None:
+        return
+    if wake is not None and wake != wake_when_asleep(config):
+        config.setdefault("global", {})["wakeWhenAsleep"] = wake
+        save_config(config)
+    enabled = wake if wake is not None else wake_when_asleep(config)
+    if enabled:
+        _wake_confirm_and_set(spec)
+
+
+def _wake_confirm_and_set(spec):
+    days, time = spec
+    click.echo(
+        f"\nmacOS wake guard: schedule {install.WAKE_TYPE} at {time} ({days})\n"
+        "  pro:  fixed-time warm fires on schedule even with the lid closed\n"
+        "  con:  needs sudo; on battery the Mac may fall back asleep shortly after"
+    )
+    if not click.confirm("Set this wake schedule?", default=True):
+        return
+    if install.set_wake_schedule(spec):
+        click.echo(f"✓ Wake schedule set: {days} {time}")
+    else:
+        click.echo(
+            "  sudo pmset failed — set it manually:\n"
+            f"  {install.manual_wake_command(spec)}"
+        )
+
+
+def _scheduler_install(wake=None):
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
     click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
+    _wake_flow(wake)
 
 
 def _scheduler_uninstall():
@@ -936,6 +971,17 @@ def _scheduler_uninstall():
         click.echo("✓ Scheduler removed")
     else:
         click.echo("Scheduler was not installed")
+    if sys.platform == "darwin":
+        status, spec = install.cancel_wake_schedule()
+        if status == "cancelled":
+            click.echo("✓ Wake schedule cancelled")
+        elif status == "changed":
+            click.echo("Wake schedule left in place (no longer matches what awewarm set)")
+        elif status == "failed":
+            click.echo(
+                "  could not cancel the wake schedule — run manually:\n"
+                f"  sudo pmset repeat cancel {install.WAKE_TYPE} {spec['days']} {spec['time']}"
+            )
 
 
 @cli.group()
@@ -946,9 +992,10 @@ The installed agent ticks once a minute."""
 
 
 @scheduler.command("install")
-def scheduler_install():
+@click.option("--wake/--no-wake", "wake", default=None, help="macOS only: also schedule a pmset wake so fixed times fire while asleep. Choice is remembered.")
+def scheduler_install(wake):
     """Install the background scheduler agent."""
-    _scheduler_install()
+    _scheduler_install(wake)
 
 
 @scheduler.command("uninstall")

@@ -202,13 +202,6 @@ To disable the background check:
 export AWEWARM_NO_UPDATE_CHECK=1
 ```
 
-## Support
-
-If awewarm saves your quota, consider supporting it:
-
-- ⭐ Star the repo — it helps others find it.
-- ☕ [Ko-fi](https://ko-fi.com/mugpeng) — buy me a coffee.
-
 ## Development
 
 ```bash
@@ -217,3 +210,17 @@ python3 -m unittest discover -s tests
 ```
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the engineering doctrine and [docs/CHANGELOG.md](docs/CHANGELOG.md) for release history.
+
+## Support
+
+If awewarm saves your quota, consider supporting it:
+
+- ⭐ Star the repo — it helps others find it.
+- ☕ [Ko-fi](https://ko-fi.com/mugpeng) — buy me a coffee.
+- 💬 WeChat — scan the QR code below.
+
+<p align="center">
+  <img src="assets/images/wechat-pay.jpg" alt="WeChat Pay" width="240">
+</p>
+
+> awewarm is free and open source. Sponsors keep it maintained — thank you.

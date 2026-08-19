@@ -24,10 +24,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import die, state_path
+from .config import SLOT_RE, die, load_state, save_state, state_path
 
 LABEL = "com.awewarm.scheduler"
 TICK_SECONDS = 60
+
+# macOS-only: pmset wake scheduling so fixed slots fire with the lid closed.
+WAKE_TYPE = "wakeorpoweron"
+WAKE_LEAD_MINUTES = 5
+DAY_LETTERS = {"weekday": "MTWRF", "every-day": "MTWRFSU"}
 
 
 def plist_path():
@@ -159,6 +164,92 @@ def _uninstall_launchd():
             ["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True, timeout=30
         )
     return was_present
+
+
+def build_wake_spec(config):
+    """Earliest fixed slot across enabled connections → (pmset days, HH:MM:SS).
+
+    pmset repeat holds a single repeating event, so the earliest slot wins the
+    wake time; later slots still fire on time when the Mac is awake and rely
+    on catch-up otherwise. Returns None when no enabled connection uses
+    fixed/hybrid scheduling.
+    """
+    earliest, every_day = None, False
+    for conn in (config.get("connections") or {}).values():
+        if not conn.get("enabled", True):
+            continue
+        schedule = conn.get("schedule") or {}
+        if schedule.get("mode") not in ("fixed", "hybrid"):
+            continue
+        fixed = schedule.get("fixed") or {}
+        if fixed.get("days") == "every-day":
+            every_day = True
+        for slot in fixed.get("at") or []:
+            if SLOT_RE.match(slot) and (earliest is None or slot < earliest):
+                earliest = slot
+    if earliest is None:
+        return None
+    hh, mm = (int(part) for part in earliest.split(":"))
+    minutes = (hh * 60 + mm - WAKE_LEAD_MINUTES) % (24 * 60)
+    days = DAY_LETTERS["every-day" if every_day else "weekday"]
+    return days, f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
+def manual_wake_command(spec):
+    days, time = spec
+    return f"sudo pmset repeat {WAKE_TYPE} {days} {time}"
+
+
+def _sudo_pmset(args):
+    """Run pmset with sudo; -n first so scripted installs fail fast instead of
+    hanging, plain sudo second so interactive installs can prompt."""
+    for prefix in (["sudo", "-n"], ["sudo"]):
+        result = subprocess.run(
+            [*prefix, "pmset", *args], capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def set_wake_schedule(spec):
+    """Register the pmset repeat wake and remember it in state.json."""
+    days, time = spec
+    if not _sudo_pmset(["repeat", WAKE_TYPE, days, time]):
+        return False
+    state = load_state()
+    state["wakeSchedule"] = {"type": WAKE_TYPE, "days": days, "time": time}
+    save_state(state)
+    return True
+
+
+def _current_repeat_line():
+    result = subprocess.run(
+        ["pmset", "-g", "sched"], capture_output=True, text=True, timeout=30
+    )
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        if line.startswith("Repeating power event"):
+            return line
+    return ""
+
+
+def cancel_wake_schedule():
+    """Undo the wake we set — but only if the live schedule is still ours.
+
+    Returns (status, spec): status is "none" (we never set one), "changed"
+    (the user replaced it — leave it alone), "cancelled", or "failed".
+    """
+    state = load_state()
+    spec = state.pop("wakeSchedule", None)
+    save_state(state)
+    if not spec:
+        return "none", None
+    if spec["time"] not in _current_repeat_line():
+        return "changed", spec
+    args = ["repeat", "cancel", spec["type"], spec["days"], spec["time"]]
+    return ("cancelled" if _sudo_pmset(args) else "failed"), spec
 
 
 def _schtasks(argv):
