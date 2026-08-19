@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.8
+
+`v0.2.8` adds the `awewarm anchor` command so users can tell awewarm when a window they opened by hand is expected to close, and improves base URL handling for versioned API paths.
+
+### Window anchoring
+
+`awewarm anchor <id> --reset HH:MM` seeds the renewal chain from a user-reported close time, so the next request lands just after the current window instead of burning an immediate anchor inside it. `awewarm init` and `awewarm add plan` also prompt for an optional reset time when the user confirms the window is already open.
+
+### Versioned base URL support
+
+Transport URL construction now uses `endpoint_url()`, which appends endpoint paths to bases ending in a version segment (`/v1`, `/v4`, ...) directly, and only adds `/v1` to bare hosts. This fixes mis-routed requests for backends whose published base URL already includes a version.
+
+### Prompt UX
+
+Protocol selection now uses the same numbered-choice prompt as the rest of the CLI, and `add plan` asks for "API / plan URL" with protocol-specific examples.
+
+### Highlights
+
+- **Add: `awewarm anchor`** — anchor interval/hybrid renewal to a user-reported window close without sending a request.
+- **Add: `apply_user_anchor()`** — seeds `lastActivationAt` as if a success happened at `reset_at - window_duration`, so `compute_next_due()` starts just after the open window.
+- **Fix: endpoint URL construction** — `endpoint_url()` handles versioned base URLs (`/v1`, `/v4`, ...) correctly; previously only `/v1` was special-cased.
+- **Improve: CLI prompts** — numbered-choice helper with visible default, protocol-first `add plan` flow, and base URL examples per protocol.
+
 ## v0.2.7
 
 `v0.2.7` renames subscription secrets from "token" to "API key" across the codebase and docs, adds a cold-gap warning when a user-confirmed duration is shorter than the verified window, and improves `add plan` UX with protocol-first prompting and base URL examples.
