@@ -661,6 +661,37 @@ def enable(connection, mode):
 
 @cli.command()
 @click.argument("connection")
+@click.option("--reset", "reset_hhmm", required=True, help="HH:MM today when the currently-open window closes.")
+def anchor(connection, reset_hhmm):
+    """Anchor renewal to a window that is already open (no request sent).
+
+    Tell awewarm when the current window closes and the renewal chain starts
+    right after it, instead of firing a first anchor inside the open window.
+    """
+    config = load_config()
+    conn_id, conn = _find_connection(config, connection)
+    window = conn["window"]
+    if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
+        die(f"{conn_id}: anchoring needs a known window duration\n"
+            f"  fix: run: awewarm verify {conn_id} --duration <minutes> --user-confirm")
+    if conn["schedule"]["mode"] not in ("interval", "hybrid"):
+        die(f"{conn_id}: anchoring only affects interval renewal\n"
+            f"  fix: run: awewarm enable {conn_id} --mode hybrid")
+    now = _now(config)
+    if not SLOT_RE.match(reset_hhmm):
+        die("use HH:MM, e.g. 13:27")
+    reset_at = schedule.slot_datetime(now.date(), reset_hhmm, now.tzinfo)
+    if reset_at is None or reset_at <= now:
+        die("that time already passed today — enter a later time today")
+    state = load_state()
+    schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
+    save_state(state)
+    next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
+    click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, now)} (interval)")
+
+
+@cli.command()
+@click.argument("connection")
 def disable(connection):
     """Stop scheduling a connection (config and state are kept)."""
     config = load_config()

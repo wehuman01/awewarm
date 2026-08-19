@@ -163,6 +163,7 @@ awewarm status                   # 人读摘要
 awewarm run [--dry-run]          # 一次调度 tick（后台调度器每分钟调用）
 awewarm activate <id> --confirm  # 立即发送一条真实请求
 awewarm verify <id> [--confirm] [--duration N --user-confirm]
+awewarm anchor <id> --reset HH:MM    # window already open? anchor renewal past its close
 awewarm enable <id> [--mode fixed|interval|hybrid]
 awewarm times <id> [HH:MM...]  # 查看或设置 fixed 时间点，如 06:35 11:40 16:45
 awewarm disable <id>

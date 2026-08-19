@@ -211,6 +211,7 @@ awewarm init                        # interactive onboarding
 awewarm add plan                    # interactive, prompts for API key
 awewarm activate <id> --confirm     # sends a real request
 awewarm verify <id> --confirm       # sends a real request
+awewarm anchor <id> --reset HH:MM   # anchor past an already-open window (no request)
 awewarm run                         # scheduler tick — may fire real requests
 ```
 

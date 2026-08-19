@@ -163,6 +163,7 @@ awewarm status                   # human-readable summary
 awewarm run [--dry-run]          # one scheduler tick (the background scheduler calls this)
 awewarm activate <id> --confirm  # send one real request now
 awewarm verify <id> [--confirm] [--duration N --user-confirm]
+awewarm anchor <id> --reset HH:MM    # window already open? anchor renewal past its close
 awewarm enable <id> [--mode fixed|interval|hybrid]
 awewarm times <id> [HH:MM...]  # show or set fixed times, e.g. 06:35 11:40 16:45
 awewarm disable <id>

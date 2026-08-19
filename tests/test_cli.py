@@ -464,3 +464,42 @@ class AddPlanUserAnchorTests(IsolatedTestCase):
         cs = state["connections"]["glm"]
         self.assertEqual(schedule.parse_ts(cs["lastActivationAt"]).strftime("%H:%M"), "08:27")
         self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
+
+
+class AnchorTests(IsolatedTestCase):
+    def anchored_conn(self):
+        conn = plan_connection(mode="interval", fixed_at=())
+        conn["window"] = {
+            "status": "user-confirmed", "startRule": "unknown",
+            "durationMinutes": 300, "evidence": "user-confirmed",
+        }
+        return write_config(conn)
+
+    def test_anchor_sets_next_due_after_reset(self):
+        self.anchored_conn()
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["anchor", "claude-code-main", "--reset", "13:27"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("anchored", result.output)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(schedule.parse_ts(cs["lastActivationAt"]).strftime("%H:%M"), "08:27")
+        self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
+
+    def test_anchor_rejects_past_time(self):
+        self.anchored_conn()
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 14, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["anchor", "claude-code-main", "--reset", "13:27"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("already passed", result.output)
+
+    def test_anchor_requires_interval_mode(self):
+        write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
+        result = invoke(["anchor", "claude-code-main", "--reset", "23:00"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--mode hybrid", result.output)
