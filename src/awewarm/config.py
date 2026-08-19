@@ -33,7 +33,7 @@ START_RULES = (
     "rolling-usage",
     "unknown",
 )
-SCHEDULE_MODES = ("fixed", "interval", "hybrid")
+SCHEDULE_MODES = ("fixed", "interval")
 DAY_RULES = ("weekday", "every-day")
 AUTH_STATUSES = ("valid", "missing", "expired", "unknown")
 
@@ -132,10 +132,14 @@ def load_config(path=None):
         # Legacy nested files are already the runtime shape; rewrite as v2.
         runtime = data
         runtime["version"] = CONFIG_VERSION
+        _migrate_hybrid_nested(runtime)
         _write_json(path or config_path(), _compact_config(runtime))
         return runtime
     if version != CONFIG_VERSION:
         die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm update")
+
+    if _migrate_hybrid_flat(data):
+        _write_json(path or config_path(), data)
 
     global_cfg = data.get("global") or {}
     if "wakeWhenAsleep" in global_cfg:
@@ -164,6 +168,24 @@ def load_config(path=None):
             for conn_id, conn in data["connections"].items()
         },
     }
+
+
+def _migrate_hybrid_flat(data):
+    """v2 flat config: hybrid was removed; map it to fixed (times already set)."""
+    changed = False
+    for conn in data.get("connections", {}).values():
+        if isinstance(conn, dict) and conn.get("mode") == "hybrid":
+            conn["mode"] = "fixed"
+            changed = True
+    return changed
+
+
+def _migrate_hybrid_nested(runtime):
+    """v1 nested config: same migration on the runtime shape."""
+    for conn in runtime.get("connections", {}).values():
+        sched = conn.get("schedule") if isinstance(conn, dict) else None
+        if isinstance(sched, dict) and sched.get("mode") == "hybrid":
+            sched["mode"] = "fixed"
 
 
 def _expand_conn(conn_id, flat):
@@ -240,7 +262,7 @@ def _compact_conn(conn):
     schedule = conn.get("schedule") or {}
     flat["mode"] = schedule.get("mode") or "fixed"
     fixed = schedule.get("fixed") or {}
-    if schedule.get("mode") in ("fixed", "hybrid") or fixed.get("at"):
+    if schedule.get("mode") == "fixed" or fixed.get("at"):
         flat["times"] = list(fixed.get("at") or [DEFAULT_FIXED_AT])
         if fixed.get("days"):
             flat["days"] = fixed["days"]
@@ -338,7 +360,7 @@ def connection_errors(conn, conn_id="<connection>"):
         or not isinstance(window.get("durationMinutes"), int)
         or window["durationMinutes"] <= 0
     )
-    if schedule["mode"] in ("interval", "hybrid") and interval_locked:
+    if schedule["mode"] == "interval" and interval_locked:
         errors.append(
             f"{conn_id}: schedule.mode '{schedule['mode']}' needs a verified or user-confirmed window"
             " with durationMinutes > 0\n"
@@ -346,9 +368,9 @@ def connection_errors(conn, conn_id="<connection>"):
         )
 
     fixed = schedule.get("fixed")
-    if schedule["mode"] in ("fixed", "hybrid"):
+    if schedule["mode"] == "fixed":
         if not isinstance(fixed, dict):
-            errors.append(f"{conn_id}: schedule.fixed is required for fixed/hybrid mode")
+            errors.append(f"{conn_id}: schedule.fixed is required for fixed mode")
         else:
             at = fixed.get("at")
             if not isinstance(at, list) or not at or not all(SLOT_RE.match(s) for s in at):
@@ -362,9 +384,9 @@ def connection_errors(conn, conn_id="<connection>"):
             if not isinstance(schedule.get("wakeWhenAsleep", True), bool):
                 errors.append(f"{conn_id}: schedule.wakeWhenAsleep must be a boolean")
     interval = schedule.get("interval")
-    if schedule["mode"] in ("interval", "hybrid"):
+    if schedule["mode"] == "interval":
         if not isinstance(interval, dict):
-            errors.append(f"{conn_id}: schedule.interval is required for interval/hybrid mode")
+            errors.append(f"{conn_id}: schedule.interval is required for interval mode")
         else:
             for key in ("graceSeconds", "jitterSeconds"):
                 value = interval.get(key)

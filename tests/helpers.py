@@ -37,7 +37,7 @@ class IsolatedTestCase(unittest.TestCase):
                 os.environ[key] = value
 
 
-def account_connection(mode="hybrid", window_status="verified", fixed_at=("06:35",), days="weekday"):
+def account_connection(mode="fixed", window_status="verified", fixed_at=("06:35",), days="weekday"):
     verified = window_status == "verified"
     return {
         "label": "Claude Code",

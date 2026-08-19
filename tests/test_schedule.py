@@ -150,29 +150,22 @@ class IntervalTests(unittest.TestCase):
             self.assertTrue(base <= due <= base + timedelta(seconds=30))
 
 
-class HybridTests(unittest.TestCase):
-    def test_fixed_due_suppresses_interval_same_tick(self):
+class ModeSeparationTests(unittest.TestCase):
+    def test_fixed_mode_ignores_interval_renewal(self):
+        # a past success does not chain anything in fixed mode: nextDueAt stays
+        # unset and slots fire purely by wall-clock
+        conn = account_connection(mode="fixed")
         conn_state = default_conn_state()
-        conn = account_connection(mode="hybrid")
-        # interval overdue (success 6h ago) AND fixed slot due now
-        schedule.record_success(conn_state, conn, at(WEDNESDAY, "00:00"), "interval")
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "00:00"), "manual")
+        self.assertIsNone(conn_state["nextDueAt"])
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:35"))
-        activates = [a for a in actions if a["type"] == "activate"]
-        self.assertEqual(len(activates), 1)
-        self.assertEqual(activates[0]["reason"], "fixed")
+        self.assertEqual([a["reason"] for a in actions], ["fixed"])
 
-    def test_fixed_success_rechains_interval(self):
-        conn_state = default_conn_state()
-        conn = account_connection(mode="hybrid")
-        moment = at(WEDNESDAY, "06:35")
-        schedule.record_success(conn_state, conn, moment, "fixed", slot="06:35")
-        due = schedule.parse_ts(conn_state["nextDueAt"])
-        self.assertIsNotNone(due)
-        # without jitter the anchor math must hold; jitter may add up to 30s
-        self.assertTrue(
-            moment + timedelta(minutes=300, seconds=75) <= due
-            <= moment + timedelta(minutes=300, seconds=105)
-        )
+    def test_interval_mode_ignores_fixed_slots(self):
+        # a configured slot time alone must not fire in interval mode
+        conn = account_connection(mode="interval", fixed_at=("06:35",))
+        actions = schedule.plan_actions(conn, default_conn_state(), at(WEDNESDAY, "06:35"))
+        self.assertEqual([a["reason"] for a in actions], ["first-anchor"])
 
 
 class FailurePolicyTests(unittest.TestCase):
@@ -239,10 +232,8 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(due_at, at(date(2026, 8, 20), "06:35"))
 
     def test_next_due_ignores_already_skipped_slot(self):
-        # interval renewed at 06:30, so the 06:35 fixed slot got skipped as
-        # "recently-activated" — status must advertise the interval renewal,
-        # not a fixed slot that will never fire
-        conn = account_connection(mode="hybrid")
+        # interval mode never advertises fixed slots; renewal is the only due
+        conn = account_connection(mode="interval", fixed_at=("06:35",))
         conn_state = default_conn_state()
         schedule.record_success(conn_state, conn, at(WEDNESDAY, "06:30"), "interval")
         schedule.record_skip(conn_state, at(WEDNESDAY, "06:35"), "06:35", "recently-activated")
@@ -264,12 +255,11 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(due_at, now)
         self.assertIn("first anchor", kind)
 
-    def test_next_due_degraded_interval_omits_interval(self):
-        conn = account_connection(mode="hybrid")
+    def test_next_due_degraded_interval_returns_none(self):
+        conn = account_connection(mode="interval", fixed_at=())
         conn_state = default_conn_state()
         conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
-        due_at, kind = schedule.next_due(conn, conn_state, at(WEDNESDAY, "09:00"))
-        self.assertEqual(kind, "fixed")
+        self.assertEqual(schedule.next_due(conn, conn_state, at(WEDNESDAY, "09:00")), (None, None))
 
 
 if __name__ == "__main__":

@@ -110,7 +110,7 @@ class DiscoverCommandTests(IsolatedTestCase):
 class InitTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts")
     @mock.patch("awewarm.transport.send_activation")
-    def test_init_adds_claude_account_hybrid(self, send, discover_accounts):
+    def test_init_adds_claude_account_fixed(self, send, discover_accounts):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [
             claude_finding(),
@@ -126,18 +126,18 @@ class InitTests(IsolatedTestCase):
                 "builtinWindow": {"status": "unknown", "startRule": "unknown", "durationMinutes": None, "evidence": "none"},
             },
         ]
-        # manage? (enter=y) / mode (hybrid) / time / reset / grid (accept) / days / window open? no / install? no
+        # manage? (enter=y) / mode (fixed) / time / reset / grid (accept) / days / install? no
         result = invoke(["init"], input="\n\n\n\n\n\nn\nn\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         data = cfg.load_config()
         self.assertIn("claude-code", data["connections"])
         conn = data["connections"]["claude-code"]
-        self.assertEqual(conn["schedule"]["mode"], "hybrid")
+        self.assertEqual(conn["schedule"]["mode"], "fixed")
         self.assertEqual(conn["window"]["durationMinutes"], 300)
         # absolute path, not the bare name — launchd ticks can't resolve bare
         # names from user-local install dirs
         self.assertEqual(conn["transport"]["cliCommand"], "/Users/x/.local/bin/claude")
-        self.assertIn("mode hybrid", result.output)
+        self.assertIn("mode fixed", result.output)
         self.assertIn("Activation test passed", result.output)
         send.assert_called_once()
 
@@ -204,7 +204,7 @@ class ConfigAddMenuTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code"]
         self.assertEqual(conn["kind"], "account")
-        self.assertEqual(conn["schedule"]["mode"], "hybrid")
+        self.assertEqual(conn["schedule"]["mode"], "fixed")
         self.assertEqual(conn["transport"]["cliCommand"], "/Users/x/.local/bin/claude")
 
     @mock.patch("awewarm.discover.discover_accounts")
@@ -386,7 +386,7 @@ class AccountAddTestTests(IsolatedTestCase):
 
 class WindowSetTests(IsolatedTestCase):
     def test_set_without_flags_shows_settings(self):
-        write_config(account_connection(mode="hybrid"))
+        write_config(account_connection(mode="fixed"))
         with mock.patch("awewarm.transport.send_activation") as send:
             result = invoke(["config", "set", "claude-code-main"])
         self.assertEqual(result.exit_code, 0)
@@ -485,21 +485,21 @@ class ApiKeySetTests(IsolatedTestCase):
 
 class SetTimesTests(IsolatedTestCase):
     def test_set_multiple_times_sorted_and_deduped(self):
-        write_config(account_connection(mode="hybrid"))
+        write_config(account_connection(mode="fixed"))
         result = invoke(["config", "set", "claude-code-main", "--times", "16:45,06:35,16:45,11:40"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "11:40", "16:45"])
 
     def test_times_accepts_space_separated_values(self):
-        write_config(account_connection(mode="hybrid"))
+        write_config(account_connection(mode="fixed"))
         result = invoke(["config", "set", "claude-code-main", "--times", "16:45 06:35"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "16:45"])
 
     def test_invalid_time_dies_without_saving(self):
-        write_config(account_connection(mode="hybrid"))
+        write_config(account_connection(mode="fixed"))
         result = invoke(["config", "set", "claude-code-main", "--times", "6:35"])
         self.assertNotEqual(result.exit_code, 0)
         conn = cfg.load_config()["connections"]["claude-code-main"]
@@ -539,11 +539,11 @@ class StatusTests(IsolatedTestCase):
         self.assertIn("No connections yet", result.output)
 
     def test_status_shows_connection_summary(self):
-        write_config(account_connection(mode="hybrid"))
+        write_config(account_connection(mode="fixed"))
         result = invoke(["status"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Claude Code (claude-code-main) — connected", result.output)
-        self.assertIn("Mode: hybrid", result.output)
+        self.assertIn("Mode: fixed", result.output)
         self.assertIn("300 minutes, user-confirmed", result.output)
         self.assertIn("Scheduler: not installed", result.output)
 
@@ -638,7 +638,7 @@ class LegacyAliasTests(IsolatedTestCase):
         self.assertIn("config set", output_of(result))
 
     def test_legacy_times_sets_fixed_times(self):
-        write_config(account_connection(mode="hybrid"))
+        write_config(account_connection(mode="fixed"))
         result = invoke(["times", "claude-code-main", "06:35", "11:40"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code-main"]
@@ -782,7 +782,7 @@ class AnchorTests(IsolatedTestCase):
         write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
         result = invoke(["config", "set", "claude-code-main", "--anchor", "23:00"])
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("--mode hybrid", result.output)
+        self.assertIn("--mode interval", result.output)
 
     def test_mode_and_anchor_combine_in_one_call(self):
         write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
@@ -790,10 +790,10 @@ class AnchorTests(IsolatedTestCase):
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["config", "set", "claude-code-main", "--mode", "hybrid", "--anchor", "13:27"])
+            result = invoke(["config", "set", "claude-code-main", "--mode", "interval", "--anchor", "13:27"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code-main"]
-        self.assertEqual(conn["schedule"]["mode"], "hybrid")
+        self.assertEqual(conn["schedule"]["mode"], "interval")
         cs = cfg.load_state()["connections"]["claude-code-main"]
         self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
 
@@ -851,7 +851,7 @@ class DayGridTests(IsolatedTestCase):
     def test_reset_time_anchors_full_day_grid(self, send, discover_accounts):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding()]
-        # menu 1 / mode hybrid / times / reset 01:14 / grid accept / days / window open? no
+        # menu 1 / mode fixed / times / reset 01:14 / grid accept / days
         result = invoke(["config", "add"], input="1\n\n06:00\n01:14\n\n\n\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code"]
@@ -866,7 +866,7 @@ class DayGridTests(IsolatedTestCase):
     def test_declined_grid_keeps_entered_time(self, send, discover_accounts):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding()]
-        # menu 1 / mode hybrid / times / reset skipped / grid declined / days / window open? no
+        # menu 1 / mode fixed / times / reset skipped / grid declined / days
         result = invoke(["config", "add"], input="1\n\n06:00\n\nn\n\n\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code"]
@@ -875,16 +875,13 @@ class DayGridTests(IsolatedTestCase):
 
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.transport.send_activation")
-    def test_plan_mode3_hybrid_offers_grid(self, send, _discover):
+    def test_plan_mode3_is_interval_without_fixed_prompts(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
-        # name/protocol/url/key/model / mode 3 / duration 300 / hybrid / times / reset / grid / days / window open? no
+        # name/protocol/url/key/model / mode 3 / duration 300 / window open? no
         result = invoke(["config", "add"], input=(
-            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n3\n300\n1\n\n01:14\n\n\n\n"
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n3\n300\nn\n"
         ))
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm"]
-        self.assertEqual(conn["schedule"]["mode"], "hybrid")
-        self.assertEqual(
-            conn["schedule"]["fixed"]["at"],
-            ["01:14", "06:19", "11:24", "16:29", "21:34"],
-        )
+        self.assertEqual(conn["schedule"]["mode"], "interval")
+        self.assertEqual(conn["window"]["durationMinutes"], 300)

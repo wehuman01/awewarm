@@ -189,10 +189,10 @@ def plan_actions(connection, conn_state, now):
     mode = connection["schedule"]["mode"]
     actions = []
     activate = None
-    if mode in ("fixed", "hybrid"):
+    if mode == "fixed":
         pending_skip, activate = _due_fixed(connection, conn_state, now)
         actions.extend(pending_skip)
-    if activate is None and mode in ("interval", "hybrid"):
+    if activate is None and mode == "interval":
         activate = _due_interval(connection, conn_state, now)
     if activate is not None:
         actions.append(activate)
@@ -238,7 +238,7 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True)
         slots = conn_state["completedSlots"].setdefault(day_key, [])
         if slot not in slots:
             slots.append(slot)
-    if reset_due and connection["schedule"]["mode"] in ("interval", "hybrid"):
+    if reset_due and connection["schedule"]["mode"] == "interval":
         conn_state["nextDueAt"] = iso(compute_next_due(connection, now))
     _push_history(conn_state, now, kind, "success", None)
 
@@ -282,7 +282,7 @@ def next_due(connection, conn_state, now):
     """Earliest future activation moment, for status display. None if none."""
     mode = connection["schedule"]["mode"]
     candidates = []
-    if mode in ("fixed", "hybrid"):
+    if mode == "fixed":
         fixed = connection["schedule"].get("fixed") or {}
         day = now.date()
         for _ in range(8):  # scan up to a week ahead for the next active day
@@ -305,7 +305,7 @@ def next_due(connection, conn_state, now):
                 if candidates:
                     break
             day += timedelta(days=1)
-    if mode in ("interval", "hybrid") and not conn_state.get("intervalDisabledAt"):
+    if mode == "interval" and not conn_state.get("intervalDisabledAt"):
         if _last_success(conn_state) is None:
             candidates.append((now, "interval (first anchor)"))
         else:

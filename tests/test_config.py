@@ -65,7 +65,7 @@ class RoundtripTests(IsolatedTestCase):
 
 
 class ValidationTests(unittest.TestCase):
-    def test_valid_account_hybrid_has_no_errors(self):
+    def test_valid_account_has_no_errors(self):
         self.assertEqual(config.connection_errors(account_connection(), "acct"), [])
 
     def test_valid_plan_fixed_with_unknown_window(self):
@@ -75,11 +75,10 @@ class ValidationTests(unittest.TestCase):
         errors = config.connection_errors(plan_connection(mode="interval"), "plan")
         self.assertTrue(any("--window" in e for e in errors))
 
-    def test_hybrid_locked_without_duration(self):
-        conn = account_connection(window_status="user-confirmed", mode="hybrid")
+    def test_interval_account_locked_without_duration(self):
+        conn = account_connection(window_status="user-confirmed", mode="interval")
         conn["window"]["durationMinutes"] = None
-        errors = config.connection_errors(conn, "acct")
-        self.assertTrue(errors)
+        self.assertTrue(config.connection_errors(conn, "acct"))
 
     def test_bad_slot_format_rejected(self):
         conn = account_connection(mode="fixed", fixed_at=("6:35",))
@@ -141,7 +140,7 @@ class V2FormatTests(IsolatedTestCase):
             "plan": {"url": "https://x.example/v4", "label": "glm"},
             "window": {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": 300, "evidence": "user-confirmed"},
             "activation": {"model": "GLM-5-Turbo", "prompt": "Reply with exactly: ok", "maxTokens": 4},
-            "schedule": {"mode": "hybrid",
+            "schedule": {"mode": "fixed",
                          "fixed": {"at": ["06:00"], "days": "every-day", "catchUpWindowMinutes": 45, "skipIfActivatedWithinMinutes": 30},
                          "interval": {"graceSeconds": 75, "jitterSeconds": 30}},
         }
@@ -155,7 +154,7 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(on_disk["connections"]["glm"], {
             "label": "glm", "url": "https://x.example/v4", "protocol": "openai-chat",
             "apiKey": "file:glm", "model": "GLM-5-Turbo", "windowMinutes": 300,
-            "mode": "hybrid", "times": ["06:00"], "days": "every-day",
+            "mode": "fixed", "times": ["06:00"], "days": "every-day",
             "schedule": {"wakeWhenAsleep": True},
         })
 
@@ -165,7 +164,7 @@ class V2FormatTests(IsolatedTestCase):
             "connections": {"glm": {
                 "label": "glm", "url": "https://x.example/v4", "apiKey": "$GLM_KEY",
                 "model": "GLM-5-Turbo", "windowMinutes": 300,
-                "mode": "hybrid", "times": ["06:00"], "days": "every-day",
+                "mode": "fixed", "times": ["06:00"], "days": "every-day",
             }},
         }))
         conn = config.load_config()["connections"]["glm"]
@@ -176,6 +175,30 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:00"])
         self.assertEqual(conn["schedule"]["fixed"]["catchUpWindowMinutes"], 45)
         self.assertEqual(config.connection_errors(conn, "glm"), [])
+
+    def test_hybrid_flat_migrated_to_fixed_on_load(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 2,
+            "connections": {"glm": {
+                "label": "glm", "url": "https://x.example/v4", "apiKey": "file:glm",
+                "model": "GLM-5-Turbo", "windowMinutes": 300,
+                "mode": "hybrid", "times": ["06:00"], "days": "every-day",
+            }},
+        }))
+        conn = config.load_config()["connections"]["glm"]
+        self.assertEqual(conn["schedule"]["mode"], "fixed")
+        # the file is rewritten so the migration sticks
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(on_disk["connections"]["glm"]["mode"], "fixed")
+
+    def test_hybrid_v1_nested_migrated_on_load(self):
+        v1_conn = self._v1_conn()
+        v1_conn["schedule"]["mode"] = "hybrid"
+        Path(config.config_path()).write_text(json.dumps(
+            {"version": 1, "global": {}, "connections": {"glm": v1_conn}}
+        ))
+        conn = config.load_config()["connections"]["glm"]
+        self.assertEqual(conn["schedule"]["mode"], "fixed")
 
     def test_v1_file_upgraded_in_place_on_load(self):
         v1 = {"version": 1, "global": {}, "connections": {"glm": self._v1_conn()}}

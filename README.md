@@ -31,7 +31,7 @@ awewarm manages two kinds of connections:
 - **Account** — your local `claude` / `codex` CLI logins. awewarm reuses their login state and sends one minimal headless request (`Reply with exactly: ok`). No credentials are stored.
 - **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + API key. The key is stored in `~/.config/awewarm/secrets.json` (chmod 600) so the background scheduler can always read it.
 
-It schedules those requests in three modes — `fixed`, `interval`, and `hybrid` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
+It schedules those requests in two modes — `fixed` and `interval` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
 
 ## Install
 
@@ -85,13 +85,12 @@ awewarm is part of a small tool family for AI coding agents:
 
 ## Scheduling Modes
 
-All modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm config set <id> --mode fixed|interval|hybrid`; see the current mode and next due moment with `awewarm status`.
+Both modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm config set <id> --mode fixed|interval`; see the current mode and next due moment with `awewarm status`. The old `hybrid` mode was removed — a fixed grid spaced one window apart already keeps windows chained all day, with calendar wake coverage interval cannot offer. Existing hybrid configs migrate to `fixed` on first load.
 
 | Mode | Fires when | Needs a verified window | Best for |
 | --- | --- | --- | --- |
-| `fixed` | fixed times each day | no | predictable hours; unverified plans |
+| `fixed` | fixed times each day | no | predictable hours; unverified plans; sleeping Macs |
 | `interval` | window + grace after each success | yes | 24/7 warmth on an always-on machine |
-| `hybrid` | both of the above | yes | recommended default |
 
 ### `fixed` — absolute times, always safe
 
@@ -124,17 +123,6 @@ A manual `run <id>` never shifts the renewal chain — the next due moment stays
 
 **Example** — an always-on machine you want warm around the clock, nights and weekends included. After 3 consecutive failures renewal pauses itself (status shows `degraded`) and resumes on the next success.
 
-### `hybrid` — fixed anchor + interval renewal (recommended)
-
-Both engines run together: interval keeps the chain unbroken, while fixed slots re-anchor it at deterministic times — so each workday still starts where you expect even if the machine slept through the interval due. A slot within 30 min of a recent interval success is skipped automatically.
-
-```bash
-awewarm config set claude-code --mode hybrid   # window already verified at init
-awewarm config set claude-code --times 06:35   # one anchor per workday morning
-```
-
-**Example** — a verified account with a 06:35 weekday anchor: interval renews all day (renewal ignores the weekday rule and continues over the weekend), and Monday 06:35 re-anchors the chain no matter what happened overnight.
-
 ### Sleeping Macs — calendar wake (macOS)
 
 `scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the launchd agent. launchd wakes the Mac from sleep — lid closed and deep sleep included — and runs the tick at the exact slot time. No sudo, and *every* slot is protected. Entries fire every day regardless of the slot's day rule: the tick itself decides whether today is an active day, so a weekend wake for a weekday-only slot is a harmless no-op. Editing times/mode updates the entries immediately; the first tick after any edit heals drift automatically.
@@ -158,7 +146,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
       "cli": "/usr/local/bin/claude",
       "model": "haiku",
       "windowMinutes": 300,
-      "mode": "hybrid",
+      "mode": "fixed",
       "times": ["06:35"],
       "days": "weekday"
     },
@@ -169,7 +157,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
       "apiKey": "file:glm",
       "model": "GLM-5-Turbo",
       "windowMinutes": 300,
-      "mode": "hybrid",
+      "mode": "fixed",
       "times": ["06:00"],
       "days": "every-day"
     }

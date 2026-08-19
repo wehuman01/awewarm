@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### hybrid mode removed — fixed and interval only
+
+Three scheduling modes collapsed to two. The combination mode was the source of the subtlest failures: two engines shared one anchor, a fixed slot landing inside a still-open interval window wasted a request and polluted the renewal chain, and status displayed a "next due" neither engine owned. A `fixed` grid spaced one window apart (see the setup grid below) already chains windows across the whole day and adds calendar wake coverage that interval cannot have; `interval` remains the always-on-machine choice. Existing `hybrid` configs (v1 and v2) migrate to `fixed` on first load — times and days are preserved. `config set --mode` now accepts only `fixed|interval`; anchoring (`--anchor`) is interval-only; the account/plan setup menus offer two choices; calendar wake entries are written for fixed connections only.
+
 ### Full-day slot grid offered at setup
 
 `config add` / `init` now know that one fixed time rarely covers a day. When the window duration is known (verified built-in accounts, or a plan whose window you just recorded), the fixed-times prompt asks for the plan's daily quota reset time and offers a full-day grid — one slot per window, spaced window + 5 min apart, anchored on the reset time so drift stays minimal (e.g. reset 01:14 + 300-min window → 01:14, 06:19, 11:24, 16:29, 21:34). Accepting the grid defaults days to every-day; declining keeps the single entered time with the usual weekday default. Windows under 2 h offer no grid (interval mode fits those better).

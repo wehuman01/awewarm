@@ -238,7 +238,7 @@ def calendar_entries(config):
         if not conn.get("enabled", True):
             continue
         schedule = conn.get("schedule") or {}
-        if schedule.get("mode") not in ("fixed", "hybrid"):
+        if schedule.get("mode") != "fixed":
             continue
         fixed = schedule.get("fixed") or {}
         if not fixed.get("wakeWhenAsleep", schedule.get("wakeWhenAsleep", True)):

@@ -335,16 +335,14 @@ def _add_account_flow(config, state, finding, confirm_first=True):
     if confirm_first and not click.confirm(f"Manage {finding['label']} with awewarm?", default=True):
         return None, False
     verified = finding["builtinWindow"]["status"] == "verified"
-    mode_choice = _choice_prompt(
+    mode_label = (
         f"Select {finding['label']} warm-up mode\n"
-        "  1. hybrid — fixed anchor + interval renewal (recommended)\n"
-        "  2. fixed — scheduled times only\n"
-        "  3. interval — renew continuously from last success",
-        ["1", "2", "3"],
-        "1" if verified else "2",
+        "  1. fixed — scheduled times (recommended)\n"
+        "  2. interval — renew continuously from last success"
     )
-    mode = {"1": "hybrid", "2": "fixed", "3": "interval"}[mode_choice]
-    if mode in ("fixed", "hybrid"):
+    mode_choice = _choice_prompt(mode_label, ["1", "2"] if verified else ["1"], "1")
+    mode = "interval" if mode_choice == "2" else "fixed"
+    if mode == "fixed":
         fixed_at, days = _prompt_fixed_settings(finding["builtinWindow"].get("durationMinutes"))
     else:
         fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
@@ -361,7 +359,7 @@ def _add_account_flow(config, state, finding, confirm_first=True):
             return None, False
     config["connections"][conn_id] = conn
     anchored = False
-    if mode in ("hybrid", "interval") and verified and click.confirm(
+    if mode == "interval" and verified and click.confirm(
         f"Is {finding['label']}'s window already open right now?", default=False
     ):
         reset_at = _prompt_window_reset(config)
@@ -449,12 +447,8 @@ def _add_plan_flow():
             "durationMinutes": duration,
             "evidence": "user-confirmed",
         }
-        mode_choice_2 = _choice_prompt(
-            "Select mode\n  1. hybrid (recommended)\n  2. interval only", ["1", "2"], "1"
-        )
-        mode = "hybrid" if mode_choice_2 == "1" else "interval"
-        if mode == "hybrid":
-            fixed_at, days = _prompt_fixed_settings(duration)
+        mode = "interval"
+        fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
         if click.confirm("Is this plan's window already open right now?", default=False):
             reset_at = _prompt_window_reset(config)
     else:
@@ -628,7 +622,7 @@ def _show_settings(conn_id, conn):
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
     click.echo(f"  window: {duration}")
-    click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode hybrid")
+    click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed")
 
 
 def _status_block(conn_id, conn, state, now, detailed):
@@ -640,7 +634,7 @@ def _status_block(conn_id, conn, state, now, detailed):
     else:
         word = "connected"
     cs = state["connections"].get(conn_id) or {}
-    degraded = cs.get("intervalDisabledAt") and conn["schedule"]["mode"] in ("interval", "hybrid")
+    degraded = cs.get("intervalDisabledAt") and conn["schedule"]["mode"] == "interval"
     if degraded and word == "connected":
         word = "degraded"
     click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}")
@@ -797,10 +791,10 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
     window_notice = None
 
     if slots:
-        if conn["schedule"]["mode"] not in ("fixed", "hybrid"):
+        if conn["schedule"]["mode"] != "fixed":
             click.echo(
                 f"note: {conn_id} is in {conn['schedule']['mode']} mode — "
-                f"these times apply after: awewarm config set {conn_id} --mode fixed|hybrid"
+                f"these times apply after: awewarm config set {conn_id} --mode fixed"
             )
         _ensure_fixed(conn)["at"] = slots
     if days:
@@ -814,9 +808,9 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
             die(f"{conn_id}: anchoring needs a known window duration\n"
                 f"  fix: run: awewarm config set {conn_id} --window <minutes>")
-        if conn["schedule"]["mode"] not in ("interval", "hybrid"):
+        if conn["schedule"]["mode"] != "interval":
             die(f"{conn_id}: anchoring only affects interval renewal\n"
-                f"  fix: run: awewarm config set {conn_id} --mode hybrid")
+                f"  fix: run: awewarm config set {conn_id} --mode interval")
         if not SLOT_RE.match(anchor_hhmm):
             die("use HH:MM, e.g. 13:27")
         anchor_now = _now(config)
@@ -856,7 +850,7 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
         click.echo(f"✓ Window recorded as {window_minutes} minutes, user-confirmed.")
         if window_notice:
             click.echo(window_notice)
-        click.echo(f"Interval renewal is unlocked — switch modes with: awewarm config set {conn_id} --mode hybrid")
+        click.echo(f"Interval renewal is unlocked — switch modes with: awewarm config set {conn_id} --mode interval")
     if api_key is not None:
         click.echo(f"✓ API key for {conn_id} stored in {keystore.secrets_path()}")
     if any(value is not None for value in (times, days, mode, enabled)):
