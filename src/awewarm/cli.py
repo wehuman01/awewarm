@@ -562,6 +562,11 @@ def _fire_all():
     not pushed forward. This is the user-facing "warm everything right now"
     verb — different from `tick`, which only fires what's due.
     """
+    # A pre-`tick` scheduler agent still invokes `run --force` once a minute;
+    # without this heal it would fire every connection on every pass and never
+    # pick up the new job definition (self-heal otherwise lives in `tick`).
+    if not sys.stdin.isatty():
+        install._maybe_self_heal_job(load_config())
     config = load_config()
     state = load_state()
     now = _now(config)

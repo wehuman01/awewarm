@@ -41,7 +41,7 @@ Requires Python ≥ 3.9:
 pip3 install awewarm
 ```
 
-The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm run`.
+The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm tick`.
 
 Env-var keys: paste an env ref like `${GLM_API_KEY}` instead of the key itself and awewarm stores only the reference (aweswitch convention). Note the background scheduler only sees variables from the shell that installed it — re-install the scheduler from a shell where the variable is set. On Windows, persist such vars with `setx` so scheduler tasks inherit them.
 
@@ -192,7 +192,7 @@ awewarm config remove <id>            # delete a connection, its state, and its 
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
-awewarm run [--dry-run]               # one scheduler tick (the background scheduler calls this)
+awewarm run                           # fire every enabled connection now, ignoring the schedule
 awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
 awewarm scheduler install / uninstall # background scheduler (launchd / Task Scheduler / systemd)
 awewarm update [--check]              # upgrade to the latest PyPI release

@@ -833,5 +833,20 @@ class ConfigSetWakeRefreshTests(IsolatedTestCase):
         refresh.assert_not_called()
 
 
+class RunStaleAgentHealTests(IsolatedTestCase):
+    @mock.patch("awewarm.transport.send_activation")
+    @mock.patch("awewarm.cli.install._maybe_self_heal_job")
+    def test_non_tty_fire_all_heals_stale_agent(self, heal, send):
+        # pre-`tick` scheduler agents invoke `run --force`; the heal replaces
+        # their job definition so they stop fire-all-ing every minute
+        send.return_value = {"ok": True, "detail": "ok"}
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["run", "--force"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        heal.assert_called_once()
+        # the fire itself still happens — run --force means fire all
+        send.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
