@@ -1007,8 +1007,10 @@ def _refresh_wake_after_edit():
 def _legacy_pmset_cleanup():
     """Cancel a pmset repeat wake left behind by awewarm < 0.4, if any.
 
-    The calendar entries replaced it; this runs only on scheduler
-    install/uninstall and is a no-op once the state key is gone.
+    The calendar entries replaced it; this runs after scheduler
+    install/uninstall and after `awewarm update`, and is a no-op once the
+    state key is gone. A failed cancel keeps the key, so the next of those
+    commands retries.
     """
     if sys.platform != "darwin":
         return
@@ -1084,6 +1086,7 @@ def _self_update(check_only):
         if install.scheduler_installed():
             install.install_scheduler()
             click.echo("Scheduler job refreshed to match the new command line.")
+        _legacy_pmset_cleanup()
         click.echo("Done. The scheduler picks up the new version on its next tick.")
     else:
         raise SystemExit(result.returncode)

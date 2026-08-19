@@ -22,6 +22,7 @@ session; `awewarm scheduler install` says so when systemctl cannot reach the bus
 """
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -288,33 +289,78 @@ def _sudo_pmset(args, interactive=True):
 
 
 def _current_repeat_line():
+    """Repeating-events block from `pmset -g sched` — header plus event lines,
+    '' when none. macOS prints this block differently across versions (older:
+    one line holding 'wake at 05:55:00'; newer: a 'Repeating power events:'
+    header with 'wakepoweron at 6:30AM every day' beneath), so callers match
+    normalized wall-clock times instead of raw strings.
+    """
     result = subprocess.run(
         ["pmset", "-g", "sched"], capture_output=True, text=True, timeout=30
     )
     if result.returncode != 0:
         return ""
-    for line in result.stdout.splitlines():
+    lines = result.stdout.splitlines()
+    for index, line in enumerate(lines):
         if line.startswith("Repeating power event"):
-            return line
+            block = [line]
+            for follow in lines[index + 1:]:
+                if not follow.strip() or follow.lstrip().startswith("Scheduled power"):
+                    break
+                block.append(follow)
+            return "\n".join(block)
     return ""
 
 
-def cancel_wake_schedule():
+def _normalize_wallclock(text):
+    """First HH:MM[:SS][AM/PM] in text → 'H:MM' on 24h, or None."""
+    match = re.search(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?", str(text), re.IGNORECASE)
+    if not match:
+        return None
+    hour, minute, meridiem = int(match.group(1)), match.group(2), (match.group(3) or "").upper()
+    if meridiem == "PM" and hour != 12:
+        hour += 12
+    if meridiem == "AM" and hour == 12:
+        hour = 0
+    return f"{hour}:{minute}"
+
+
+def _repeat_block_has_time(block, spec_time):
+    """True when the pmset repeating block contains the spec's wall-clock time."""
+    want = _normalize_wallclock(spec_time)
+    if not want:
+        return False
+    return any(
+        normalized == want
+        for normalized in map(
+            _normalize_wallclock,
+            re.findall(r"\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?", block, re.IGNORECASE),
+        )
+    )
+
+
+def cancel_wake_schedule(interactive=True):
     """One-time cleanup of the pmset repeat wake registered by awewarm < 0.4 —
-    cancelled only if the live schedule is still ours.
+    cancelled only if the live repeating event is still ours. The state key
+    survives a failed cancel so a later install/uninstall/update retries.
 
     Returns (status, spec): status is "none" (we never set one), "changed"
     (the user replaced it — leave it alone), "cancelled", or "failed".
     """
     state = load_state()
-    spec = state.pop("wakeSchedule", None)
-    save_state(state)
+    spec = state.get("wakeSchedule")
     if not spec:
         return "none", None
-    if spec["time"] not in _current_repeat_line():
+    if not _repeat_block_has_time(_current_repeat_line(), spec["time"]):
+        state.pop("wakeSchedule", None)
+        save_state(state)
         return "changed", spec
     args = ["repeat", "cancel", spec["type"], spec["days"], spec["time"]]
-    return ("cancelled" if _sudo_pmset(args) else "failed"), spec
+    if not _sudo_pmset(args, interactive):
+        return "failed", spec
+    state.pop("wakeSchedule", None)
+    save_state(state)
+    return "cancelled", spec
 
 
 def _schtasks(argv):

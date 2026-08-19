@@ -294,8 +294,39 @@ class LegacyPmsetCleanupTests(IsolatedTestCase):
         self._recorded_state()
         status, _ = install.cancel_wake_schedule()
         self.assertEqual(status, "changed")
+        self.assertNotIn("wakeSchedule", cfg.load_state())
         # no pmset mutation, only state cleanup
         run.assert_not_called()
+
+    @mock.patch("awewarm.install._current_repeat_line",
+                return_value="Repeating power events:\n\twakepoweron at 6:30AM every day")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_cancel_matches_modern_pmset_output(self, run, line):
+        # newer macOS prints the event on its own line as '6:30AM', not
+        # '06:30:00' inside the header line
+        state = cfg.load_state()
+        state["wakeSchedule"] = {"type": install.WAKE_TYPE, "days": "MTWRFSU", "time": "06:30:00"}
+        cfg.save_state(state)
+        status, _ = install.cancel_wake_schedule()
+        self.assertEqual(status, "cancelled")
+        self.assertNotIn("wakeSchedule", cfg.load_state())
+
+    @mock.patch("awewarm.install._current_repeat_line", return_value="Repeating power event: wake at 05:55:00 every day (MTWRF)")
+    @mock.patch("awewarm.install.subprocess.run")
+    def test_failed_cancel_keeps_key_for_retry(self, run, line):
+        run.return_value = ok_run(returncode=1, stderr="no tty")
+        self._recorded_state()
+        status, _ = install.cancel_wake_schedule()
+        self.assertEqual(status, "failed")
+        self.assertIn("wakeSchedule", cfg.load_state())
+
+    def test_wallclock_normalization(self):
+        self.assertEqual(install._normalize_wallclock("06:30:00"), "6:30")
+        self.assertEqual(install._normalize_wallclock("wakepoweron at 6:30AM every day"), "6:30")
+        self.assertEqual(install._normalize_wallclock("at 7:45PM"), "19:45")
+        self.assertEqual(install._normalize_wallclock("12:15AM"), "0:15")
+        self.assertEqual(install._normalize_wallclock("12:30PM"), "12:30")
+        self.assertIsNone(install._normalize_wallclock("no time here"))
 
 
 class CalendarEntriesTests(IsolatedTestCase):
