@@ -149,13 +149,13 @@ This scans for local `claude` / `codex` CLIs and their login state. No network r
 
 ## Step 4: Tell the user to run `awewarm init`
 
-`awewarm init` is interactive — it confirms each discovered account, picks a warm-up mode, sets fixed times, and installs the launchd scheduler. **Do not run it yourself.** Tell the user:
+`awewarm init` is interactive — it confirms each discovered account, picks a warm-up mode, sets fixed times, and installs the background scheduler. **Do not run it yourself.** Tell the user:
 
 > Run `awewarm init` in your terminal. It will list your local accounts, ask which ones to manage, and install the scheduler.
 
 For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + token), the command is `awewarm add plan` — also interactive (token prompt), so it also belongs in the user's terminal.
 
-macOS note: the scheduler installer is launchd-only for now. On Linux, tell the user to cron the tick: `* * * * * awewarm run`.
+Platform note: the scheduler installs on macOS (launchd) and Windows (Task Scheduler). On Windows there is no Keychain, so subscription tokens use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_TOKEN_<PLAN> "..."` (scheduler tasks inherit user env vars). On Linux, tell the user to cron the tick: `* * * * * awewarm run`.
 
 ---
 
@@ -175,7 +175,7 @@ On the user's request you may also:
 awewarm times <id> 06:35 11:40 16:45   # set fixed warm-up times
 awewarm enable <id> --mode hybrid      # switch mode (interval/hybrid need a verified window)
 awewarm disable <id>                   # pause while on vacation
-awewarm install                        # (re)install the launchd scheduler
+awewarm install                        # (re)install the background scheduler
 ```
 
 `interval` and `hybrid` modes stay locked until the window is verified or user-confirmed. If the user wants them, guide the three-step flow in the skill (`awewarm verify <id> --confirm`, observe the quota reset, `awewarm verify <id> --duration <minutes> --user-confirm`) — but the `--confirm` request itself consumes quota, so only run it when the user asks.
@@ -200,7 +200,7 @@ awewarm times <id> HH:MM...         # set fixed times
 awewarm enable <id> [--mode ...]    # enable / switch mode
 awewarm disable <id>                # pause scheduling
 awewarm remove <id>                 # delete connection + stored token (confirm first)
-awewarm install / uninstall         # launchd scheduler
+awewarm install / uninstall         # background scheduler (launchd / Task Scheduler)
 awewarm self-update                 # upgrade awewarm
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: awewarm
-description: "Use when helping users manage awewarm warm-up schedules — checking status, changing fixed times, switching fixed/interval/hybrid modes, verifying plan windows, or installing the launchd scheduler. 中文触发词：保温、保活、订阅窗口、warm-up、awewarm、固定时间、调度模式、5小时窗口。"
+description: "Use when helping users manage awewarm warm-up schedules — checking status, changing fixed times, switching fixed/interval/hybrid modes, verifying plan windows, or installing the background scheduler. 中文触发词：保温、保活、订阅窗口、warm-up、awewarm、固定时间、调度模式、5小时窗口。"
 ---
 
 # awewarm
@@ -46,7 +46,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 
 Users never hand-edit these files; commands mutate them. Read current state through `awewarm status` or `awewarm inspect <id> --json` (redacted).
 
-Subscription tokens live in the macOS Keychain (service `awewarm/<id>`) or as `${ENV_VAR}` references — never in the config file, never echoed. Account connections store no credentials at all; they reuse local `claude` / `codex` logins.
+Subscription tokens live in the macOS Keychain (service `awewarm/<id>`) or as `${ENV_VAR}` references — never in the config file, never echoed. On Windows there is no Keychain, so tokens are always `${ENV_VAR}` refs (persist with `setx`, which scheduler tasks inherit). Account connections store no credentials at all; they reuse local `claude` / `codex` logins.
 
 ## Scheduling Modes
 
@@ -66,7 +66,7 @@ Gating rule: `interval`/`hybrid` are locked until the window is verified or user
 awewarm status
 ```
 
-Per connection: mode, window, last activation, next due moment; last line shows whether the launchd scheduler is installed. `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
+Per connection: mode, window, last activation, next due moment; last line shows whether the background scheduler is installed. `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
 
 ### Change fixed times
 
@@ -112,5 +112,5 @@ awewarm remove <id>
 2. `init` and `add plan` belong in the user's terminal; they are interactive.
 3. Read state through `status` / `inspect`; never hand-edit config.json or state.json.
 4. Tokens are Keychain-only or `${ENV_VAR}` refs. Never ask the user to paste tokens into chat; never echo them.
-5. `awewarm run` is the launchd tick (once a minute). Don't run it manually to "test" — use `awewarm run --dry-run`.
+5. `awewarm run` is the scheduler tick (once a minute, launchd on macOS / Task Scheduler on Windows). Don't run it manually to "test" — use `awewarm run --dry-run`.
 6. If a command fails, report the exact command and error. Do not silently retry.

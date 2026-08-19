@@ -137,6 +137,28 @@ class SendCliTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("not found in PATH", result["detail"])
 
+    @mock.patch("awewarm.transport.subprocess.run")
+    @mock.patch("awewarm.transport.shutil.which")
+    def test_ps1_cli_routed_through_powershell(self, which, run):
+        # CreateProcess cannot run .ps1 scripts directly (PowerShell installs
+        # on Windows); they must go through powershell -File.
+        def fake_which(cmd):
+            if cmd == "claude":
+                return "C:\\bin\\claude.ps1"
+            return "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+
+        which.side_effect = fake_which
+        run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+        result = transport.send_activation(self._conn())
+        self.assertTrue(result["ok"])
+        argv = run.call_args[0][0]
+        self.assertEqual(
+            argv,
+            ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+             "-NoLogo", "-ExecutionPolicy", "Bypass", "-File", "C:\\bin\\claude.ps1",
+             "-p", "--model", "haiku", "Reply with exactly: ok"],
+        )
+
 
 class SendHttpTests(unittest.TestCase):
     @mock.patch("awewarm.transport.urllib.request.urlopen")

@@ -1,8 +1,14 @@
-"""launchd scheduler installation (macOS-only in v0.1).
+"""System scheduler installation: launchd on macOS, Task Scheduler on Windows.
 
 The agent simply invokes `awewarm run` once a minute; all scheduling state
-lives in state.json, so the plist itself is static. Linux users can cron the
-same command until the systemd installer lands.
+lives in state.json, so the task definition itself is static. Linux users
+can cron the same command until a systemd installer lands.
+
+Windows notes: schtasks tasks run in the user context and inherit user env
+vars (what `setx` writes), so unlike the launchd plist nothing needs to bake
+PATH or AWEWARM_* into the task; connections already store absolute CLI
+paths. The task's stdout is not captured by Task Scheduler — awewarm's own
+event log (`awewarm.log`) is the audit trail.
 """
 import os
 import plistlib
@@ -56,11 +62,36 @@ def resolve_exe():
 
 
 def install_scheduler():
-    if sys.platform != "darwin":
-        die(
-            "automatic scheduler install is macOS-only (launchd) for now\n"
-            "on Linux, cron the tick instead:\n  * * * * * awewarm run"
-        )
+    if sys.platform == "darwin":
+        return _install_launchd()
+    if sys.platform == "win32":
+        return _install_windows()
+    die(
+        "automatic scheduler install supports macOS (launchd) and Windows (Task Scheduler)\n"
+        "on Linux, cron the tick instead:\n  * * * * * awewarm run"
+    )
+
+
+def uninstall_scheduler():
+    if sys.platform == "darwin":
+        return _uninstall_launchd()
+    if sys.platform == "win32":
+        return _schtasks(["/Delete", "/F", "/TN", LABEL]).returncode == 0
+    die("scheduler uninstall supports macOS (launchd) and Windows (Task Scheduler)")
+
+
+def scheduler_installed():
+    if sys.platform == "darwin":
+        return plist_path().exists()
+    if sys.platform == "win32":
+        try:
+            return _schtasks(["/Query", "/TN", LABEL]).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return False
+
+
+def _install_launchd():
     plist = plist_path()
     plist.parent.mkdir(parents=True, exist_ok=True)
     with open(plist, "wb") as handle:
@@ -86,9 +117,7 @@ def install_scheduler():
     return plist
 
 
-def uninstall_scheduler():
-    if sys.platform != "darwin":
-        die("scheduler uninstall is macOS-only (launchd) for now")
+def _uninstall_launchd():
     plist = plist_path()
     uid = os.getuid()
     was_present = plist.exists()
@@ -104,5 +133,23 @@ def uninstall_scheduler():
     return was_present
 
 
-def scheduler_installed():
-    return plist_path().exists()
+def _schtasks(argv):
+    return subprocess.run(
+        ["schtasks", "/NH", *argv], capture_output=True, text=True, timeout=30
+    )
+
+
+def _install_windows():
+    exe = resolve_exe()
+    # The exe path is quoted inside /TR so paths with spaces survive.
+    result = _schtasks(
+        ["/Create", "/F", "/SC", "MINUTE", "/MO", str(TICK_SECONDS // 60),
+         "/TN", LABEL, "/TR", f'"{exe}" run']
+    )
+    if result.returncode != 0:
+        die(
+            f"schtasks failed to create the {LABEL} task\n{(result.stderr or result.stdout or '').strip()}\n"
+            "fix: resolve the schtasks error, or create the task manually:\n"
+            f'  schtasks /Create /SC MINUTE /TN {LABEL} /TR "{exe} run"'
+        )
+    return LABEL

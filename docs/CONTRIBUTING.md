@@ -27,9 +27,9 @@ Do not add a dependency unless it clearly earns its cost.
 These are facts and rules, not suggestions. Changes here need a spec update
 first.
 
-- **Tick model**: launchd invokes `awewarm run` once a minute. All scheduling
-  state lives in `state.json`; the process is stateless between ticks. There is
-  no daemon.
+- **Tick model**: the system scheduler (launchd on macOS, Task Scheduler on
+  Windows) invokes `awewarm run` once a minute. All scheduling state lives in
+  `state.json`; the process is stateless between ticks. There is no daemon.
 - **Pure planner**: `schedule.plan_actions(connection, conn_state, now)` does
   no I/O and takes an injected clock. Every scheduling rule lives there and is
   covered by tests. Do not put time decisions anywhere else.

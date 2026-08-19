@@ -120,5 +120,56 @@ class UninstallTests(IsolatedTestCase):
         self.assertFalse(install.uninstall_scheduler())
 
 
+class WindowsInstallTests(IsolatedTestCase):
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install.shutil.which", return_value="C:\\Users\\x\\Scripts\\awewarm.exe")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_install_creates_minute_task(self, run, which):
+        name = install.install_scheduler()
+        self.assertEqual(name, install.LABEL)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[0], "schtasks")
+        for flag in ("/Create", "/SC", "MINUTE", "/TN"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("/TN") + 1], install.LABEL)
+        # /TR embeds the exe in quotes so paths with spaces survive
+        self.assertEqual(argv[argv.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" run')
+        self.assertTrue(install.scheduler_installed())
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install.shutil.which", return_value="C:\\bin\\awewarm.exe")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run(returncode=1, stderr="access denied"))
+    def test_install_failure_dies_with_manual_command(self, run, which):
+        with self.assertRaises(SystemExit):
+            install.install_scheduler()
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install.shutil.which", return_value=None)
+    def test_install_without_entry_point_dies(self, which):
+        with self.assertRaises(SystemExit):
+            install.install_scheduler()
+
+
+class WindowsUninstallTests(IsolatedTestCase):
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install.subprocess.run")
+    def test_installed_detected_via_query(self, run):
+        run.return_value = ok_run()
+        self.assertTrue(install.scheduler_installed())
+        argv = run.call_args[0][0]
+        self.assertIn("/Query", argv)
+        self.assertIn(install.LABEL, argv)
+        run.return_value = ok_run(returncode=1)
+        self.assertFalse(install.scheduler_installed())
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
+    def test_uninstall_deletes_task(self, run):
+        self.assertTrue(install.uninstall_scheduler())
+        argv = run.call_args[0][0]
+        self.assertIn("/Delete", argv)
+        self.assertIn(install.LABEL, argv)
+
+
 if __name__ == "__main__":
     unittest.main()

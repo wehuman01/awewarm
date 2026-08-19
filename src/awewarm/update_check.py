@@ -1,9 +1,9 @@
 """Background update reminder for awewarm.
 
 Checks PyPI at most once a day (cached next to the config) and only for
-interactive commands — never for `awewarm run`, which launchd invokes every
-minute. Network failures back off for a few hours so an offline machine does
-not retry on every command.
+interactive commands — never for `awewarm run`, which the background scheduler
+invokes every minute. Network failures back off for a few hours so an offline
+machine does not retry on every command.
 """
 import json
 import os
@@ -64,7 +64,7 @@ def get_pypi_latest():
 def _should_skip(args):
     if any(flag in args for flag in ("-h", "--help", "-v", "-V", "--version")):
         return True
-    # `run` is the launchd tick (once a minute) and self-update is about to
+    # `run` is the scheduler tick (once a minute) and self-update is about to
     # replace the installed package — neither should hit PyPI.
     return bool(args) and args[0] in ("run", "self-update")
 

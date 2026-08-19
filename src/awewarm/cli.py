@@ -286,7 +286,7 @@ def init():
     save_config(config)
     for line in added:
         click.echo(line)
-    if click.confirm("\nInstall the launchd scheduler now (runs `awewarm run` every minute)?", default=True):
+    if click.confirm("\nInstall the background scheduler now (runs `awewarm run` every minute)?", default=True):
         plist = install.install_scheduler()
         click.echo(f"✓ Scheduler installed: {plist}")
     else:
@@ -401,10 +401,18 @@ def plan():
     if token_ref.startswith("keychain:"):
         click.echo(f"✓ Token stored in Keychain ({token_ref.split(':', 1)[1]})")
     else:
-        click.echo(
-            "⚠ Keychain unavailable — token NOT stored on disk.\n"
-            f"  Export it before awewarm runs:\n  export {token_ref[2:-1]}=<your-token>"
-        )
+        token_var = token_ref[2:-1]
+        if sys.platform == "win32":
+            click.echo(
+                "⚠ Keychain unavailable on Windows — token NOT stored on disk.\n"
+                f"  Persist it as a user env var (scheduler tasks inherit it):\n"
+                f"  setx {token_var} <your-token>"
+            )
+        else:
+            click.echo(
+                "⚠ Keychain unavailable — token NOT stored on disk.\n"
+                f"  Export it before awewarm runs:\n  export {token_var}=<your-token>"
+            )
     config["connections"][conn_id] = _plan_connection(
         conn_id, label, base_url, token_ref, plan_url, transport_kind, model,
         mode, window, fixed_at, days,
@@ -453,13 +461,13 @@ def status():
         click.echo(f"  Last activation: {_fmt_moment(last, now)}")
         due_at, due_kind = schedule.next_due(conn, cs, now)
         click.echo(f"  Next due: {_fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
-    click.echo(f"\nScheduler: {'enabled (launchd)' if install.scheduler_installed() else 'not installed — run: awewarm install'}")
+    click.echo(f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm install'}")
 
 
 @cli.command()
 @click.option("--dry-run", "dry_run", is_flag=True, help="Print planned actions without sending anything.")
 def run(dry_run):
-    """One scheduler tick: fire whatever is due right now (used by launchd)."""
+    """One scheduler tick: fire whatever is due right now (used by the background scheduler)."""
     config = load_config()
     state = load_state()
     now = _now(config)
@@ -651,15 +659,15 @@ def remove(connection):
 
 @cli.command("install")
 def install_cmd():
-    """Install the launchd scheduler agent (tick every minute)."""
-    plist = install.install_scheduler()
-    click.echo(f"✓ Scheduler installed: {plist}")
-    click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {state_path().parent / 'launchd.log'}")
+    """Install the background scheduler agent (tick every minute)."""
+    target = install.install_scheduler()
+    click.echo(f"✓ Scheduler installed: {target}")
+    click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
 
 
 @cli.command()
 def uninstall():
-    """Remove the launchd scheduler agent."""
+    """Remove the background scheduler agent."""
     if install.uninstall_scheduler():
         click.echo("✓ Scheduler removed")
     else:

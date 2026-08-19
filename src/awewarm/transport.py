@@ -113,6 +113,14 @@ def _extract_error(body_bytes):
     return _detail(json.dumps(payload))
 
 
+def _powershell():
+    return (
+        shutil.which("powershell")
+        or shutil.which("powershell.exe")
+        or "powershell.exe"
+    )
+
+
 def _send_cli(connection):
     transport = connection["transport"]
     command = transport.get("cliCommand") or ("claude" if transport["kind"] == "claude-cli" else "codex")
@@ -122,7 +130,12 @@ def _send_cli(connection):
     if resolved is None:
         return {"ok": False, "detail": f"{command} not found in PATH — install the CLI or set transport.cliCommand"}
     argv = activation_argv(connection)
-    argv[0] = resolved
+    if resolved.lower().endswith(".ps1"):
+        # CreateProcess cannot execute .ps1 scripts directly (PowerShell
+        # installs on Windows); route them through powershell -File.
+        argv = [_powershell(), "-NoLogo", "-ExecutionPolicy", "Bypass", "-File", resolved, *argv[1:]]
+    else:
+        argv[0] = resolved
     try:
         proc = subprocess.run(
             argv, capture_output=True, text=True,

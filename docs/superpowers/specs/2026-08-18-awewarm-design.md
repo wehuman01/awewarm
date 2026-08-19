@@ -40,7 +40,7 @@ src/awewarm/
 ├── transport.py   # minimal-request senders for 5 transports; pure builders + I/O senders
 ├── schedule.py    # pure time logic: fixed catch-up, interval renewal, state transitions
 ├── keychain.py    # token store: security CLI wrapper + ${ENV_VAR} fallback
-├── install.py     # launchd install/uninstall (macOS-only in v0.1)
+├── install.py     # scheduler install/uninstall: launchd (macOS) + schtasks (Windows)
 └── update_check.py  # background PyPI check for interactive commands (never on run ticks)
 ```
 

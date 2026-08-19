@@ -18,7 +18,7 @@
   <p>
     <img src="https://img.shields.io/badge/status-alpha-c96a3d?style=flat-square" alt="Status">
     <img src="https://img.shields.io/badge/install-pip-22C55E?style=flat-square" alt="pip install">
-    <img src="https://img.shields.io/badge/platform-macOS-334155?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-334155?style=flat-square" alt="Platform">
     <img src="https://img.shields.io/pepy/dt/awewarm?style=flat-square" alt="PyPI downloads">
     <img src="https://img.shields.io/github/stars/wehuman01/awewarm?style=flat-square" alt="GitHub stars">
   </p>
@@ -41,7 +41,9 @@ awewarm 管理两类连接：
 pip3 install awewarm
 ```
 
-调度器安装目前仅支持 macOS（launchd）。CLI 核心本身跨平台 —— Linux 上可以用 cron 触发 tick：`* * * * * awewarm run`。
+后台调度器支持 macOS（launchd）和 Windows（任务计划程序）。Linux 上可以用 cron 触发 tick：`* * * * * awewarm run`。
+
+Windows 提示：没有钥匙串，订阅 token 走 `${ENV_VAR}` 引用 —— 用 `setx AWEWARM_TOKEN_<PLAN> "..."` 持久化（计划任务会继承用户环境变量）。
 
 ## 快速开始
 
@@ -158,14 +160,14 @@ awewarm init                     # 交互式引导
 awewarm discover                 # 纯读扫描本机 CLI 与登录态
 awewarm add plan                 # 添加订阅 endpoint
 awewarm status                   # 人读摘要
-awewarm run [--dry-run]          # 一次调度 tick（launchd 每分钟调用）
+awewarm run [--dry-run]          # 一次调度 tick（后台调度器每分钟调用）
 awewarm activate <id> --confirm  # 立即发送一条真实请求
 awewarm verify <id> [--confirm] [--duration N --user-confirm]
 awewarm enable <id> [--mode fixed|interval|hybrid]
 awewarm times <id> [HH:MM...]  # 查看或设置 fixed 时间点，如 06:35 11:40 16:45
 awewarm disable <id>
 awewarm remove <id>
-awewarm install / uninstall      # launchd 调度器（macOS）
+awewarm install / uninstall      # 后台调度器（macOS launchd / Windows 任务计划程序）
 awewarm inspect [<id>] [--json]  # 脱敏能力信息
 awewarm config path              # 配置 / 状态 / 日志路径
 awewarm self-update [--check]    # 升级到最新 PyPI 版本
