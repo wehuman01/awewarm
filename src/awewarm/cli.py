@@ -157,14 +157,24 @@ def _positive_int_proc(value):
     return number
 
 
+def _choice_prompt(label, choices, default):
+    """Numbered-choice prompt: empty input accepts the default, shown as [default N]."""
+    suffix = f"\n[default {default}]" if "\n" in label else f" [default {default}]"
+    return click.prompt(
+        f"{label}{suffix}",
+        type=click.Choice(choices),
+        default=default,
+        show_default=False,
+        show_choices=False,
+    )
+
 def _prompt_fixed_settings():
     fixed_at = click.prompt(
         "Fixed activation times (one or more, comma-separated)",
         default=DEFAULT_FIXED_AT, value_proc=_slots_proc,
     )
-    days_choice = click.prompt(
-        "Days\n  1. weekday (Mon-Fri)\n  2. every day",
-        type=click.Choice(["1", "2"]), default="1", show_choices=False,
+    days_choice = _choice_prompt(
+        "Select days\n  1. weekday (Mon-Fri)\n  2. every day", ["1", "2"], "1"
     )
     return fixed_at, "weekday" if days_choice == "1" else "every-day"
 
@@ -272,14 +282,13 @@ def init():
             continue
         verified = finding["builtinWindow"]["status"] == "verified"
         proposed = "hybrid" if verified else "fixed"
-        mode_choice = click.prompt(
-            f"{finding['label']} warm-up mode\n"
+        mode_choice = _choice_prompt(
+            f"Select {finding['label']} warm-up mode\n"
             "  1. hybrid — fixed anchor + interval renewal (recommended)\n"
             "  2. fixed — scheduled times only\n"
             "  3. interval — renew continuously from last success",
-            type=click.Choice(["1", "2", "3"]),
-            default="1" if verified else "2",
-            show_choices=False,
+            ["1", "2", "3"],
+            "1" if verified else "2",
         )
         mode = {"1": "hybrid", "2": "fixed", "3": "interval"}[mode_choice]
         if mode in ("fixed", "hybrid"):
@@ -324,12 +333,7 @@ def plan():
     click.echo(
         "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
     )
-    protocol_choice = click.prompt(
-        "Select protocol [default 1]",
-        type=click.Choice(["1", "2", "3"]),
-        show_choices=False,
-        value_proc=lambda v: "1" if v.strip() == "" else v.strip(),
-    )
+    protocol_choice = _choice_prompt("Select protocol", ["1", "2", "3"], "1")
     transport_kind = PROTOCOL_CHOICES[protocol_choice]
     base_url = click.prompt(f"API / plan URL ({_base_url_example(transport_kind)})").strip()
     if not base_url.startswith(("http://", "https://")):
@@ -358,7 +362,7 @@ def plan():
         "  2. Verify interval renewal — send one request and confirm the window manually\n"
         "  3. Configure interval manually — you already know the window duration"
     )
-    mode_choice = click.prompt("Select", type=click.Choice(["1", "2", "3"]), default="1", show_choices=False)
+    mode_choice = _choice_prompt("Select warm-up mode", ["1", "2", "3"], "1")
     window = _unknown_window()
     mode = "fixed"
     fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
@@ -399,9 +403,8 @@ def plan():
             "durationMinutes": duration,
             "evidence": "user-confirmed",
         }
-        mode_choice_2 = click.prompt(
-            "Mode\n  1. hybrid (recommended)\n  2. interval only",
-            type=click.Choice(["1", "2"]), default="1", show_choices=False,
+        mode_choice_2 = _choice_prompt(
+            "Select mode\n  1. hybrid (recommended)\n  2. interval only", ["1", "2"], "1"
         )
         mode = "hybrid" if mode_choice_2 == "1" else "interval"
         if mode == "hybrid":
