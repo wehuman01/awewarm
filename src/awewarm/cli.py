@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""awewarm CLI: interactive onboarding plus the scheduler tick."""
+"""awewarm CLI: seven visible commands — init, discover, config, status, run,
+scheduler, update. Older command names still work as hidden aliases (removed
+in v1.0); `awewarm run` itself is fixed because installed scheduler agents
+invoke it verbatim."""
 import json
 import shutil
 import subprocess
@@ -168,6 +171,7 @@ def _choice_prompt(label, choices, default):
         show_choices=False,
     )
 
+
 def _prompt_window_reset(config):
     """Optional HH:MM today when the currently-open window closes (None if not open).
 
@@ -277,96 +281,55 @@ def _unknown_window():
     }
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, "-v", "--version", message="%(version)s")
-def cli():
-    """Keep AI coding-plan subscription windows warm with minimal requests."""
-
-
-@cli.command()
-def init():
-    """Interactive onboarding: detect local accounts and enable a schedule."""
-    click.echo("Welcome to awewarm.\n")
-    click.echo("Scanning local coding accounts...")
-    findings = discover.discover_accounts()
-    for finding in findings:
-        for line in discover.describe_finding(finding):
-            click.echo(line)
-    click.echo()
-    config = load_config()
-    state = load_state()
-    state_changed = False
-    added = []
-    for finding in findings:
-        if not finding["installed"]:
-            continue
-        provider = finding["provider"]
-        if not finding["authFound"]:
-            hint = "claude auth login" if provider == "claude-code" else "codex login"
-            click.echo(f"? {finding['label']} has no login yet — run `{hint}` first, then re-run: awewarm init")
-            continue
-        if not click.confirm(f"Manage {finding['label']} with awewarm?", default=True):
-            continue
-        verified = finding["builtinWindow"]["status"] == "verified"
-        proposed = "hybrid" if verified else "fixed"
-        mode_choice = _choice_prompt(
-            f"Select {finding['label']} warm-up mode\n"
-            "  1. hybrid — fixed anchor + interval renewal (recommended)\n"
-            "  2. fixed — scheduled times only\n"
-            "  3. interval — renew continuously from last success",
-            ["1", "2", "3"],
-            "1" if verified else "2",
-        )
-        mode = {"1": "hybrid", "2": "fixed", "3": "interval"}[mode_choice]
-        if mode in ("fixed", "hybrid"):
-            fixed_at, days = _prompt_fixed_settings()
-        else:
-            fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
-        conn_id = unique_connection_id(config, finding["label"])
-        conn = _account_connection(conn_id, finding, mode, fixed_at, days)
-        config["connections"][conn_id] = conn
-        if mode in ("hybrid", "interval") and verified and click.confirm(
-            f"Is {finding['label']}'s window already open right now?", default=False
-        ):
-            reset_at = _prompt_window_reset(config)
-            if reset_at is not None:
-                schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
-                state_changed = True
-                click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
-        added.append(f"✓ {finding['label']} added — mode {mode}, fixed {', '.join(fixed_at)} {days}")
-    if not added and not config["connections"]:
-        click.echo("No manageable local accounts found.")
-        click.echo("Add a subscription endpoint instead: awewarm add plan")
-        return
-    save_config(config)
-    if state_changed:
-        save_state(state)
-    for line in added:
-        click.echo(line)
-    if click.confirm("\nInstall the background scheduler now (runs `awewarm run` every minute)?", default=True):
-        plist = install.install_scheduler()
-        click.echo(f"✓ Scheduler installed: {plist}")
+def _scheduler_hint():
+    if install.scheduler_installed():
+        click.echo("Scheduler already installed — it will pick this up automatically.")
     else:
-        click.echo("Scheduler not installed — start it later with: awewarm install")
-    click.echo("\nRun `awewarm status` anytime to see the plan.")
+        click.echo("Start the scheduler with: awewarm scheduler install")
 
 
-@cli.command("discover")
-def discover_command():
-    """Scan local Claude Code / Codex CLIs and their login state (read-only)."""
-    for finding in discover.discover_accounts():
-        for line in discover.describe_finding(finding):
-            click.echo(line)
+def _add_account_flow(config, state, finding, confirm_first=True):
+    """Interactive prompts that turn one discovered local account into a connection.
+
+    Returns (summary line or None when declined, whether renewal was anchored).
+    """
+    if not finding["authFound"]:
+        hint = "claude auth login" if finding["provider"] == "claude-code" else "codex login"
+        click.echo(f"? {finding['label']} has no login yet — run `{hint}` first, then re-run: awewarm config add")
+        return None, False
+    if confirm_first and not click.confirm(f"Manage {finding['label']} with awewarm?", default=True):
+        return None, False
+    verified = finding["builtinWindow"]["status"] == "verified"
+    mode_choice = _choice_prompt(
+        f"Select {finding['label']} warm-up mode\n"
+        "  1. hybrid — fixed anchor + interval renewal (recommended)\n"
+        "  2. fixed — scheduled times only\n"
+        "  3. interval — renew continuously from last success",
+        ["1", "2", "3"],
+        "1" if verified else "2",
+    )
+    mode = {"1": "hybrid", "2": "fixed", "3": "interval"}[mode_choice]
+    if mode in ("fixed", "hybrid"):
+        fixed_at, days = _prompt_fixed_settings()
+    else:
+        fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
+    conn_id = unique_connection_id(config, finding["label"])
+    conn = _account_connection(conn_id, finding, mode, fixed_at, days)
+    config["connections"][conn_id] = conn
+    anchored = False
+    if mode in ("hybrid", "interval") and verified and click.confirm(
+        f"Is {finding['label']}'s window already open right now?", default=False
+    ):
+        reset_at = _prompt_window_reset(config)
+        if reset_at is not None:
+            schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
+            anchored = True
+            click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
+    return f"✓ {finding['label']} added — mode {mode}, fixed {', '.join(fixed_at)} {days}", anchored
 
 
-@cli.group()
-def add():
-    """Add a new connection."""
-
-
-@add.command()
-def plan():
-    """Add a subscription endpoint (protocol + API base URL + API key)."""
+def _add_plan_flow():
+    """Interactive flow for a manual subscription endpoint (protocol + URL + key)."""
     label = click.prompt("Plan name")
     click.echo(
         "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
@@ -432,7 +395,7 @@ def plan():
         click.echo(
             "When your plan's window/quota resets, note the elapsed minutes since that\n"
             f"request, then unlock interval renewal with:\n"
-            f"  awewarm verify {conn_id} --duration <minutes> --user-confirm"
+            f"  awewarm config set {conn_id} --window <minutes>"
         )
     elif mode_choice == "3":
         duration = click.prompt("Window duration in minutes", default=300, value_proc=_positive_int_proc, show_default=True)
@@ -480,55 +443,11 @@ def plan():
         save_state(state)
         click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
     click.echo(f"\n✓ {label} added ({conn_id}) in {mode} mode.")
-    if install.scheduler_installed():
-        click.echo("Scheduler already installed — it will pick this plan up automatically.")
-    else:
-        click.echo("Start the scheduler with: awewarm install")
+    _scheduler_hint()
 
 
-@cli.command()
-def status():
-    """Show a human-readable summary of every connection."""
-    config = load_config()
-    state = load_state()
-    now = _now(config)
-    if not config["connections"]:
-        click.echo("No connections yet.\nrun: awewarm init\n or: awewarm add plan")
-        return
-    for conn_id in sorted(config["connections"]):
-        conn = config["connections"][conn_id]
-        errors = connection_errors(conn, conn_id)
-        if not conn.get("enabled", True):
-            word = "disabled"
-        elif errors:
-            word = "invalid"
-        else:
-            word = "connected"
-        cs = state["connections"].get(conn_id) or {}
-        degraded = cs.get("intervalDisabledAt") and conn["schedule"]["mode"] in ("interval", "hybrid")
-        if degraded and word == "connected":
-            word = "degraded"
-        click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}")
-        if errors:
-            click.echo(f"  Problem: {errors[0]}")
-            continue
-        window = conn["window"]
-        window_line = window["status"] if window["status"] in ("verified", "user-confirmed") else "unknown"
-        if window.get("durationMinutes"):
-            window_line = f"{window['durationMinutes']} minutes, {window_line}"
-        click.echo(f"  Mode: {conn['schedule']['mode']}" + (" (interval paused after failures)" if degraded else ""))
-        click.echo(f"  Window: {window_line}")
-        last = schedule.parse_ts(cs.get("lastActivationAt"))
-        click.echo(f"  Last activation: {_fmt_moment(last, now)}")
-        due_at, due_kind = schedule.next_due(conn, cs, now)
-        click.echo(f"  Next due: {_fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
-    click.echo(f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm install'}")
-
-
-@cli.command()
-@click.option("--dry-run", "dry_run", is_flag=True, help="Print planned actions without sending anything.")
-def run(dry_run):
-    """One scheduler tick: fire whatever is due right now (used by the background scheduler)."""
+def _tick(dry_run):
+    """One scheduler pass over every enabled connection."""
     config = load_config()
     state = load_state()
     now = _now(config)
@@ -574,18 +493,18 @@ def run(dry_run):
         click.echo("nothing due")
 
 
-@cli.command()
-@click.argument("connection")
-@click.option("--confirm", is_flag=True, help="Actually send the request (it consumes plan quota).")
-def activate(connection, confirm):
-    """Send one real activation request now."""
+def _activate_now(target, confirm, dry_run=False, kind="manual"):
+    """Fire one connection immediately, outside its schedule."""
     if not confirm:
         die("activation sends a real request that consumes plan quota\nre-run with --confirm to proceed")
     config = load_config()
-    conn_id, conn = _find_connection(config, connection)
+    conn_id, conn = _find_connection(config, target)
+    if dry_run:
+        click.echo(f"[dry-run] would activate {conn_id} ({kind})")
+        return
     state = load_state()
     cs = conn_state(state, conn_id)
-    result = _execute_activation(conn, conn_id, cs, _now(config), "manual")
+    result = _execute_activation(conn, conn_id, cs, _now(config), kind)
     save_state(state)
     if result["ok"]:
         click.echo(f"✓ {conn_id} activated{': ' + result['detail'] if result['detail'] else ''}")
@@ -593,151 +512,261 @@ def activate(connection, confirm):
         die(f"activation failed: {result['detail']}")
 
 
-@cli.command()
-@click.argument("connection")
-@click.option("--confirm", is_flag=True, help="Send one real request and record its time.")
-@click.option("--duration", type=int, default=None, help="Window duration in minutes you verified by hand.")
-@click.option("--user-confirm", "user_confirm", is_flag=True, help="Mark the window as user-confirmed (unlocks interval).")
-def verify(connection, confirm, duration, user_confirm):
-    """Show window evidence; optionally measure or confirm the window."""
-    config = load_config()
-    conn_id, conn = _find_connection(config, connection)
-    window = conn["window"]
-    click.echo(f"Window status: {window['status']} (evidence: {window['evidence']})")
-    if window.get("durationMinutes"):
-        click.echo(f"Duration: {window['durationMinutes']} minutes, start rule: {window['startRule']}")
-    if user_confirm:
-        if not duration or duration <= 0:
-            die("--user-confirm needs --duration <minutes> (the window length you verified)")
-        notice = schedule.window_override_notice(window, duration)
-        conn["window"] = {
-            "status": "user-confirmed",
-            "startRule": window.get("startRule", "unknown"),
-            "durationMinutes": duration,
-            "evidence": "user-confirmed",
-        }
-        save_config(config)
-        click.echo(f"✓ Window recorded as {duration} minutes, user-confirmed.")
-        if notice:
-            click.echo(notice)
-        click.echo(f"Interval renewal is unlocked — switch modes with: awewarm enable {conn_id} --mode hybrid")
-        return
-    if confirm:
-        state = load_state()
-        cs = conn_state(state, conn_id)
-        now = _now(config)
-        result = _execute_activation(conn, conn_id, cs, now, "verify")
-        save_state(state)
-        if result["ok"]:
-            click.echo(f"✓ Request sent at {_fmt_moment(now, now)} — recorded.")
-        else:
-            die(f"request failed: {result['detail']}")
-        click.echo(
-            "Watch when your plan's window/quota resets, compute the elapsed minutes since\n"
-            f"that request, then record it:\n  awewarm verify {conn_id} --duration <minutes> --user-confirm"
-        )
-        return
-    click.echo(
-        "\nTo verify a window manually:\n"
-        f"  1. awewarm verify {conn_id} --confirm   (sends one minimal request)\n"
-        "  2. note when the plan's window/quota resets relative to that request\n"
-        f"  3. awewarm verify {conn_id} --duration <minutes> --user-confirm"
-    )
-
-
-@cli.command()
-@click.argument("connection")
-@click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
-def enable(connection, mode):
-    """Enable a connection, optionally switching its schedule mode."""
-    config = load_config()
-    conn_id, conn = _find_connection(config, connection)
-    conn["enabled"] = True
-    if mode:
-        conn["schedule"]["mode"] = mode
-    save_config(config)
-    click.echo(f"✓ {conn_id} enabled (mode: {conn['schedule']['mode']})")
-
-
-@cli.command()
-@click.argument("connection")
-@click.option("--reset", "reset_hhmm", required=True, help="HH:MM today when the currently-open window closes.")
-def anchor(connection, reset_hhmm):
-    """Anchor renewal to a window that is already open (no request sent).
-
-    Tell awewarm when the current window closes and the renewal chain starts
-    right after it, instead of firing a first anchor inside the open window.
-    """
-    config = load_config()
-    conn_id, conn = _find_connection(config, connection)
-    window = conn["window"]
-    if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
-        die(f"{conn_id}: anchoring needs a known window duration\n"
-            f"  fix: run: awewarm verify {conn_id} --duration <minutes> --user-confirm")
-    if conn["schedule"]["mode"] not in ("interval", "hybrid"):
-        die(f"{conn_id}: anchoring only affects interval renewal\n"
-            f"  fix: run: awewarm enable {conn_id} --mode hybrid")
-    now = _now(config)
-    if not SLOT_RE.match(reset_hhmm):
-        die("use HH:MM, e.g. 13:27")
-    reset_at = schedule.slot_datetime(now.date(), reset_hhmm, now.tzinfo)
-    if reset_at is None or reset_at <= now:
-        die("that time already passed today — enter a later time today")
-    state = load_state()
-    schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
-    save_state(state)
-    next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
-    click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, now)} (interval)")
-
-
-@cli.command()
-@click.argument("connection")
-def disable(connection):
-    """Stop scheduling a connection (config and state are kept)."""
-    config = load_config()
-    conn_id, conn = _find_connection(config, connection)
-    conn["enabled"] = False
-    save_config(config)
-    click.echo(f"✓ {conn_id} disabled — run: awewarm enable {conn_id}")
-
-
-@cli.command()
-@click.argument("connection")
-@click.argument("times", nargs=-1)
-def times(connection, times):
-    """Show or set the fixed activation times, e.g. 06:35 11:40 16:45."""
-    config = load_config()
-    conn_id, conn = _find_connection(config, connection)
-    fixed = conn["schedule"].get("fixed") or {}
-    if not times:
-        current = ", ".join(fixed.get("at") or []) or "none"
-        click.echo(f"Fixed times for {conn_id}: {current} ({fixed.get('days', 'weekday')})")
-        click.echo(f"Set them with: awewarm times {conn_id} 06:35 11:40 16:45")
-        return
-    slots = []
-    for value in times:
-        if not SLOT_RE.match(value):
-            die(f"time must look like 06:35 (got {value})")
-        if value not in slots:
-            slots.append(value)
-    if conn["schedule"]["mode"] not in ("fixed", "hybrid"):
-        click.echo(
-            f"note: {conn_id} is in {conn['schedule']['mode']} mode — "
-            f"these times apply after: awewarm enable {conn_id} --mode fixed|hybrid"
-        )
+def _ensure_fixed(conn):
     fixed = conn["schedule"].setdefault("fixed", {})
     fixed.setdefault("days", "weekday")
     fixed.setdefault("catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES)
     fixed.setdefault("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES)
-    fixed["at"] = sorted(slots)
+    return fixed
+
+
+def _show_settings(conn_id, conn):
+    fixed = conn["schedule"].get("fixed") or {}
+    window = conn["window"]
+    duration = f"{window['durationMinutes']} minutes, {window['status']}" if window.get("durationMinutes") else "unknown"
+    click.echo(f"Settings for {conn_id}:")
+    click.echo(f"  enabled: {'true' if conn.get('enabled', True) else 'false'}")
+    click.echo(f"  mode: {conn['schedule']['mode']}")
+    click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
+    click.echo(f"  window: {duration}")
+    click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode hybrid")
+
+
+def _status_block(conn_id, conn, state, now, detailed):
+    errors = connection_errors(conn, conn_id)
+    if not conn.get("enabled", True):
+        word = "disabled"
+    elif errors:
+        word = "invalid"
+    else:
+        word = "connected"
+    cs = state["connections"].get(conn_id) or {}
+    degraded = cs.get("intervalDisabledAt") and conn["schedule"]["mode"] in ("interval", "hybrid")
+    if degraded and word == "connected":
+        word = "degraded"
+    click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}")
+    if errors:
+        click.echo(f"  Problem: {errors[0]}")
+        return
+    window = conn["window"]
+    window_line = window["status"] if window["status"] in ("verified", "user-confirmed") else "unknown"
+    if window.get("durationMinutes"):
+        window_line = f"{window['durationMinutes']} minutes, {window_line}"
+    click.echo(f"  Mode: {conn['schedule']['mode']}" + (" (interval paused after failures)" if degraded else ""))
+    click.echo(f"  Window: {window_line}" + (f" (evidence: {window['evidence']})" if detailed else ""))
+    if detailed:
+        target = conn["transport"].get("baseUrl") or conn["transport"].get("cliCommand")
+        click.echo(f"  Transport: {conn['transport']['kind']}" + (f" → {target}" if target else ""))
+        click.echo(f"  Kind: {conn['kind']}, model: {conn['activation'].get('model') or 'cli default'}")
+        fixed = conn["schedule"].get("fixed") or {}
+        click.echo(f"  Fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
+    last = schedule.parse_ts(cs.get("lastActivationAt"))
+    click.echo(f"  Last activation: {_fmt_moment(last, now)}")
+    due_at, due_kind = schedule.next_due(conn, cs, now)
+    click.echo(f"  Next due: {_fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
+
+
+def _moved(old, new):
+    click.echo(f"note: `awewarm {old}` moved to `awewarm {new}` (legacy alias, removed in v1.0)", err=True)
+
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(__version__, "-v", "--version", message="%(version)s")
+def cli():
+    """Keep AI coding-plan subscription windows warm with minimal requests."""
+
+
+@cli.command("init")
+def init_command():
+    """Interactive onboarding: detect local accounts and enable a schedule."""
+    click.echo("Welcome to awewarm.\n")
+    click.echo("Scanning local coding accounts...")
+    findings = discover.discover_accounts()
+    for finding in findings:
+        for line in discover.describe_finding(finding):
+            click.echo(line)
+    click.echo()
+    config = load_config()
+    state = load_state()
+    added = []
+    state_changed = False
+    for finding in findings:
+        if not finding["installed"]:
+            continue
+        line, anchored = _add_account_flow(config, state, finding)
+        if line:
+            added.append(line)
+            state_changed = state_changed or anchored
+    if not added and not config["connections"]:
+        click.echo("No manageable local accounts found.")
+        click.echo("Add a subscription endpoint instead: awewarm config add")
+        return
     save_config(config)
-    click.echo(f"✓ Fixed times for {conn_id}: {', '.join(fixed['at'])}")
+    if state_changed:
+        save_state(state)
+    for line in added:
+        click.echo(line)
+    if click.confirm("\nInstall the background scheduler now (runs `awewarm run` every minute)?", default=True):
+        plist = install.install_scheduler()
+        click.echo(f"✓ Scheduler installed: {plist}")
+    else:
+        click.echo("Scheduler not installed — start it later with: awewarm scheduler install")
+    click.echo("\nRun `awewarm status` anytime to see the plan.")
 
 
-@cli.command()
+@cli.command("discover")
+def discover_command():
+    """Scan local Claude Code / Codex CLIs and their login state (read-only)."""
+    for finding in discover.discover_accounts():
+        for line in discover.describe_finding(finding):
+            click.echo(line)
+
+
+@cli.group()
+def config():
+    """Manage connections: add, set, remove, path."""
+
+
+def _config_add():
+    """Interactive add: pick a discovered local account or enter an endpoint."""
+    click.echo("Scanning local coding accounts...")
+    findings = discover.discover_accounts()
+    config = load_config()
+    state = load_state()
+    candidates = []
+    for finding in findings:
+        if not finding["installed"]:
+            continue
+        if not finding["authFound"]:
+            hint = "claude auth login" if finding["provider"] == "claude-code" else "codex login"
+            click.echo(f"? {finding['label']} has no login yet — run `{hint}` first, then re-run: awewarm config add")
+            continue
+        candidates.append(finding)
+    if not candidates:
+        click.echo("No logged-in local accounts found — adding a subscription endpoint.\n")
+        _add_plan_flow()
+        return
+    managed = {conn.get("label") for conn in config["connections"].values()}
+    lines = ["Add what?"]
+    for index, finding in enumerate(candidates, 1):
+        note = " (already managed)" if finding["label"] in managed else ""
+        lines.append(f"  {index}. {finding['label']}{note}")
+    lines.append(f"  {len(candidates) + 1}. Subscription endpoint (API key)")
+    click.echo("\n".join(lines))
+    choice = _choice_prompt("Select connection", [str(i) for i in range(1, len(candidates) + 2)], "1")
+    if int(choice) <= len(candidates):
+        line, anchored = _add_account_flow(config, state, candidates[int(choice) - 1], confirm_first=False)
+        if line is None:
+            return
+        save_config(config)
+        if anchored:
+            save_state(state)
+        click.echo(line)
+        _scheduler_hint()
+        return
+    _add_plan_flow()
+
+
+@config.command("add")
+def config_add():
+    """Add a connection: a detected local account or a subscription endpoint."""
+    _config_add()
+
+
+def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes):
+    config = load_config()
+    conn_id, conn = _find_connection(config, connection)
+    slots = []
+    if times:
+        try:
+            slots = _slots_proc(times)
+        except ValueError as exc:
+            die(str(exc))
+    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, window_minutes)):
+        _show_settings(conn_id, conn)
+        return
+    state = load_state()
+    state_changed = False
+    anchor_now = None
+    window_notice = None
+
+    if slots:
+        if conn["schedule"]["mode"] not in ("fixed", "hybrid"):
+            click.echo(
+                f"note: {conn_id} is in {conn['schedule']['mode']} mode — "
+                f"these times apply after: awewarm config set {conn_id} --mode fixed|hybrid"
+            )
+        _ensure_fixed(conn)["at"] = slots
+    if days:
+        _ensure_fixed(conn)["days"] = days
+    if mode:
+        conn["schedule"]["mode"] = mode
+    if enabled is not None:
+        conn["enabled"] = enabled
+    if anchor_hhmm is not None:
+        window = conn["window"]
+        if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
+            die(f"{conn_id}: anchoring needs a known window duration\n"
+                f"  fix: run: awewarm config set {conn_id} --window <minutes>")
+        if conn["schedule"]["mode"] not in ("interval", "hybrid"):
+            die(f"{conn_id}: anchoring only affects interval renewal\n"
+                f"  fix: run: awewarm config set {conn_id} --mode hybrid")
+        if not SLOT_RE.match(anchor_hhmm):
+            die("use HH:MM, e.g. 13:27")
+        anchor_now = _now(config)
+        reset_at = schedule.slot_datetime(anchor_now.date(), anchor_hhmm, anchor_now.tzinfo)
+        if reset_at is None or reset_at <= anchor_now:
+            die("that time already passed today — enter a later time today")
+        schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
+        state_changed = True
+    if window_minutes is not None:
+        if window_minutes <= 0:
+            die("--window needs the duration in minutes you verified (greater than 0)")
+        window_notice = schedule.window_override_notice(conn["window"], window_minutes)
+        conn["window"] = {
+            "status": "user-confirmed",
+            "startRule": conn["window"].get("startRule", "unknown"),
+            "durationMinutes": window_minutes,
+            "evidence": "user-confirmed",
+        }
+
+    save_config(config)
+    if state_changed:
+        save_state(state)
+    if slots:
+        click.echo(f"✓ Fixed times for {conn_id}: {', '.join(conn['schedule']['fixed']['at'])}")
+    if days:
+        click.echo(f"✓ Days for {conn_id}: {days}")
+    if mode:
+        click.echo(f"✓ Mode for {conn_id}: {mode}")
+    if enabled is True:
+        click.echo(f"✓ {conn_id} enabled (mode: {conn['schedule']['mode']})")
+    if enabled is False:
+        click.echo(f"✓ {conn_id} disabled — resume with: awewarm config set {conn_id} --on")
+    if anchor_hhmm is not None:
+        next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
+        click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, anchor_now)} (interval)")
+    if window_minutes is not None:
+        click.echo(f"✓ Window recorded as {window_minutes} minutes, user-confirmed.")
+        if window_notice:
+            click.echo(window_notice)
+        click.echo(f"Interval renewal is unlocked — switch modes with: awewarm config set {conn_id} --mode hybrid")
+
+
+@config.command("set")
 @click.argument("connection")
-def remove(connection):
-    """Delete a connection, its state, and its stored API key."""
+@click.option("--times", "times", default=None, metavar="HH:MM,...", help="Fixed activation times, comma- or space-separated, e.g. 06:35,11:40.")
+@click.option("--days", type=click.Choice(["weekday", "every-day"]), default=None, help="Which days the fixed times fire.")
+@click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
+@click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection.")
+@click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
+@click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
+def config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes):
+    """Show or change one connection's schedule settings."""
+    _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes)
+
+
+def _config_remove(connection):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     if not click.confirm(f"Remove '{conn.get('label', conn_id)}' and its stored API key?", default=False):
@@ -752,57 +781,11 @@ def remove(connection):
     click.echo(f"✓ {conn_id} removed")
 
 
-@cli.command("install")
-def install_cmd():
-    """Install the background scheduler agent (tick every minute)."""
-    target = install.install_scheduler()
-    click.echo(f"✓ Scheduler installed: {target}")
-    click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
-
-
-@cli.command()
-def uninstall():
-    """Remove the background scheduler agent."""
-    if install.uninstall_scheduler():
-        click.echo("✓ Scheduler removed")
-    else:
-        click.echo("Scheduler was not installed")
-
-
-@cli.command("inspect")
-@click.argument("connection", required=False)
-@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
-def inspect(connection, as_json):
-    """Show detected capabilities and state (secrets never included)."""
-    config = load_config()
-    if connection:
-        _find_connection(config, connection)
-        conns = {connection: config["connections"][connection]}
-    else:
-        conns = config["connections"]
-    state = load_state()
-    view = {
-        "config": {"version": config["version"], "connections": conns},
-        "state": {"connections": {k: state["connections"].get(k) for k in conns}},
-        "scheduler": {"installed": install.scheduler_installed()},
-    }
-    if as_json:
-        click.echo(json.dumps(transport.redact(view), indent=2))
-        return
-    for conn_id, conn in conns.items():
-        cs = view["state"]["connections"][conn_id] or {}
-        click.echo(f"\n{conn.get('label', conn_id)} ({conn_id})")
-        click.echo(f"  kind: {conn['kind']}, enabled: {conn.get('enabled', True)}")
-        click.echo(f"  transport: {conn['transport']['kind']}" + (f" → {conn['transport'].get('baseUrl')}" if conn['transport'].get("baseUrl") else ""))
-        click.echo(f"  window: {conn['window']['status']}, duration: {conn['window'].get('durationMinutes') or 'unknown'}")
-        click.echo(f"  mode: {conn['schedule']['mode']}, model: {conn['activation'].get('model') or 'cli default'}")
-        click.echo(f"  last activation: {cs.get('lastActivationAt') or 'never'}")
-    click.echo(f"\nscheduler: {'installed' if install.scheduler_installed() else 'not installed'}")
-
-
-@cli.group()
-def config():
-    """Show where awewarm keeps its files."""
+@config.command("remove")
+@click.argument("connection")
+def config_remove(connection):
+    """Delete a connection, its state, and its stored API key."""
+    _config_remove(connection)
 
 
 @config.command("path")
@@ -813,10 +796,82 @@ def config_path_command():
     click.echo(f"log:    {log_path()}")
 
 
-@cli.command("self-update")
-@click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
-def self_update_command(check_only):
-    """Update awewarm to the latest PyPI release."""
+def _show_status(connection, as_json):
+    config = load_config()
+    if connection:
+        _find_connection(config, connection)
+        conns = {connection: config["connections"][connection]}
+    else:
+        conns = config["connections"]
+    state = load_state()
+    if as_json:
+        view = {
+            "config": {"version": config["version"], "connections": conns},
+            "state": {"connections": {k: state["connections"].get(k) for k in conns}},
+            "scheduler": {"installed": install.scheduler_installed()},
+        }
+        click.echo(json.dumps(transport.redact(view), indent=2))
+        return
+    if not conns:
+        click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
+        return
+    now = _now(config)
+    for conn_id in sorted(conns):
+        _status_block(conn_id, conns[conn_id], state, now, detailed=bool(connection))
+    click.echo(f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}")
+
+
+@cli.command("status")
+@click.argument("connection", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
+def status_command(connection, as_json):
+    """Show connections, their windows, and what fires next."""
+    _show_status(connection, as_json)
+
+
+@cli.command("run")
+@click.option("--dry-run", "dry_run", is_flag=True, help="Print planned actions without sending anything.")
+@click.option("--now", "now_id", metavar="ID", default=None, help="Fire this one connection immediately instead of waiting for its slot.")
+@click.option("--confirm", is_flag=True, help="With --now: actually send the request (it consumes plan quota).")
+def run_command(dry_run, now_id, confirm):
+    """One scheduler tick: fire whatever is due right now (the background scheduler calls this)."""
+    if now_id is not None:
+        _activate_now(now_id, confirm, dry_run)
+        return
+    _tick(dry_run)
+
+
+def _scheduler_install():
+    target = install.install_scheduler()
+    click.echo(f"✓ Scheduler installed: {target}")
+    click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
+
+
+def _scheduler_uninstall():
+    if install.uninstall_scheduler():
+        click.echo("✓ Scheduler removed")
+    else:
+        click.echo("Scheduler was not installed")
+
+
+@cli.group()
+def scheduler():
+    """Install or uninstall the background scheduler agent (tick every minute)."""
+
+
+@scheduler.command("install")
+def scheduler_install():
+    """Install the background scheduler agent."""
+    _scheduler_install()
+
+
+@scheduler.command("uninstall")
+def scheduler_uninstall():
+    """Remove the background scheduler agent."""
+    _scheduler_uninstall()
+
+
+def _self_update(check_only):
     try:
         latest = get_pypi_latest()
     except Exception as exc:
@@ -839,6 +894,143 @@ def self_update_command(check_only):
         click.echo("Done. The scheduler tick picks up the new version on its next run.")
     else:
         raise SystemExit(result.returncode)
+
+
+@cli.command("update")
+@click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
+def update_command(check_only):
+    """Update awewarm to the latest PyPI release."""
+    _self_update(check_only)
+
+
+# --- Hidden legacy aliases (pre-0.3 command names; removed in v1.0). ---
+
+
+@cli.command("add", hidden=True)
+@click.argument("kind", required=False)
+def legacy_add(kind):
+    """Legacy alias for `awewarm config add`."""
+    _moved("add plan", "config add")
+    if kind not in (None, "plan"):
+        die(f"unknown add target: {kind}")
+    _config_add()
+
+
+@cli.command("activate", hidden=True)
+@click.argument("connection")
+@click.option("--confirm", is_flag=True, help="Actually send the request (it consumes plan quota).")
+def legacy_activate(connection, confirm):
+    """Legacy alias for `awewarm run --now <id> --confirm`."""
+    _moved(f"activate {connection}", f"run --now {connection} --confirm")
+    _activate_now(connection, confirm)
+
+
+@cli.command("verify", hidden=True)
+@click.argument("connection")
+@click.option("--confirm", is_flag=True, help="Send one real request and record its time.")
+@click.option("--duration", type=int, default=None, help="Window duration in minutes you verified by hand.")
+@click.option("--user-confirm", "user_confirm", is_flag=True, help="Mark the window as user-confirmed (unlocks interval).")
+def legacy_verify(connection, confirm, duration, user_confirm):
+    """Legacy alias: window evidence / measurement / confirmation."""
+    _moved("verify", f"status {connection} / config set {connection} --window <minutes>")
+    if user_confirm:
+        if not duration or duration <= 0:
+            die("--user-confirm needs --duration <minutes> (the window length you verified)")
+        _config_set(connection, None, None, None, None, None, duration)
+        return
+    if confirm:
+        _activate_now(connection, True, kind="verify")
+        click.echo(
+            "Watch when your plan's window/quota resets, compute the elapsed minutes since\n"
+            f"that request, then record it:\n  awewarm config set {connection} --window <minutes>"
+        )
+        return
+    config = load_config()
+    conn_id, conn = _find_connection(config, connection)
+    window = conn["window"]
+    click.echo(f"Window status: {window['status']} (evidence: {window['evidence']})")
+    if window.get("durationMinutes"):
+        click.echo(f"Duration: {window['durationMinutes']} minutes, start rule: {window['startRule']}")
+    click.echo(
+        "\nTo verify a window manually:\n"
+        f"  1. awewarm run --now {conn_id} --confirm   (sends one minimal request)\n"
+        "  2. note when the plan's window/quota resets relative to that request\n"
+        f"  3. awewarm config set {conn_id} --window <minutes>"
+    )
+
+
+@cli.command("enable", hidden=True)
+@click.argument("connection")
+@click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
+def legacy_enable(connection, mode):
+    """Legacy alias for `awewarm config set <id> --on [--mode M]`."""
+    _moved(f"enable {connection}", f"config set {connection} --on")
+    _config_set(connection, None, None, mode, True, None, None)
+
+
+@cli.command("anchor", hidden=True)
+@click.argument("connection")
+@click.option("--reset", "reset_hhmm", required=True, help="HH:MM today when the currently-open window closes.")
+def legacy_anchor(connection, reset_hhmm):
+    """Legacy alias for `awewarm config set <id> --anchor HH:MM`."""
+    _moved(f"anchor {connection}", f"config set {connection} --anchor {reset_hhmm}")
+    _config_set(connection, None, None, None, None, reset_hhmm, None)
+
+
+@cli.command("disable", hidden=True)
+@click.argument("connection")
+def legacy_disable(connection):
+    """Legacy alias for `awewarm config set <id> --off`."""
+    _moved(f"disable {connection}", f"config set {connection} --off")
+    _config_set(connection, None, None, None, False, None, None)
+
+
+@cli.command("times", hidden=True)
+@click.argument("connection")
+@click.argument("times", nargs=-1)
+def legacy_times(connection, times):
+    """Legacy alias for `awewarm config set <id> --times HH:MM...`."""
+    _moved(f"times {connection}", f"config set {connection} --times HH:MM...")
+    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None)
+
+
+@cli.command("remove", hidden=True)
+@click.argument("connection")
+def legacy_remove(connection):
+    """Legacy alias for `awewarm config remove <id>`."""
+    _moved(f"remove {connection}", f"config remove {connection}")
+    _config_remove(connection)
+
+
+@cli.command("install", hidden=True)
+def legacy_install():
+    """Legacy alias for `awewarm scheduler install`."""
+    _moved("install", "scheduler install")
+    _scheduler_install()
+
+
+@cli.command("uninstall", hidden=True)
+def legacy_uninstall():
+    """Legacy alias for `awewarm scheduler uninstall`."""
+    _moved("uninstall", "scheduler uninstall")
+    _scheduler_uninstall()
+
+
+@cli.command("inspect", hidden=True)
+@click.argument("connection", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
+def legacy_inspect(connection, as_json):
+    """Legacy alias for `awewarm status [<id>] [--json]`."""
+    _moved("inspect", "status")
+    _show_status(connection, as_json)
+
+
+@cli.command("self-update", hidden=True)
+@click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
+def legacy_self_update(check_only):
+    """Legacy alias for `awewarm update`."""
+    _moved("self-update", "update")
+    _self_update(check_only)
 
 
 def main(argv=None):

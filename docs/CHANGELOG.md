@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.3.0
+
+`v0.3.0` redesigns the CLI surface down to seven visible commands. It also ships the window anchoring and versioned-base-URL fixes drafted in the unreleased v0.2.8 section below.
+
+### Seven commands
+
+The seventeen-command surface collapses into `init`, `discover`, `config`, `status`, `run`, `scheduler`, and `update`. Reads go through `status`, changes through `config set` flags, immediate fires through `run --now`. `awewarm run` keeps its name — installed launchd / Task Scheduler / systemd agents invoke it verbatim and keep working without reinstall.
+
+- `config add` is the single add entry: it lists detected local accounts plus "Subscription endpoint (API key)", so a removed `claude` / `codex` account can be re-added without re-running `init`.
+- `config set <id> [--times] [--days] [--mode] [--on/--off] [--anchor] [--window]` replaces `times`, `enable`, `disable`, `anchor`, and `verify --user-confirm`; with no flags it prints the current settings.
+- `status [<id>] [--json]` absorbs `inspect`; `status <id>` shows one connection in detail (transport, window evidence, fixed times).
+- `run --now <id> --confirm` replaces `activate` (and `verify --confirm`).
+- `scheduler install` / `scheduler uninstall` replace `install` / `uninstall`.
+- `update` replaces `self-update`.
+
+### Legacy aliases
+
+Every pre-0.3 command name still works as a hidden alias that prints its new spelling (for example `awewarm times <id> 06:35` suggests `awewarm config set <id> --times ...`). Alias coverage keeps scripts and older docs functional; they are removed in v1.0.
+
+### Highlights
+
+- **Breaking: seven-command CLI surface** — init, discover, config, status, run, scheduler, update.
+- **Add: `config add` menu** — re-add removed local accounts or add a subscription endpoint in one flow.
+- **Add: `config set`** — one mutation point for times, days, mode, enable/disable, anchor, and window duration.
+- **Add: `--days` on `config set`** — the weekday/every-day rule is changeable without re-onboarding.
+- **Keep: legacy aliases** — pre-0.3 command names work through v0.x and print their replacement.
+
 ## v0.2.8
 
 `v0.2.8` adds the `awewarm anchor` command so users can tell awewarm when a window they opened by hand is expected to close, and improves base URL handling for versioned API paths.

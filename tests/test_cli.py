@@ -36,14 +36,53 @@ def write_config(conn=None, conn_id="claude-code-main"):
     return data
 
 
+def command_names(help_output):
+    lines = help_output.splitlines()
+    start = lines.index("Commands:")
+    return [line.split()[0] for line in lines[start + 1:] if line.strip()]
+
+
+def claude_finding(**overrides):
+    finding = {
+        "provider": "claude-code",
+        "label": "Claude Code",
+        "cliCommand": "claude",
+        "cliPath": "/Users/x/.local/bin/claude",
+        "installed": True,
+        "version": "1.0.66",
+        "authFound": True,
+        "authDetail": "file",
+        "builtinWindow": {
+            "status": "verified",
+            "startRule": "first-successful-request",
+            "durationMinutes": 300,
+            "evidence": "builtin-provider",
+        },
+    }
+    finding.update(overrides)
+    return finding
+
+
 class SurfaceTests(IsolatedTestCase):
-    def test_help_usage_and_commands(self):
+    def test_help_shows_exactly_seven_commands(self):
         result = invoke(["--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Usage: awewarm [OPTIONS] COMMAND [ARGS]...", result.output)
         self.assertIn("-v, --version", result.output)
-        for command in ("init", "discover", "status", "run", "activate", "verify", "install", "config", "self-update"):
-            self.assertIn(command, result.output)
+        self.assertEqual(
+            command_names(result.output),
+            ["config", "discover", "init", "run", "scheduler", "status", "update"],
+        )
+
+    def test_legacy_command_names_are_hidden(self):
+        result = invoke(["--help"])
+        names = command_names(result.output)
+        for legacy in ("add", "activate", "verify", "enable", "anchor", "disable", "times", "remove", "install", "uninstall", "inspect", "self-update"):
+            self.assertNotIn(legacy, names)
+
+    def test_group_help_lists_subcommands(self):
+        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "path", "remove", "set"])
+        self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
 
     def test_version_prints_bare_number(self):
         result = invoke(["-v"])
@@ -61,23 +100,7 @@ class SurfaceTests(IsolatedTestCase):
 class DiscoverCommandTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts")
     def test_discover_prints_findings(self, discover_accounts):
-        discover_accounts.return_value = [
-            {
-                "provider": "claude-code",
-                "label": "Claude Code",
-                "cliCommand": "claude",
-                "installed": True,
-                "version": "1.0.66",
-                "authFound": True,
-                "authDetail": "keychain: Claude Code-credentials",
-                "builtinWindow": {
-                    "status": "verified",
-                    "startRule": "first-successful-request",
-                    "durationMinutes": 300,
-                    "evidence": "builtin-provider",
-                },
-            }
-        ]
+        discover_accounts.return_value = [claude_finding(cliPath=None)]
         result = invoke(["discover"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Claude Code CLI found: 1.0.66", result.output)
@@ -88,22 +111,7 @@ class InitTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts")
     def test_init_adds_claude_account_hybrid(self, discover_accounts):
         discover_accounts.return_value = [
-            {
-                "provider": "claude-code",
-                "label": "Claude Code",
-                "cliCommand": "claude",
-                "cliPath": "/Users/x/.local/bin/claude",
-                "installed": True,
-                "version": "1.0.66",
-                "authFound": True,
-                "authDetail": "file",
-                "builtinWindow": {
-                    "status": "verified",
-                    "startRule": "first-successful-request",
-                    "durationMinutes": 300,
-                    "evidence": "builtin-provider",
-                },
-            },
+            claude_finding(),
             {
                 "provider": "codex",
                 "label": "Codex",
@@ -130,7 +138,7 @@ class InitTests(IsolatedTestCase):
         self.assertIn("mode hybrid", result.output)
 
 
-class AddPlanTests(IsolatedTestCase):
+class ConfigAddPlanTests(IsolatedTestCase):
     INPUT = "\n".join(
         [
             "GLM Coding Plan",
@@ -144,11 +152,12 @@ class AddPlanTests(IsolatedTestCase):
         ]
     ) + "\n"
 
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_add_plan_happy_path_fixed_mode(self, send, keychain_available):
+    def test_add_plan_happy_path_fixed_mode(self, send, keychain_available, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
-        result = invoke(["add", "plan"], input=self.INPUT)
+        result = invoke(["config", "add"], input=self.INPUT)
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("Authentication accepted", result.output)
         data = cfg.load_config()
@@ -161,23 +170,71 @@ class AddPlanTests(IsolatedTestCase):
         self.assertEqual(conn["auth"]["apiKeyRef"], "${AWEWARM_API_KEY_GLM_CODING_PLAN}")
         self.assertIn("Keychain unavailable", result.output)
 
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_add_plan_accepts_multiple_fixed_times(self, send, keychain_available):
+    def test_add_plan_accepts_multiple_fixed_times(self, send, keychain_available, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         multi = self.INPUT.replace("glm-4.7\n\n\n", "glm-4.7\n\n16:45, 06:35, 11:40\n")
-        result = invoke(["add", "plan"], input=multi)
+        result = invoke(["config", "add"], input=multi)
         self.assertEqual(result.exit_code, 0, output_of(result))
         (conn_id, conn), = cfg.load_config()["connections"].items()
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "11:40", "16:45"])
 
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.transport.send_activation")
-    def test_add_plan_endpoint_failure_decline_aborts(self, send):
+    def test_add_plan_endpoint_failure_decline_aborts(self, send, _discover):
         send.return_value = {"ok": False, "detail": "HTTP 401: bad key"}
-        result = invoke(["add", "plan"], input=self.INPUT + "n\n")
+        result = invoke(["config", "add"], input=self.INPUT + "n\n")
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("aborted", output_of(result))
         self.assertFalse(cfg.config_path().exists())
+
+
+class ConfigAddMenuTests(IsolatedTestCase):
+    @mock.patch("awewarm.discover.discover_accounts")
+    def test_menu_readds_a_removed_account(self, discover_accounts):
+        discover_accounts.return_value = [claude_finding()]
+        # menu choice 1 (Claude Code) / mode (default hybrid) / times / days / window open? (no)
+        result = invoke(["config", "add"], input="1\n\n\n\n\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code"]
+        self.assertEqual(conn["kind"], "account")
+        self.assertEqual(conn["schedule"]["mode"], "hybrid")
+        self.assertEqual(conn["transport"]["cliCommand"], "/Users/x/.local/bin/claude")
+
+    @mock.patch("awewarm.discover.discover_accounts")
+    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
+    @mock.patch("awewarm.transport.send_activation")
+    def test_menu_endpoint_choice_runs_plan_flow(self, send, keychain_available, discover_accounts):
+        send.return_value = {"ok": True, "detail": "ok"}
+        discover_accounts.return_value = [claude_finding()]
+        endpoint_input = "\n".join(["2", "GLM", "1", "http://x/v4", "k", "glm-4.7", "", "", ""]) + "\n"
+        result = invoke(["config", "add"], input=endpoint_input)
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        (conn_id, conn), = cfg.load_config()["connections"].items()
+        self.assertEqual(conn_id, "glm")
+        self.assertEqual(conn["kind"], "subscription")
+
+    @mock.patch("awewarm.discover.discover_accounts")
+    @mock.patch("awewarm.transport.send_activation")
+    def test_menu_marks_already_managed_accounts(self, send, discover_accounts):
+        send.return_value = {"ok": True, "detail": "ok"}
+        discover_accounts.return_value = [claude_finding()]
+        write_config(account_connection(mode="fixed"))  # label "Claude Code"
+        result = invoke(["config", "add"], input="2\nGLM\n1\nhttp://x/v4\nk\nglm-4.7\n\n\n\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("already managed", result.output)
+
+    @mock.patch("awewarm.discover.discover_accounts")
+    @mock.patch("awewarm.transport.send_activation")
+    def test_unauthenticated_account_gets_login_hint(self, send, discover_accounts):
+        send.return_value = {"ok": True, "detail": "ok"}
+        discover_accounts.return_value = [claude_finding(authFound=False)]
+        result = invoke(["config", "add"], input="GLM\n1\nhttp://x/v4\nk\nm\n\n\n\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("claude auth login", result.output)
+        self.assertIn("adding a subscription endpoint", result.output)
 
 
 class RunTests(IsolatedTestCase):
@@ -230,60 +287,70 @@ class RunTests(IsolatedTestCase):
         send.assert_not_called()
 
 
-class ActivateTests(IsolatedTestCase):
-    def test_activate_requires_confirm(self):
+class RunNowTests(IsolatedTestCase):
+    def test_now_requires_confirm(self):
         write_config(account_connection(mode="fixed"))
-        result = invoke(["activate", "claude-code-main"])
+        result = invoke(["run", "--now", "claude-code-main"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("--confirm", output_of(result))
 
     @mock.patch("awewarm.transport.send_activation")
-    def test_activate_with_confirm_records_manual(self, send):
+    def test_now_with_confirm_records_manual(self, send):
         send.return_value = {"ok": True, "detail": "ok"}
         write_config(account_connection(mode="fixed"))
-        result = invoke(["activate", "claude-code-main", "--confirm"])
+        result = invoke(["run", "--now", "claude-code-main", "--confirm"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         state = cfg.load_state()
         self.assertEqual(state["connections"]["claude-code-main"]["history"][-1]["kind"], "manual")
 
-    def test_activate_unknown_connection(self):
+    def test_now_unknown_connection(self):
         write_config(account_connection(mode="fixed"))
-        result = invoke(["activate", "nope", "--confirm"])
+        result = invoke(["run", "--now", "nope", "--confirm"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("unknown connection", output_of(result))
 
-
-class VerifyTests(IsolatedTestCase):
-    def test_verify_without_flags_only_prints_guidance(self):
-        write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
+    def test_now_dry_run_sends_nothing(self):
+        write_config(account_connection(mode="fixed"))
         with mock.patch("awewarm.transport.send_activation") as send:
-            result = invoke(["verify", "glm-coding-plan"])
+            result = invoke(["run", "--now", "claude-code-main", "--confirm", "--dry-run"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("--user-confirm", result.output)
+        self.assertIn("[dry-run] would activate", result.output)
         send.assert_not_called()
 
-    def test_verify_user_confirm_unlocks_interval(self):
+
+class WindowSetTests(IsolatedTestCase):
+    def test_set_without_flags_shows_settings(self):
+        write_config(account_connection(mode="hybrid"))
+        with mock.patch("awewarm.transport.send_activation") as send:
+            result = invoke(["config", "set", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Settings for claude-code-main", result.output)
+        self.assertIn("06:35", result.output)
+        self.assertIn("weekday", result.output)
+        send.assert_not_called()
+
+    def test_window_records_user_confirmation(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
-        result = RUNNER.invoke(
-            cli, ["verify", "glm-coding-plan", "--user-confirm", "--duration", "300"]
-        )
+        result = invoke(["config", "set", "glm-coding-plan", "--window", "300"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm-coding-plan"]
         self.assertEqual(conn["window"]["status"], "user-confirmed")
         self.assertEqual(conn["window"]["durationMinutes"], 300)
 
-    def test_verify_user_confirm_requires_duration(self):
+    def test_window_rejects_nonpositive_duration(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
-        result = invoke(["verify", "glm-coding-plan", "--user-confirm"])
+        result = invoke(["config", "set", "glm-coding-plan", "--window", "0"])
         self.assertNotEqual(result.exit_code, 0)
+        conn = cfg.load_config()["connections"]["glm-coding-plan"]
+        self.assertEqual(conn["window"]["status"], "unknown")
 
 
 class LifecycleTests(IsolatedTestCase):
-    def test_enable_interval_blocked_until_window_confirmed(self):
+    def test_mode_interval_blocked_until_window_confirmed(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
-        blocked = invoke(["enable", "glm-coding-plan", "--mode", "interval"])
+        blocked = invoke(["config", "set", "glm-coding-plan", "--mode", "interval"])
         self.assertNotEqual(blocked.exit_code, 0)
-        self.assertIn("verify", output_of(blocked))
+        self.assertIn("--window", output_of(blocked))
         data = cfg.load_config()
         data["connections"]["glm-coding-plan"]["window"] = {
             "status": "user-confirmed",
@@ -292,46 +359,50 @@ class LifecycleTests(IsolatedTestCase):
             "evidence": "user-confirmed",
         }
         cfg.save_config(data)
-        allowed = invoke(["enable", "glm-coding-plan", "--mode", "interval"])
+        allowed = invoke(["config", "set", "glm-coding-plan", "--mode", "interval"])
         self.assertEqual(allowed.exit_code, 0, output_of(allowed))
         self.assertEqual(cfg.load_config()["connections"]["glm-coding-plan"]["schedule"]["mode"], "interval")
 
-    def test_disable_and_status(self):
+    def test_off_and_on_toggle_with_status_reflecting(self):
         write_config(account_connection(mode="fixed"))
-        result = invoke(["disable", "claude-code-main"])
+        result = invoke(["config", "set", "claude-code-main", "--off"])
         self.assertEqual(result.exit_code, 0)
+        self.assertIn("disabled", result.output)
         status = invoke(["status"])
         self.assertIn("disabled", status.output)
+        resumed = invoke(["config", "set", "claude-code-main", "--on"])
+        self.assertEqual(resumed.exit_code, 0)
+        self.assertTrue(cfg.load_config()["connections"]["claude-code-main"]["enabled"])
 
     @mock.patch("awewarm.keychain.delete_api_key")
     def test_remove_deletes_everything(self, delete_api_key):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
         cfg.save_state({"version": 1, "connections": {"glm-coding-plan": cfg.default_conn_state()}})
-        result = invoke(["remove", "glm-coding-plan"], input="y\n")
+        result = invoke(["config", "remove", "glm-coding-plan"], input="y\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertEqual(cfg.load_config()["connections"], {})
         self.assertEqual(cfg.load_state()["connections"], {})
         delete_api_key.assert_called_once_with("glm-coding-plan")
 
 
-class TimesTests(IsolatedTestCase):
-    def test_show_without_args(self):
-        write_config(account_connection(mode="hybrid"))
-        result = invoke(["times", "claude-code-main"])
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("06:35", result.output)
-        self.assertIn("weekday", result.output)
-
+class SetTimesTests(IsolatedTestCase):
     def test_set_multiple_times_sorted_and_deduped(self):
         write_config(account_connection(mode="hybrid"))
-        result = invoke(["times", "claude-code-main", "16:45", "06:35", "16:45", "11:40"])
+        result = invoke(["config", "set", "claude-code-main", "--times", "16:45,06:35,16:45,11:40"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "11:40", "16:45"])
 
+    def test_times_accepts_space_separated_values(self):
+        write_config(account_connection(mode="hybrid"))
+        result = invoke(["config", "set", "claude-code-main", "--times", "16:45 06:35"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "16:45"])
+
     def test_invalid_time_dies_without_saving(self):
         write_config(account_connection(mode="hybrid"))
-        result = invoke(["times", "claude-code-main", "6:35"])
+        result = invoke(["config", "set", "claude-code-main", "--times", "6:35"])
         self.assertNotEqual(result.exit_code, 0)
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35"])
@@ -339,12 +410,28 @@ class TimesTests(IsolatedTestCase):
     def test_interval_mode_connection_notes_mode_switch(self):
         conn = account_connection(mode="interval")
         write_config(conn)
-        result = invoke(["times", "claude-code-main", "06:35", "11:40"])
+        result = invoke(["config", "set", "claude-code-main", "--times", "06:35,11:40"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("--mode", result.output)
         saved = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(saved["schedule"]["fixed"]["at"], ["06:35", "11:40"])
         self.assertEqual(saved["schedule"]["fixed"]["days"], "weekday")
+
+    def test_days_changes_without_times(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main", "--days", "every-day"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["fixed"]["days"], "every-day")
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35"])
+
+    def test_combined_flags_apply_together(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main", "--times", "07:00,12:00", "--days", "every-day"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["07:00", "12:00"])
+        self.assertEqual(conn["schedule"]["fixed"]["days"], "every-day")
 
 
 class StatusTests(IsolatedTestCase):
@@ -362,16 +449,30 @@ class StatusTests(IsolatedTestCase):
         self.assertIn("300 minutes, verified", result.output)
         self.assertIn("Scheduler: not installed", result.output)
 
-
-class InspectTests(IsolatedTestCase):
-    def test_inspect_json_redacts_api_key_ref(self):
+    def test_status_single_connection_shows_detail(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
-        result = invoke(["inspect", "glm-coding-plan", "--json"])
+        result = invoke(["status", "glm-coding-plan"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Transport: anthropic-messages", result.output)
+        self.assertIn("evidence:", result.output)
+        self.assertIn("Fixed times: 06:35", result.output)
+        self.assertIn("Next due:", result.output)
+
+    def test_status_json_redacts_api_key_ref(self):
+        write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
+        result = invoke(["status", "glm-coding-plan", "--json"])
         self.assertEqual(result.exit_code, 0)
         payload = json.loads(result.output)
         conn = payload["config"]["connections"]["glm-coding-plan"]
         self.assertEqual(conn["auth"]["apiKeyRef"], "<redacted>")
         self.assertEqual(payload["scheduler"]["installed"], False)
+
+    def test_status_json_covers_all_connections(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["status", "--json"])
+        self.assertEqual(result.exit_code, 0)
+        payload = json.loads(result.output)
+        self.assertIn("claude-code-main", payload["config"]["connections"])
 
 
 class ConfigPathTests(IsolatedTestCase):
@@ -383,36 +484,117 @@ class ConfigPathTests(IsolatedTestCase):
         self.assertIn(str(cfg.log_path()), result.output)
 
 
-class SelfUpdateTests(IsolatedTestCase):
+class SchedulerCommandTests(IsolatedTestCase):
+    @mock.patch("awewarm.install.install_scheduler")
+    def test_scheduler_install(self, install_scheduler):
+        install_scheduler.return_value = "/Library/LaunchAgents/com.awewarm.scheduler.plist"
+        result = invoke(["scheduler", "install"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Scheduler installed", result.output)
+
+    @mock.patch("awewarm.install.uninstall_scheduler", return_value=False)
+    def test_scheduler_uninstall_when_absent(self, _uninstall):
+        result = invoke(["scheduler", "uninstall"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("was not installed", result.output)
+
+
+class UpdateTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
     def test_check_when_up_to_date(self, _pypi):
-        result = invoke(["self-update", "--check"])
+        result = invoke(["update", "--check"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("up to date", result.output)
 
     @mock.patch("awewarm.cli.subprocess.run")
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
     def test_check_shows_latest_without_updating(self, _pypi, run):
-        result = invoke(["self-update", "--check"])
+        result = invoke(["update", "--check"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("9.9.9", result.output)
         run.assert_not_called()
 
     @mock.patch("awewarm.cli.subprocess.run")
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
-    def test_self_update_runs_pip(self, _pypi, run):
+    def test_update_runs_pip(self, _pypi, run):
         run.return_value = mock.Mock(returncode=0)
-        result = invoke(["self-update"])
+        result = invoke(["update"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         command = " ".join(run.call_args[0][0])
         self.assertIn("awewarm", command)
         self.assertNotIn("pipx", command)
 
     @mock.patch("awewarm.cli.get_pypi_latest", side_effect=OSError("offline"))
-    def test_self_update_dies_on_network_failure(self, _pypi):
-        result = invoke(["self-update", "--check"])
+    def test_update_dies_on_network_failure(self, _pypi):
+        result = invoke(["update", "--check"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("failed to check PyPI", output_of(result))
+
+
+class LegacyAliasTests(IsolatedTestCase):
+    def test_alias_prints_migration_note_to_stderr(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["disable", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("moved to", output_of(result))
+        self.assertIn("config set", output_of(result))
+
+    def test_legacy_times_sets_fixed_times(self):
+        write_config(account_connection(mode="hybrid"))
+        result = invoke(["times", "claude-code-main", "06:35", "11:40"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:35", "11:40"])
+
+    def test_legacy_enable_and_disable(self):
+        write_config(account_connection(mode="fixed"))
+        self.assertEqual(invoke(["disable", "claude-code-main"]).exit_code, 0)
+        self.assertFalse(cfg.load_config()["connections"]["claude-code-main"]["enabled"])
+        self.assertEqual(invoke(["enable", "claude-code-main"]).exit_code, 0)
+        self.assertTrue(cfg.load_config()["connections"]["claude-code-main"]["enabled"])
+
+    def test_legacy_verify_user_confirm_sets_window(self):
+        write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
+        result = invoke(["verify", "glm-coding-plan", "--user-confirm", "--duration", "300"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["glm-coding-plan"]
+        self.assertEqual(conn["window"]["status"], "user-confirmed")
+
+    def test_legacy_activate_routes_to_run_now(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["activate", "claude-code-main"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--confirm", output_of(result))
+
+    @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
+    def test_legacy_self_update_check(self, _pypi):
+        result = invoke(["self-update", "--check"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("up to date", result.output)
+
+    def test_legacy_inspect_json(self):
+        write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
+        result = invoke(["inspect", "glm-coding-plan", "--json"])
+        self.assertEqual(result.exit_code, 0)
+        # the migration note (stderr) is mixed in before the JSON payload
+        payload = json.loads(result.output[result.output.index("{"):])
+        self.assertEqual(payload["config"]["connections"]["glm-coding-plan"]["auth"]["apiKeyRef"], "<redacted>")
+
+    @mock.patch("awewarm.install.install_scheduler")
+    def test_legacy_install_routes_to_scheduler(self, install_scheduler):
+        install_scheduler.return_value = "/plist"
+        result = invoke(["install"])
+        self.assertEqual(result.exit_code, 0)
+        install_scheduler.assert_called_once()
+
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
+    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
+    @mock.patch("awewarm.transport.send_activation")
+    def test_legacy_add_plan_routes_to_config_add(self, send, keychain_available, _discover):
+        send.return_value = {"ok": True, "detail": "ok"}
+        result = invoke(["add", "plan"], input=ConfigAddPlanTests.INPUT)
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("glm-coding-plan", cfg.load_config()["connections"])
 
 
 class MainReminderTests(IsolatedTestCase):
@@ -437,20 +619,17 @@ class MainReminderTests(IsolatedTestCase):
         check.assert_called_once_with(["run"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AddPlanUserAnchorTests(IsolatedTestCase):
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_mode3_with_open_window_anchors_renewal(self, send, keychain_available):
+    def test_mode3_with_open_window_anchors_renewal(self, send, keychain_available, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         with mock.patch("awewarm.cli._now") as now:
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["add", "plan"], input="\n".join([
+            result = invoke(["config", "add"], input="\n".join([
                 "GLM", "1", "http://x/v4", "k", "glm-4.7",
                 "3",        # warm-up mode: configure interval manually
                 "300",      # duration
@@ -481,7 +660,7 @@ class AnchorTests(IsolatedTestCase):
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["anchor", "claude-code-main", "--reset", "13:27"])
+            result = invoke(["config", "set", "claude-code-main", "--anchor", "13:27"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("anchored", result.output)
         cs = cfg.load_state()["connections"]["claude-code-main"]
@@ -494,12 +673,29 @@ class AnchorTests(IsolatedTestCase):
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 14, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["anchor", "claude-code-main", "--reset", "13:27"])
+            result = invoke(["config", "set", "claude-code-main", "--anchor", "13:27"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("already passed", result.output)
 
     def test_anchor_requires_interval_mode(self):
         write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
-        result = invoke(["anchor", "claude-code-main", "--reset", "23:00"])
+        result = invoke(["config", "set", "claude-code-main", "--anchor", "23:00"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("--mode hybrid", result.output)
+
+    def test_mode_and_anchor_combine_in_one_call(self):
+        write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--mode", "hybrid", "--anchor", "13:27"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["mode"], "hybrid")
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -27,8 +27,8 @@ class ShouldSkipTests(unittest.TestCase):
         self.assertTrue(_should_skip(["run"]))
         self.assertTrue(_should_skip(["run", "--dry-run"]))
 
-    def test_help_version_and_self_update_are_skipped(self):
-        for args in (["-h"], ["--help"], ["-v"], ["--version"], ["self-update"], ["self-update", "--check"]):
+    def test_help_version_and_update_are_skipped(self):
+        for args in (["-h"], ["--help"], ["-v"], ["--version"], ["update"], ["update", "--check"], ["self-update"], ["self-update", "--check"]):
             self.assertTrue(_should_skip(args), args)
 
     def test_interactive_commands_are_checked(self):
@@ -42,7 +42,7 @@ class ReminderTests(IsolatedTestCase):
     def test_check_returns_reminder_for_newer_release(self, _pypi):
         reminder = update_check._check()
         self.assertIn("9.9.9", reminder)
-        self.assertIn("self-update", reminder)
+        self.assertIn("awewarm update", reminder)
 
     @mock.patch.object(update_check, "get_pypi_latest", return_value="9.9.9")
     def test_reminder_at_most_once_per_day(self, _pypi):

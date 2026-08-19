@@ -64,9 +64,9 @@ def get_pypi_latest():
 def _should_skip(args):
     if any(flag in args for flag in ("-h", "--help", "-v", "-V", "--version")):
         return True
-    # `run` is the scheduler tick (once a minute) and self-update is about to
+    # `run` is the scheduler tick (once a minute) and update is about to
     # replace the installed package — neither should hit PyPI.
-    return bool(args) and args[0] in ("run", "self-update")
+    return bool(args) and args[0] in ("run", "update", "self-update")
 
 
 def check_async(args):
@@ -122,4 +122,4 @@ def _check():
         return None
 
     _save_cache(cache_path, {**cache, "nextCheckAt": now + CHECK_INTERVAL_S, "latestVersion": latest, "lastReminded": now})
-    return f"Update available: {__version__} → {latest}. Run `awewarm self-update` to update."
+    return f"Update available: {__version__} → {latest}. Run `awewarm update` to update."

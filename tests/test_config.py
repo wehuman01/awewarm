@@ -72,7 +72,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_interval_locked_without_verified_window(self):
         errors = config.connection_errors(plan_connection(mode="interval"), "plan")
-        self.assertTrue(any("verify" in e for e in errors))
+        self.assertTrue(any("--window" in e for e in errors))
 
     def test_hybrid_locked_without_duration(self):
         conn = account_connection(window_status="user-confirmed", mode="hybrid")

@@ -55,7 +55,7 @@ Working in Claude Code, Codex, or another coding agent? Tell it:
 Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm.
 ```
 
-The agent installs the CLI, scans your local accounts (read-only), and tunes schedules on request. Onboarding itself (`awewarm init`, `awewarm add plan`) stays in your terminal — it prompts for choices and API keys. After setup you can ask things like "when is the next warm-up?" or "set claude-code to 06:35 and 12:35".
+The agent installs the CLI, scans your local accounts (read-only), and tunes schedules on request. Onboarding itself (`awewarm init`, `awewarm config add`) stays in your terminal — it prompts for choices and API keys. After setup you can ask things like "when is the next warm-up?" or "set claude-code to 06:35 and 12:35".
 
 ### Manual setup
 
@@ -67,10 +67,10 @@ awewarm status      # see what will happen next
 For a subscription endpoint instead:
 
 ```bash
-awewarm add plan
+awewarm config add
 ```
 
-You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in the Keychain.
+You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in the Keychain. The same command also re-adds a local `claude` / `codex` account you removed earlier — it lists whatever is detected on this machine.
 
 ## Companion Tools
 
@@ -83,7 +83,7 @@ awewarm is part of a small tool family for AI coding agents:
 
 ## Scheduling Modes
 
-All modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm enable <id> --mode fixed|interval|hybrid`; see the current mode and next due moment with `awewarm status`.
+All modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm config set <id> --mode fixed|interval|hybrid`; see the current mode and next due moment with `awewarm status`.
 
 | Mode | Fires when | Needs a verified window | Best for |
 | --- | --- | --- | --- |
@@ -100,8 +100,8 @@ One request at each fixed local time (`weekday` or `every-day`); each hit opens 
 - The only mode that works while window semantics are unknown, which is why unverified plans start here.
 
 ```bash
-awewarm times claude-code 06:35 11:40 16:45   # 5 h + 5 min apart: windows chain across a workday
-awewarm enable claude-code --mode fixed
+awewarm config set claude-code --times 06:35,11:40,16:45   # 5 h + 5 min apart: windows chain across a workday
+awewarm config set claude-code --mode fixed
 ```
 
 **Example** — a laptop that sleeps at night: slots at 06:35 / 11:40 / 16:45 keep a window open from 06:35 to ~21:45 every weekday. The machine only needs to be awake within 45 min of each slot.
@@ -111,10 +111,10 @@ awewarm enable claude-code --mode fixed
 After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor.
 
 ```bash
-awewarm verify my-plan --confirm                      # 1. one minimal request, timestamped
+awewarm run --now my-plan --confirm        # 1. one minimal request, timestamped
 # ...watch when the plan's quota resets, note the elapsed minutes...
-awewarm verify my-plan --duration 300 --user-confirm  # 2. record the window (unlocks interval)
-awewarm enable my-plan --mode interval                # 3. rolling renewal
+awewarm config set my-plan --window 300    # 2. record the window (unlocks interval)
+awewarm config set my-plan --mode interval # 3. rolling renewal
 ```
 
 **Example** — an always-on machine you want warm around the clock, nights and weekends included. After 3 consecutive failures renewal pauses itself (status shows `degraded`) and resumes on the next success.
@@ -124,15 +124,15 @@ awewarm enable my-plan --mode interval                # 3. rolling renewal
 Both engines run together: interval keeps the chain unbroken, while fixed slots re-anchor it at deterministic times — so each workday still starts where you expect even if the machine slept through the interval due. A slot within 30 min of a recent interval success is skipped automatically.
 
 ```bash
-awewarm enable claude-code --mode hybrid   # window already verified at init
-awewarm times claude-code 06:35            # one anchor per workday morning
+awewarm config set claude-code --mode hybrid   # window already verified at init
+awewarm config set claude-code --times 06:35   # one anchor per workday morning
 ```
 
 **Example** — a verified account with a 06:35 weekday anchor: interval renews all day (renewal ignores the weekday rule and continues over the weekend), and Monday 06:35 re-anchors the chain no matter what happened overnight.
 
 ## Config
 
-Users never hand-edit config; `init` / `add plan` generate it at `~/.config/awewarm/config.json` (state at `~/.local/state/awewarm/state.json`). The shape, for reference:
+Users never hand-edit config; `init` / `config add` generate it at `~/.config/awewarm/config.json` (state at `~/.local/state/awewarm/state.json`). The shape, for reference:
 
 ```json
 {
@@ -156,31 +156,28 @@ Users never hand-edit config; `init` / `add plan` generate it at `~/.config/awew
 ## Commands
 
 ```bash
-awewarm init                     # interactive onboarding
-awewarm discover                 # read-only scan of local CLIs and logins
-awewarm add plan                 # add a subscription endpoint
-awewarm status                   # human-readable summary
-awewarm run [--dry-run]          # one scheduler tick (the background scheduler calls this)
-awewarm activate <id> --confirm  # send one real request now
-awewarm verify <id> [--confirm] [--duration N --user-confirm]
-awewarm anchor <id> --reset HH:MM    # window already open? anchor renewal past its close
-awewarm enable <id> [--mode fixed|interval|hybrid]
-awewarm times <id> [HH:MM...]  # show or set fixed times, e.g. 06:35 11:40 16:45
-awewarm disable <id>
-awewarm remove <id>
-awewarm install / uninstall      # background scheduler (launchd / Task Scheduler / systemd)
-awewarm inspect [<id>] [--json]  # redacted capability dump
-awewarm config path              # config / state / log locations
-awewarm self-update [--check]    # upgrade to the latest PyPI release
+awewarm init                          # interactive onboarding: scan accounts, pick schedules, install scheduler
+awewarm discover                      # read-only scan of local CLIs and logins
+awewarm config add                    # add a connection: a detected account or a subscription endpoint
+awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --anchor, --window
+awewarm config remove <id>            # delete a connection, its state, and its stored API key
+awewarm config path                   # config / state / log locations
+awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
+awewarm run [--dry-run]               # one scheduler tick (the background scheduler calls this)
+awewarm run --now <id> --confirm      # send one real request immediately
+awewarm scheduler install / uninstall # background scheduler (launchd / Task Scheduler / systemd)
+awewarm update [--check]              # upgrade to the latest PyPI release
 ```
+
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`, `self-update`) still work as hidden aliases; they print their new spelling and will be removed in v1.0.
 
 ## Self-Update
 
 awewarm checks PyPI in the background — at most once a day, and never during scheduler ticks. When a newer release exists, interactive commands print a reminder to stderr.
 
 ```bash
-awewarm self-update            # upgrade to the latest release
-awewarm self-update --check    # show versions only
+awewarm update            # upgrade to the latest release
+awewarm update --check    # show versions only
 ```
 
 To disable the background check:

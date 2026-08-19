@@ -4,9 +4,9 @@ This document is for AI coding agents. Help the user install and configure `awew
 
 ## Quota Is Money
 
-Every `awewarm activate --confirm`, `awewarm verify --confirm`, and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what a tick would do, `awewarm run --dry-run` is always safe.
+Every `awewarm run --now <id> --confirm` and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what a tick would do, `awewarm run --dry-run` is always safe.
 
-`awewarm init` and `awewarm add plan` are interactive (they prompt for choices and API keys). Tell the user to run them in their own terminal.
+`awewarm init` and `awewarm config add` are interactive (they prompt for choices and API keys). Tell the user to run them in their own terminal.
 
 ## Language Behavior
 
@@ -153,7 +153,7 @@ This scans for local `claude` / `codex` CLIs and their login state. No network r
 
 > Run `awewarm init` in your terminal. It will list your local accounts, ask which ones to manage, and install the scheduler.
 
-For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + API key), the command is `awewarm add plan` — also interactive (API key prompt), so it also belongs in the user's terminal.
+For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + API key), the command is `awewarm config add` — also interactive (API key prompt), so it also belongs in the user's terminal. The same command re-adds a local `claude` / `codex` account the user removed earlier.
 
 Platform note: the scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer). On Windows there is no Keychain, so API keys use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_API_KEY_<PLAN> "..."` (scheduler tasks inherit user env vars). On headless Linux/SSH accounts, the user may need `loginctl enable-linger $USER` first; without systemd, cron the tick: `* * * * * awewarm run`.
 
@@ -166,19 +166,19 @@ After the user's `init`:
 ```bash
 awewarm status                      # per-connection mode, window, next due moment
 awewarm config path                 # config / state / log locations
-awewarm inspect <id> --json         # redacted machine-readable dump
+awewarm status <id> --json          # redacted machine-readable dump
 ```
 
 On the user's request you may also:
 
 ```bash
-awewarm times <id> 06:35 11:40 16:45   # set fixed warm-up times
-awewarm enable <id> --mode hybrid      # switch mode (interval/hybrid need a verified window)
-awewarm disable <id>                   # pause while on vacation
-awewarm install                        # (re)install the background scheduler
+awewarm config set <id> --times 06:35,11:40,16:45   # set fixed warm-up times
+awewarm config set <id> --mode hybrid               # switch mode (interval/hybrid need a verified window)
+awewarm config set <id> --off                       # pause while on vacation
+awewarm scheduler install                           # (re)install the background scheduler
 ```
 
-`interval` and `hybrid` modes stay locked until the window is verified or user-confirmed. If the user wants them, guide the three-step flow in the skill (`awewarm verify <id> --confirm`, observe the quota reset, `awewarm verify <id> --duration <minutes> --user-confirm`) — but the `--confirm` request itself consumes quota, so only run it when the user asks.
+`interval` and `hybrid` modes stay locked until the window is verified or user-confirmed. If the user wants them, guide the three-step flow in the skill (`awewarm run --now <id> --confirm`, observe the quota reset, `awewarm config set <id> --window <minutes>`) — but the `--confirm` request itself consumes quota, so only run it when the user asks.
 
 ## Useful commands
 
@@ -187,40 +187,42 @@ Read-only commands (safe to run in agent):
 ```bash
 awewarm discover                    # scan local CLIs and logins
 awewarm status                      # summary + next due moment
-awewarm times <id>                  # show fixed times
-awewarm inspect [<id>] [--json]     # redacted capability dump
+awewarm status <id>                 # one connection in detail
+awewarm config set <id>             # show current schedule settings
+awewarm status --json               # redacted machine-readable dump
 awewarm config path                 # file locations
-awewarm self-update --check         # show current/latest version
+awewarm update --check              # show current/latest version
 ```
 
 Local-only changes (run on user request):
 
 ```bash
-awewarm times <id> HH:MM...         # set fixed times
-awewarm enable <id> [--mode ...]    # enable / switch mode
-awewarm disable <id>                # pause scheduling
-awewarm remove <id>                 # delete connection + stored API key (confirm first)
-awewarm install / uninstall         # background scheduler (launchd / Task Scheduler / systemd)
-awewarm self-update                 # upgrade awewarm
+awewarm config set <id> --times HH:MM,...  # set fixed times
+awewarm config set <id> --mode ...         # switch mode
+awewarm config set <id> --on / --off       # resume / pause scheduling
+awewarm config set <id> --anchor HH:MM     # anchor past an already-open window (no request)
+awewarm config remove <id>                 # delete connection + stored API key (confirm first)
+awewarm scheduler install / uninstall      # background scheduler (launchd / Task Scheduler / systemd)
+awewarm update                             # upgrade awewarm
 ```
 
 User-only commands (interactive or quota-consuming):
 
 ```bash
 awewarm init                        # interactive onboarding
-awewarm add plan                    # interactive, prompts for API key
-awewarm activate <id> --confirm     # sends a real request
-awewarm verify <id> --confirm       # sends a real request
-awewarm anchor <id> --reset HH:MM   # anchor past an already-open window (no request)
+awewarm config add                  # interactive, prompts for API key
+awewarm run --now <id> --confirm    # sends a real request
 awewarm run                         # scheduler tick — may fire real requests
 ```
 
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling.
+
 ## Safety Rules
 
-- Never run `activate --confirm`, `verify --confirm`, or bare `run` unless the user explicitly asks — they consume plan quota.
-- Do not run `init` or `add plan` inside the agent — they are interactive.
+- Never run `run --now --confirm` or bare `run` unless the user explicitly asks — they consume plan quota.
+- Do not run `init` or `config add` inside the agent — they are interactive.
 - API keys live in the macOS Keychain (or `${ENV_VAR}` references), never in config files. Never ask the user to paste an API key into chat; all awewarm output is redacted.
-- Read config through `status` / `inspect`; never hand-edit config.json or state.json.
+- Read config through `status`; never hand-edit config.json or state.json.
 - If any command fails, report the exact command and error message. Do not silently retry.
 
 ## Final Step

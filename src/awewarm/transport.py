@@ -192,5 +192,5 @@ def send_activation(connection, api_key=None):
     if connection["transport"]["kind"] in ("claude-cli", "codex-cli"):
         return _send_cli(connection)
     if not api_key:
-        die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm add plan")
+        die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm config add")
     return _send_http(connection, api_key)

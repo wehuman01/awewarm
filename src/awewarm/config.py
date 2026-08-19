@@ -192,7 +192,7 @@ def connection_errors(conn, conn_id="<connection>"):
         errors.append(
             f"{conn_id}: schedule.mode '{schedule['mode']}' needs a verified or user-confirmed window"
             " with durationMinutes > 0\n"
-            f"  fix: run: awewarm verify {conn_id} --duration <minutes> --user-confirm"
+            f"  fix: run: awewarm config set {conn_id} --window <minutes>"
         )
 
     fixed = schedule.get("fixed")

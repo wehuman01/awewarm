@@ -15,7 +15,7 @@ Linux notes: the user manager's environment is sparser than a login shell
 (same problem as launchd's PATH), so AWEWARM_* and PATH are written into the
 service unit as Environment= lines. SSH-only accounts may need
 `loginctl enable-linger $USER` before the user manager runs without a
-session; `awewarm install` says so when systemctl cannot reach the bus.
+session; `awewarm scheduler install` says so when systemctl cannot reach the bus.
 """
 import os
 import plistlib
@@ -78,7 +78,7 @@ def resolve_exe():
         return exe
     die(
         "awewarm entry point not found on PATH\n"
-        "fix: reinstall with: pip install -e . (or pip install awewarm), then retry: awewarm install"
+        "fix: reinstall with: pip install -e . (or pip install awewarm), then retry: awewarm scheduler install"
     )
 
 
@@ -242,7 +242,7 @@ def _install_linux():
             hint = (
                 "\nfix: the systemd user manager is not running for this account;\n"
                 "  enable lingering (survives logout): loginctl enable-linger $USER\n"
-                "  then re-run: awewarm install"
+                "  then re-run: awewarm scheduler install"
             )
         die(
             f"systemctl failed to enable the awewarm timer\n{stderr.strip()}{hint}\n"
