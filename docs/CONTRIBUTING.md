@@ -19,7 +19,8 @@ python3 -m unittest discover -s tests
 ```
 
 The only runtime dependency is `click`. HTTP uses stdlib `urllib`, timezones use
-`zoneinfo`, the Keychain uses the native `security` CLI, launchd uses `plistlib`.
+`zoneinfo`, secrets live in `secrets.json` (legacy Keychain items migrate via
+the native `security` CLI), launchd uses `plistlib`.
 Do not add a dependency unless it clearly earns its cost.
 
 ## Stable design constraints
@@ -49,8 +50,9 @@ first.
   (`intervalDisabledAt`); any success re-arms it. Failed attempts retry at most
   once per 5 minutes.
 - **Security**: `discover` is read-only (no network, existence checks only);
-  API keys live in the Keychain (via `security -i` stdin, never argv) or
-  `${ENV_VAR}` references; every display path goes through `transport.redact`;
+  API keys live in `secrets.json` (0600, read-back verified on store; legacy
+  `keychain:` refs migrate once via the `security` CLI); every display path
+  goes through `transport.redact`;
   logs never contain API keys or auth headers.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.

@@ -11,8 +11,9 @@ This skill covers **managing** awewarm's warm-up schedules: status, fixed times,
 
 Every activation sends one REAL request against the user's coding-plan quota:
 
-- **Never run** `awewarm run --now <id> --confirm` or bare `awewarm run` unless the user explicitly asks for a request to be sent. `awewarm run --dry-run` is always safe.
-- `awewarm init` and `awewarm config add` are interactive (they prompt for choices and API keys). The user runs them in their own terminal.
+- **Never run** `awewarm run` or `awewarm run <id>` unless the user explicitly asks for a request to be sent. They prompt for confirmation by default; `--force` skips the prompt (for scripting).
+- `awewarm tick` is the background scheduler's own command (hidden). It is not for interactive use.
+- `awewarm init` and `awewarm config add` are interactive (they prompt for choices and API keys, and send one test request per added connection). The user runs them in their own terminal.
 
 ## Command Safety
 
@@ -20,8 +21,8 @@ Every activation sends one REAL request against the user's coding-plan quota:
 |---|---|
 | Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm update --check` |
 | Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--window`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
-| Real requests — user must explicitly ask | `awewarm run --now <id> --confirm`, `awewarm run` |
-| Interactive — user's terminal only | `awewarm init`, `awewarm config add` |
+| Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. |
+| Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 
 Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling — prefer the new names.
 
@@ -36,7 +37,7 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 | "Switch to hybrid / interval / fixed", "切换模式" | `awewarm config set <id> --mode <mode>`; interval/hybrid need a verified window |
 | "Pause while I'm on vacation", "休假暂停" | `awewarm config set <id> --off` (resume with `--on`) |
 | "Add my GLM subscription", "添加订阅套餐" | Tell the user to run `awewarm config add` in their terminal (interactive API key prompt). It also re-adds removed local accounts. |
-| "Verify the window", "验证窗口时长" | Guide the 3-step verify flow below; only send the `--confirm` request if the user asks. |
+| "Verify the window", "验证窗口时长" | Guide the 3-step verify flow below; only send the real request if the user asks. |
 | "Remove this plan", "删掉这个连接" | Confirm, then `awewarm config remove <id>` |
 | "Where are awewarm's files?", "配置在哪" | `awewarm config path` |
 | "Is the scheduler installed?", "调度器装了吗" | `awewarm status` (last line) or `awewarm scheduler install` |
@@ -48,7 +49,7 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 
 Users never hand-edit these files; commands mutate them. Read current state through `awewarm status` or `awewarm status <id> --json` (redacted).
 
-Subscription API keys live in the macOS Keychain (service `awewarm/<id>`) or as `${ENV_VAR}` references — never in the config file, never echoed. On Windows there is no Keychain, so keys are always `${ENV_VAR}` refs (persist with `setx`, which scheduler tasks inherit). Account connections store no credentials at all; they reuse local `claude` / `codex` logins.
+Subscription API keys live in `secrets.json` next to the config (0600) — never in the config file, never echoed. `${ENV_VAR}` refs are no longer supported (background schedulers cannot read shell variables; the CLI rejects them), and legacy `keychain:` refs migrate into `secrets.json` on first load. Account connections store no credentials at all; they reuse local `claude` / `codex` logins.
 
 ## Scheduling Modes
 
@@ -90,7 +91,7 @@ If a mode switch reports the window is not verified, guide the verify workflow f
 
 ### Verify a plan's window (3 steps, user-paced)
 
-1. `awewarm run --now <id> --confirm` — one real request, timestamped (user must ask for it)
+1. `awewarm run <id>` — one real request, timestamped (user must ask for it). Prompts for confirmation; pass `--force` only if the user is running it scripted. By default the run does NOT move the next due moment; `--reset-due` restarts the interval chain from this run.
 2. The user watches when the plan's quota/window resets and computes elapsed minutes
 3. `awewarm config set <id> --window <minutes>` — unlocks interval/hybrid
 
@@ -104,7 +105,7 @@ Tells awewarm when the current window closes; renewal starts right after it inst
 
 ### Remove a connection
 
-Confirm with the user first — this deletes the connection, its state, and its stored Keychain API key:
+Confirm with the user first — this deletes the connection, its state, and its stored API key (secrets.json):
 
 ```bash
 awewarm config remove <id>
@@ -112,9 +113,9 @@ awewarm config remove <id>
 
 ## Core Rules
 
-1. Never send real requests (`run --now --confirm`, bare `run`) without an explicit user request — they consume plan quota.
-2. `init` and `config add` belong in the user's terminal; they are interactive.
-3. Read state through `status`; never hand-edit config.json or state.json.
-4. API keys are Keychain-only or `${ENV_VAR}` refs. Never ask the user to paste keys into chat; never echo them.
-5. `awewarm run` is the scheduler tick (once a minute: launchd on macOS, Task Scheduler on Windows, systemd user timer on Linux). Don't run it manually to "test" — use `awewarm run --dry-run`.
+1. `awewarm run` fires immediately, ignoring the schedule — it sends real requests and consumes quota. `awewarm run` (no id) fires every enabled connection; `awewarm run <id>` fires one. Both prompt for confirmation by default; `--force` skips the prompt (for scripting). The scheduler never calls `awewarm run`; it calls `awewarm tick`.
+2. `awewarm tick` is the scheduler's own command (hidden). It checks the schedule and only fires what's currently due. Never call it manually — use `awewarm run` for manual activations, `awewarm status` to preview what would fire.
+3. `init` and `config add` belong in the user's terminal; they are interactive.
+4. Read state through `status`; never hand-edit config.json or state.json.
+5. API keys live in `secrets.json`; env-var refs are rejected by the CLI. Never ask the user to paste keys into chat; never echo them.
 6. If a command fails, report the exact command and error. Do not silently retry.

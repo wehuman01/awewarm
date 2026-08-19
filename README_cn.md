@@ -72,7 +72,7 @@ awewarm status      # 查看接下来会发生什么
 awewarm config add
 ```
 
-依次选择协议、输入 API base URL、API key 和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 API key 存入 `secrets.json` —— 如果你输入的是 `${ENV_VAR}` 引用则只保存引用。同一条命令也能重新添加之前删掉的 `claude` / `codex` 本机账号 —— 它会列出在这台机器上检测到的所有可管理项。
+依次选择协议、输入 API base URL、API key 和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 API key 存入 `secrets.json`（0600）。同一条命令也能重新添加之前删掉的 `claude` / `codex` 本机账号 —— 它会列出在这台机器上检测到的所有可管理项。
 
 ## 配套工具
 
@@ -179,8 +179,8 @@ awewarm config remove <id>            # 删除连接及其状态和存储的 API
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
-awewarm run [--dry-run]               # 一次调度 tick（后台调度器每分钟调用）
-awewarm run <id> [--reset-due]        # 立即触发该连接（默认不动原计划，--reset-due 才重算下次到期）
+awewarm run                           # 立即触发所有启用的连接（无视调度计划）
+awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动原计划，--reset-due 才重算下次到期）
 awewarm scheduler install / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）
 awewarm update [--check]              # 升级到最新 PyPI 版本
 ```

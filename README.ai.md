@@ -4,7 +4,7 @@ This document is for AI coding agents. Help the user install and configure `awew
 
 ## Quota Is Money
 
-Every `awewarm run <id>` and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what a tick would do, `awewarm run --dry-run` is always safe.
+Every `awewarm run <id>` and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what would fire, `awewarm status` shows each connection's next due moment.
 
 `awewarm init` and `awewarm config add` are interactive (they prompt for choices and API keys, and send one test request per added connection). Tell the user to run them in their own terminal.
 
@@ -155,7 +155,7 @@ This scans for local `claude` / `codex` CLIs and their login state. No network r
 
 For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + API key), the command is `awewarm config add` — also interactive (API key prompt), so it also belongs in the user's terminal. The same command re-adds a local `claude` / `codex` account the user removed earlier.
 
-Platform note: the scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer). On Windows there is no Keychain, so API keys use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_API_KEY_<PLAN> "..."` (scheduler tasks inherit user env vars). On headless Linux/SSH accounts, the user may need `loginctl enable-linger $USER` first; without systemd, cron the tick: `* * * * * awewarm run`.
+Platform note: the scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer). API keys live in `secrets.json` on every platform — env-var references were removed because background schedulers cannot read shell variables. On headless Linux/SSH accounts, the user may need `loginctl enable-linger $USER` first; without systemd, cron the tick: `* * * * * awewarm tick`.
 
 ---
 
@@ -221,7 +221,7 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 
 - Never run `run <id>` or bare `run` unless the user explicitly asks — they consume plan quota.
 - Do not run `init` or `config add` inside the agent — they are interactive.
-- API keys live in the macOS Keychain (or `${ENV_VAR}` references), never in config files. Never ask the user to paste an API key into chat; all awewarm output is redacted.
+- API keys live in `secrets.json` (0600), never in config files. Never ask the user to paste an API key into chat; all awewarm output is redacted.
 - Read config through `status`; never hand-edit config.json or state.json.
 - If any command fails, report the exact command and error message. Do not silently retry.
 
