@@ -199,15 +199,48 @@ def _prompt_window_reset(config):
     )
 
 
-def _prompt_fixed_settings():
+def _prompt_fixed_settings(window_minutes=None):
     fixed_at = click.prompt(
         "Fixed activation times (one or more, comma-separated)",
         default=DEFAULT_FIXED_AT, value_proc=_slots_proc,
     )
+    used_grid = False
+    if window_minutes and len(fixed_at) == 1:
+        fixed_at, used_grid = _maybe_expand_day_grid(fixed_at[0], window_minutes)
     days_choice = _choice_prompt(
-        "Select days\n  1. weekday (Mon-Fri)\n  2. every day", ["1", "2"], "1"
+        "Select days\n  1. weekday (Mon-Fri)\n  2. every day", ["1", "2"],
+        "2" if used_grid else "1",
     )
     return fixed_at, "weekday" if days_choice == "1" else "every-day"
+
+
+def _maybe_expand_day_grid(entered_time, window_minutes):
+    """Offer the full-day slot grid; a single entered time rarely covers a day.
+
+    Asks for the plan's daily quota reset first — anchoring the grid there
+    minimizes drift; the entered time is the fallback anchor.
+    """
+    reset_hhmm = click.prompt(
+        "Daily quota reset time (optional HH:MM — anchors the grid to it)",
+        default="", show_default=False, value_proc=_optional_slot_proc,
+    )
+    anchor = reset_hhmm or entered_time
+    grid = schedule.grid_times(anchor, window_minutes)
+    if len(grid) < 2:
+        return [entered_time], False
+    click.echo(f"  Full-day coverage for a {window_minutes}-min window: {', '.join(grid)}")
+    if click.confirm("  Use these times?", default=True):
+        return grid, True
+    return [entered_time], False
+
+
+def _optional_slot_proc(value):
+    value = value.strip()
+    if not value:
+        return None
+    if not SLOT_RE.match(value):
+        raise click.BadParameter("use HH:MM, e.g. 13:27")
+    return value
 
 
 def _fixed_block(fixed_at, days):
@@ -312,7 +345,7 @@ def _add_account_flow(config, state, finding, confirm_first=True):
     )
     mode = {"1": "hybrid", "2": "fixed", "3": "interval"}[mode_choice]
     if mode in ("fixed", "hybrid"):
-        fixed_at, days = _prompt_fixed_settings()
+        fixed_at, days = _prompt_fixed_settings(finding["builtinWindow"].get("durationMinutes"))
     else:
         fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     conn_id = unique_connection_id(config, finding["label"])
@@ -421,7 +454,7 @@ def _add_plan_flow():
         )
         mode = "hybrid" if mode_choice_2 == "1" else "interval"
         if mode == "hybrid":
-            fixed_at, days = _prompt_fixed_settings()
+            fixed_at, days = _prompt_fixed_settings(duration)
         if click.confirm("Is this plan's window already open right now?", default=False):
             reset_at = _prompt_window_reset(config)
     else:

@@ -81,6 +81,28 @@ def is_active_day(day, days_rule):
     return day.weekday() < 5  # weekday rule: Monday..Friday
 
 
+def grid_times(anchor_hhmm, window_minutes):
+    """Full-day fixed slots spaced one window (+5 min) apart from the anchor.
+
+    Each slot opens a window that closes ~5 min before the next slot renews
+    it, so the grid keeps a window open around the clock. Slots stop before
+    wrapping past the anchor again. [] when a grid can't help (unknown anchor,
+    or windows under 2 h — too many slots; interval mode fits those better).
+    """
+    match = SLOT_RE.match(anchor_hhmm or "")
+    if not match or not isinstance(window_minutes, int) or window_minutes < 120:
+        return []
+    start = int(match.group(1)) * 60 + int(match.group(2))
+    step = window_minutes + 5
+    slots = []
+    for k in range(8):  # guard only: the day bound below already caps the list
+        minutes = start + k * step
+        if minutes >= 24 * 60:  # wrapped past the anchor — day is covered
+            break
+        slots.append(f"{minutes // 60:02d}:{minutes % 60:02d}")
+    return slots
+
+
 def compute_next_due(connection, success_at, jitter_seconds=None):
     """When interval renewal comes due: window + grace (+ jitter).
 

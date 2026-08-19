@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Full-day slot grid offered at setup
+
+`config add` / `init` now know that one fixed time rarely covers a day. When the window duration is known (verified built-in accounts, or a plan whose window you just recorded), the fixed-times prompt asks for the plan's daily quota reset time and offers a full-day grid — one slot per window, spaced window + 5 min apart, anchored on the reset time so drift stays minimal (e.g. reset 01:14 + 300-min window → 01:14, 06:19, 11:24, 16:29, 21:34). Accepting the grid defaults days to every-day; declining keeps the single entered time with the usual weekday default. Windows under 2 h offer no grid (interval mode fits those better).
+
 ### pmset wake removal (macOS)
 
 The launchd `StartCalendarInterval` entries cover every fixed slot at its exact time with no sudo; the pmset `wakeorpoweron` fallback covered only the earliest slot, needed sudo, and duplicated schedule state. It is removed. `awewarm update`, `scheduler install`, and `scheduler uninstall` cancel a pmset repeat left behind by earlier versions — only if it is still the one awewarm set, and a failed cancel (no sudo password) is retried by the next of those commands. If the state record was already lost, cancel manually: `sudo pmset repeat cancel` (safe when awewarm's is the only repeating event). Calendar entries now fire every day regardless of the slot's day rule; the tick applies the day rule, so a weekend wake for a weekday-only slot is a no-op. `schedule.wakeLeadMinutes` and `scheduler install --wake/--no-wake` are gone. A fully shut-down Mac no longer auto-boots; the first tick after power-on still catches up slots inside the catch-up window.

@@ -333,3 +333,26 @@ class UserAnchorTests(unittest.TestCase):
         actions = schedule.plan_actions(conn, cs, at(WEDNESDAY, "13:29"))
         self.assertEqual([a["type"] for a in actions], ["activate"])
         self.assertEqual(actions[0]["reason"], "interval")
+
+
+class GridTimesTests(unittest.TestCase):
+    def test_300min_grid_from_default_anchor(self):
+        self.assertEqual(
+            schedule.grid_times("06:35", 300), ["06:35", "11:40", "16:45", "21:50"]
+        )
+
+    def test_grid_from_late_night_reset_covers_full_day(self):
+        # reset 01:14 → five windows reach 21:34
+        self.assertEqual(
+            schedule.grid_times("01:14", 300), ["01:14", "06:19", "11:24", "16:29", "21:34"]
+        )
+
+    def test_halfday_window_gives_two_slots(self):
+        self.assertEqual(schedule.grid_times("09:00", 720), ["09:00", "21:05"])
+
+    def test_short_windows_return_no_grid(self):
+        self.assertEqual(schedule.grid_times("06:00", 60), [])
+
+    def test_invalid_anchor_returns_no_grid(self):
+        self.assertEqual(schedule.grid_times("6am", 300), [])
+        self.assertEqual(schedule.grid_times(None, 300), [])

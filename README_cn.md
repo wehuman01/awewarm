@@ -41,9 +41,9 @@ awewarm 管理两类连接：
 pip3 install awewarm
 ```
 
-后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm run`。
+后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm tick`。
 
-环境变量方式：输入 `${GLM_API_KEY}` 这样的引用，awewarm 只保存引用本身（aweswitch 惯例）。注意后台调度器只能看到安装它的 shell 里的变量 —— 变量设好后请从该 shell 重新安装调度器。Windows 用 `setx` 持久化，计划任务会继承。
+所有密钥都保存在 `secrets.json` —— 环境变量引用方式已移除：后台调度器（launchd / systemd / 任务计划程序）读不到 shell 变量，会以 "API key unavailable" 静默失败。
 
 ## 快速开始
 
