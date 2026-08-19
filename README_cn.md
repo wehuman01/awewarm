@@ -172,6 +172,7 @@ awewarm discover                      # 纯读扫描本机 CLI 与登录态
 awewarm config add                    # 添加连接：本机账号或订阅 endpoint
 awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--anchor、--window
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
+awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
 awewarm run [--dry-run]               # 一次调度 tick（后台调度器每分钟调用）

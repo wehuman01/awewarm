@@ -172,6 +172,7 @@ awewarm discover                      # read-only scan of local CLIs and logins
 awewarm config add                    # add a connection: a detected account or a subscription endpoint
 awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --anchor, --window
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
+awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
 awewarm run [--dry-run]               # one scheduler tick (the background scheduler calls this)

@@ -81,7 +81,7 @@ class SurfaceTests(IsolatedTestCase):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
-        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "path", "remove", "set"])
+        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "show"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
 
     def test_version_prints_bare_number(self):

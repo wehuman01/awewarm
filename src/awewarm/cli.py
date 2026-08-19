@@ -584,7 +584,7 @@ def cli():
 
 @cli.command("init")
 def init_command():
-    """Interactive onboarding: detect local accounts and enable a schedule."""
+    """Interactive onboarding: accounts + scheduler."""
     click.echo("Welcome to awewarm.\n")
     click.echo("Scanning local coding accounts...")
     findings = discover.discover_accounts()
@@ -622,7 +622,9 @@ def init_command():
 
 @cli.command("discover")
 def discover_command():
-    """Scan local Claude Code / Codex CLIs and their login state (read-only)."""
+    """Scan local CLIs and login state (read-only).
+
+Detects Claude Code / Codex installs and logins."""
     for finding in discover.discover_accounts():
         for line in discover.describe_finding(finding):
             click.echo(line)
@@ -630,7 +632,7 @@ def discover_command():
 
 @cli.group()
 def config():
-    """Manage connections: add, set, remove, path."""
+    """Manage connections: add, set, remove, show, edit."""
 
 
 def _config_add():
@@ -675,7 +677,9 @@ def _config_add():
 
 @config.command("add")
 def config_add():
-    """Add a connection: a detected local account or a subscription endpoint."""
+    """Add a connection (account or plan).
+
+Offers detected local accounts plus a manual subscription endpoint."""
     _config_add()
 
 
@@ -789,7 +793,9 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
 @click.option("--api-key-env", "api_key_env", default=None, metavar="VAR", help="Reference an env var (e.g. GLM_API_KEY) instead of storing the key.")
 def config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key, api_key_env):
-    """Show or change one connection's schedule settings."""
+    """Show or change one connection's settings.
+
+With no flags, prints the current settings."""
     _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key, api_key_env)
 
 
@@ -811,7 +817,9 @@ def _config_remove(connection):
 @config.command("remove")
 @click.argument("connection")
 def config_remove(connection):
-    """Delete a connection, its state, and its stored API key."""
+    """Delete a connection and its stored key.
+
+Also removes its scheduler state."""
     _config_remove(connection)
 
 
@@ -822,6 +830,37 @@ def config_path_command():
     click.echo(f"secrets: {keystore.secrets_path()}")
     click.echo(f"state:  {state_path()}")
     click.echo(f"log:    {log_path()}")
+
+
+@config.command("show")
+def config_show_command():
+    """Print the on-disk config (secrets never live there)."""
+    path = config_path()
+    if not path.exists():
+        die(f"no config at {path} yet\nfix: run: awewarm init")
+    click.echo(path.read_text(), nl=False)
+
+
+@config.command("edit")
+def config_edit_command():
+    """Open config.json in $VISUAL, $EDITOR, or nano."""
+    path = config_path()
+    if not path.exists():
+        die(f"no config at {path} yet\nfix: run: awewarm init")
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+    if shutil.which(editor.split()[0]) is None:
+        click.echo(f"note: editor '{editor}' not found; set $EDITOR to your preferred one")
+    click.edit(filename=str(path), editor=editor)
+    config = load_config()
+    errors = []
+    for conn_id, conn in config["connections"].items():
+        errors.extend(connection_errors(conn, conn_id))
+    if errors:
+        click.echo("⚠ config has problems after editing:")
+        for error in errors:
+            click.echo(f"  {error}")
+    else:
+        click.echo("✓ config is valid")
 
 
 def _show_status(connection, as_json):
@@ -853,7 +892,7 @@ def _show_status(connection, as_json):
 @click.argument("connection", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
 def status_command(connection, as_json):
-    """Show connections, their windows, and what fires next."""
+    """Show connections and what fires next."""
     _show_status(connection, as_json)
 
 
@@ -862,7 +901,9 @@ def status_command(connection, as_json):
 @click.option("--now", "now_id", metavar="ID", default=None, help="Fire this one connection immediately instead of waiting for its slot.")
 @click.option("--confirm", is_flag=True, help="With --now: actually send the request (it consumes plan quota).")
 def run_command(dry_run, now_id, confirm):
-    """One scheduler tick: fire whatever is due right now (the background scheduler calls this)."""
+    """One scheduler tick (fires whatever is due).
+
+The background scheduler calls this once a minute."""
     if now_id is not None:
         _activate_now(now_id, confirm, dry_run)
         return
@@ -884,7 +925,9 @@ def _scheduler_uninstall():
 
 @cli.group()
 def scheduler():
-    """Install or uninstall the background scheduler agent (tick every minute)."""
+    """Install/uninstall the background scheduler.
+
+The installed agent ticks once a minute."""
 
 
 @scheduler.command("install")
@@ -948,7 +991,9 @@ def legacy_add(kind):
 @click.argument("connection")
 @click.option("--confirm", is_flag=True, help="Actually send the request (it consumes plan quota).")
 def legacy_activate(connection, confirm):
-    """Legacy alias for `awewarm run --now <id> --confirm`."""
+    """Legacy alias: run --now <id> --confirm.
+
+Full form: awewarm run --now <id> --confirm."""
     _moved(f"activate {connection}", f"run --now {connection} --confirm")
     _activate_now(connection, confirm)
 
@@ -959,7 +1004,7 @@ def legacy_activate(connection, confirm):
 @click.option("--duration", type=int, default=None, help="Window duration in minutes you verified by hand.")
 @click.option("--user-confirm", "user_confirm", is_flag=True, help="Mark the window as user-confirmed (unlocks interval).")
 def legacy_verify(connection, confirm, duration, user_confirm):
-    """Legacy alias: window evidence / measurement / confirmation."""
+    """Legacy alias: status <id> / config set --window."""
     _moved("verify", f"status {connection} / config set {connection} --window <minutes>")
     if user_confirm:
         if not duration or duration <= 0:
@@ -991,7 +1036,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
 @click.argument("connection")
 @click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
 def legacy_enable(connection, mode):
-    """Legacy alias for `awewarm config set <id> --on [--mode M]`."""
+    """Legacy alias: config set <id> --on [--mode M]."""
     _moved(f"enable {connection}", f"config set {connection} --on")
     _config_set(connection, None, None, mode, True, None, None, None, None)
 
@@ -1000,7 +1045,7 @@ def legacy_enable(connection, mode):
 @click.argument("connection")
 @click.option("--reset", "reset_hhmm", required=True, help="HH:MM today when the currently-open window closes.")
 def legacy_anchor(connection, reset_hhmm):
-    """Legacy alias for `awewarm config set <id> --anchor HH:MM`."""
+    """Legacy alias: config set <id> --anchor HH:MM."""
     _moved(f"anchor {connection}", f"config set {connection} --anchor {reset_hhmm}")
     _config_set(connection, None, None, None, None, reset_hhmm, None, None, None)
 
@@ -1008,7 +1053,7 @@ def legacy_anchor(connection, reset_hhmm):
 @cli.command("disable", hidden=True)
 @click.argument("connection")
 def legacy_disable(connection):
-    """Legacy alias for `awewarm config set <id> --off`."""
+    """Legacy alias: config set <id> --off."""
     _moved(f"disable {connection}", f"config set {connection} --off")
     _config_set(connection, None, None, None, False, None, None, None, None)
 
@@ -1017,7 +1062,7 @@ def legacy_disable(connection):
 @click.argument("connection")
 @click.argument("times", nargs=-1)
 def legacy_times(connection, times):
-    """Legacy alias for `awewarm config set <id> --times HH:MM...`."""
+    """Legacy alias: config set <id> --times HH:MM...."""
     _moved(f"times {connection}", f"config set {connection} --times HH:MM...")
     _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None, None)
 
@@ -1025,7 +1070,7 @@ def legacy_times(connection, times):
 @cli.command("remove", hidden=True)
 @click.argument("connection")
 def legacy_remove(connection):
-    """Legacy alias for `awewarm config remove <id>`."""
+    """Legacy alias: config remove <id>."""
     _moved(f"remove {connection}", f"config remove {connection}")
     _config_remove(connection)
 
@@ -1039,7 +1084,7 @@ def legacy_install():
 
 @cli.command("uninstall", hidden=True)
 def legacy_uninstall():
-    """Legacy alias for `awewarm scheduler uninstall`."""
+    """Legacy alias: scheduler uninstall."""
     _moved("uninstall", "scheduler uninstall")
     _scheduler_uninstall()
 
@@ -1048,7 +1093,7 @@ def legacy_uninstall():
 @click.argument("connection", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
 def legacy_inspect(connection, as_json):
-    """Legacy alias for `awewarm status [<id>] [--json]`."""
+    """Legacy alias: status [<id>] [--json]."""
     _moved("inspect", "status")
     _show_status(connection, as_json)
 
