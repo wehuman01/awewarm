@@ -481,7 +481,7 @@ class StatusTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Claude Code (claude-code-main) — connected", result.output)
         self.assertIn("Mode: hybrid", result.output)
-        self.assertIn("300 minutes, verified", result.output)
+        self.assertIn("300 minutes, user-confirmed", result.output)
         self.assertIn("Scheduler: not installed", result.output)
 
     def test_status_single_connection_shows_detail(self):

@@ -3,13 +3,17 @@
 Everything on disk is JSON written by the tool itself; users interact through
 commands, never by hand-editing. Path env overrides (AWEWARM_CONFIG etc.) are
 also the primary test seam.
+
+On-disk format (v2) is flat — one level of connection fields. load_config
+expands it into the richer runtime shape the rest of the code reads;
+save_config compacts back. v1 files (nested) upgrade in place on first load.
 """
 import json
 import os
 import re
 from pathlib import Path
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 STATE_VERSION = 1
 
 KIND_ACCOUNT = "account"
@@ -123,7 +127,132 @@ def load_config(path=None):
         return empty_config()
     if not isinstance(data, dict) or not isinstance(data.get("connections"), dict):
         die("config is malformed (expected a JSON object with 'connections')\nfix: delete the file and re-run: awewarm init")
-    return data
+    version = data.get("version", 1)
+    if version == 1:
+        # Legacy nested files are already the runtime shape; rewrite as v2.
+        runtime = data
+        runtime["version"] = CONFIG_VERSION
+        _write_json(path or config_path(), _compact_config(runtime))
+        return runtime
+    if version != CONFIG_VERSION:
+        die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm update")
+    return {
+        "version": CONFIG_VERSION,
+        "global": data.get("global") or {},
+        "connections": {
+            conn_id: _expand_conn(conn_id, conn)
+            for conn_id, conn in data["connections"].items()
+        },
+    }
+
+
+def _expand_conn(conn_id, flat):
+    """Flat v2 fields → the nested runtime shape the codebase reads."""
+    subscription = bool(flat.get("url"))
+    if subscription:
+        kind, auth, transport = KIND_SUBSCRIPTION, (
+            {"type": "api-key", "status": "valid", "apiKeyRef": flat.get("apiKey")}
+        ), {"kind": flat.get("protocol") or "openai-chat", "baseUrl": flat["url"], "cliCommand": None}
+    else:
+        cli = flat.get("cli") or ""
+        # Provider rides on the CLI basename; discover only ever finds `claude` / `codex`.
+        transport_kind = "codex-cli" if "codex" in Path(cli).name.lower() else "claude-cli"
+        kind, auth, transport = KIND_ACCOUNT, (
+            {"type": "local-cli", "status": "valid", "apiKeyRef": None}
+        ), {"kind": transport_kind, "baseUrl": None, "cliCommand": cli}
+    duration = flat.get("windowMinutes")
+    window = (
+        {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": duration, "evidence": "user-confirmed"}
+        if isinstance(duration, int) and duration > 0
+        else {"status": "unknown", "startRule": "unknown", "durationMinutes": None, "evidence": "none"}
+    )
+    schedule = {
+        "mode": flat.get("mode") or "fixed",
+        "fixed": {
+            "at": list(flat.get("times") or [DEFAULT_FIXED_AT]),
+            "days": flat.get("days") or "weekday",
+            "catchUpWindowMinutes": flat.get("catchUpMinutes", DEFAULT_CATCHUP_MINUTES),
+            "skipIfActivatedWithinMinutes": flat.get("skipIfActivatedMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
+        },
+        "interval": {
+            "graceSeconds": flat.get("graceSeconds", DEFAULT_GRACE_SECONDS),
+            "jitterSeconds": flat.get("jitterSeconds", DEFAULT_JITTER_SECONDS),
+        },
+    }
+    return {
+        "label": flat.get("label") or conn_id,
+        "kind": kind,
+        "enabled": flat.get("enabled", True),
+        "auth": auth,
+        "transport": transport,
+        "window": window,
+        "activation": {
+            "model": flat.get("model"),
+            "prompt": DEFAULT_PROMPT,
+            "maxTokens": DEFAULT_MAX_TOKENS,
+        },
+        "schedule": schedule,
+    }
+
+
+def _compact_conn(conn):
+    """Runtime shape → flat v2 fields. Tuning knobs fall back to code defaults."""
+    flat = {}
+    if conn.get("label"):
+        flat["label"] = conn["label"]
+    transport = conn.get("transport") or {}
+    if conn.get("kind") == KIND_SUBSCRIPTION:
+        flat["url"] = transport.get("baseUrl")
+        flat["protocol"] = transport.get("kind")
+        api_key_ref = (conn.get("auth") or {}).get("apiKeyRef")
+        if api_key_ref:
+            flat["apiKey"] = api_key_ref
+    elif transport.get("cliCommand"):
+        flat["cli"] = transport["cliCommand"]
+    activation = conn.get("activation") or {}
+    if activation.get("model"):
+        flat["model"] = activation["model"]
+    window = conn.get("window") or {}
+    duration = window.get("durationMinutes")
+    if window.get("status") in ("verified", "user-confirmed") and isinstance(duration, int) and duration > 0:
+        flat["windowMinutes"] = duration
+    schedule = conn.get("schedule") or {}
+    flat["mode"] = schedule.get("mode") or "fixed"
+    fixed = schedule.get("fixed") or {}
+    if schedule.get("mode") in ("fixed", "hybrid") or fixed.get("at"):
+        flat["times"] = list(fixed.get("at") or [DEFAULT_FIXED_AT])
+        if fixed.get("days"):
+            flat["days"] = fixed["days"]
+        # Tuning knobs land on disk only when they differ from the defaults.
+        for flat_key, run_key, default in (
+            ("catchUpMinutes", "catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES),
+            ("skipIfActivatedMinutes", "skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
+        ):
+            value = fixed.get(run_key)
+            if value is not None and value != default:
+                flat[flat_key] = value
+    interval = schedule.get("interval") or {}
+    for run_key, default in (
+        ("graceSeconds", DEFAULT_GRACE_SECONDS),
+        ("jitterSeconds", DEFAULT_JITTER_SECONDS),
+    ):
+        value = interval.get(run_key)
+        if value is not None and value != default:
+            flat[run_key] = value
+    if conn.get("enabled") is False:
+        flat["enabled"] = False
+    return flat
+
+
+def _compact_config(config):
+    return {
+        "version": CONFIG_VERSION,
+        **({"global": config["global"]} if config.get("global") else {}),
+        "connections": {
+            conn_id: _compact_conn(conn)
+            for conn_id, conn in config["connections"].items()
+        },
+    }
 
 
 def save_config(config, path=None):
@@ -131,7 +260,7 @@ def save_config(config, path=None):
         errors = connection_errors(conn, conn_id)
         if errors:
             die(f"refusing to save invalid connection {conn_id}:\n  " + "\n  ".join(errors))
-    _write_json(path or config_path(), config)
+    _write_json(path or config_path(), _compact_config(config))
 
 
 def load_state(path=None):

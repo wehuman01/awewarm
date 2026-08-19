@@ -14,7 +14,13 @@ import sys
 
 from .config import config_path, die
 
-ENV_REF_RE = re.compile(r"^\$\{([A-Z0-9_]+)\}$")
+ENV_REF_RE = re.compile(r"^\$\{?([A-Z0-9_]+)\}?$")
+
+
+def normalize_env_ref(text):
+    """`$VAR` and `${VAR}` both normalize to `${VAR}`."""
+    match = ENV_REF_RE.match((text or "").strip())
+    return "${" + match.group(1) + "}" if match else None
 
 
 def secrets_path():

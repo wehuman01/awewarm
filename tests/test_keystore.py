@@ -62,3 +62,15 @@ class SecretsFileTests(IsolatedTestCase):
         with mock.patch.object(keystore.subprocess, "run", return_value=fake):
             self.assertEqual(keystore.load_api_key("keychain:awewarm/glm"), "legacy-key-123")
         self.assertEqual(keystore.load_api_key("file:glm"), "legacy-key-123")
+
+
+class BareDollarRefTests(unittest.TestCase):
+    def test_normalize_both_notations(self):
+        self.assertEqual(keystore.normalize_env_ref("$GLM_API_KEY"), "${GLM_API_KEY}")
+        self.assertEqual(keystore.normalize_env_ref("${GLM_API_KEY}"), "${GLM_API_KEY}")
+        self.assertIsNone(keystore.normalize_env_ref("GLM_API_KEY"))
+        self.assertIsNone(keystore.normalize_env_ref("sk-literal"))
+
+    def test_load_bare_ref(self):
+        with mock.patch.dict("os.environ", {"GLM_API_KEY": "v"}):
+            self.assertEqual(keystore.load_api_key("$GLM_API_KEY"), "v")

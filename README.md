@@ -136,22 +136,33 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "connections": {
     "claude-code": {
-      "kind": "account",
-      "enabled": true,
-      "transport": {"kind": "claude-cli", "cliCommand": "claude"},
-      "window": {"status": "verified", "durationMinutes": 300},
-      "schedule": {
-        "mode": "hybrid",
-        "fixed": {"at": ["06:35"], "days": "weekday", "catchUpWindowMinutes": 45},
-        "interval": {"graceSeconds": 75, "jitterSeconds": 30}
-      }
+      "label": "Claude Code",
+      "cli": "/usr/local/bin/claude",
+      "model": "haiku",
+      "windowMinutes": 300,
+      "mode": "hybrid",
+      "times": ["06:35"],
+      "days": "weekday"
+    },
+    "glm": {
+      "label": "glm",
+      "url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "protocol": "openai-chat",
+      "apiKey": "file:glm",
+      "model": "GLM-5-Turbo",
+      "windowMinutes": 300,
+      "mode": "hybrid",
+      "times": ["06:00"],
+      "days": "every-day"
     }
   }
 }
 ```
+
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` (the pasted key lives in `~/.config/awewarm/secrets.json`, chmod 600) or an env reference like `$GLM_API_KEY` / `${GLM_API_KEY}`. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
 
 ## Commands
 

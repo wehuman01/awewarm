@@ -5,6 +5,7 @@ in v1.0); `awewarm run` itself is fixed because installed scheduler agents
 invoke it verbatim."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -341,14 +342,14 @@ def _add_plan_flow():
     if not base_url.startswith(("http://", "https://")):
         die("API base URL must start with http:// or https://")
     api_key_input = click.prompt(
-        "API key (paste the key, or an env ref like ${GLM_API_KEY})", hide_input=True
+        "API key (paste the key, or an env ref like $GLM_API_KEY)", hide_input=True
     ).strip()
-    env_match = keystore.ENV_REF_RE.match(api_key_input)
-    if env_match:
-        api_key_ref = api_key_input
-        api_key = os.environ.get(env_match.group(1))
+    env_ref = keystore.normalize_env_ref(api_key_input)
+    if env_ref:
+        api_key_ref = env_ref
+        api_key = keystore.load_api_key(env_ref)
         if api_key is None:
-            die(f"env var {env_match.group(1)} is not set in this shell\n"
+            die(f"env var {env_ref[2:-1]} is not set in this shell\n"
                 f"  fix: export it first, or paste the key itself")
     else:
         if not api_key_input:
@@ -428,7 +429,7 @@ def _add_plan_flow():
     else:
         fixed_at, days = _prompt_fixed_settings()
 
-    if not env_match:
+    if not env_ref:
         api_key_ref = keystore.store_api_key(conn_id, api_key)
         click.echo(f"✓ API key stored in {keystore.secrets_path()} (chmod 600)")
     else:
@@ -693,9 +694,14 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
         _show_settings(conn_id, conn)
         return
     if api_key_env:
-        if not keystore.ENV_REF_RE.match("${" + api_key_env + "}"):
-            die("env var name may only contain A-Z, 0-9 and underscore")
-        conn.setdefault("auth", {})["apiKeyRef"] = "${" + api_key_env + "}"
+        env_ref = (
+            keystore.normalize_env_ref(api_key_env)
+            or (re.fullmatch(r"[A-Z0-9_]+", api_key_env) and "${" + api_key_env + "}")
+        )
+        if not env_ref:
+            die("--api-key-env takes a var name (GLM_API_KEY), $VAR, or ${VAR}")
+        conn.setdefault("auth", {})["apiKeyRef"] = env_ref
+        api_key_env = env_ref[2:-1]
     if api_key is not None:
         if not api_key.strip() or "\n" in api_key:
             die("--api-key must be a single non-empty line")

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import unittest
 
 from helpers import IsolatedTestCase, account_connection, plan_connection
@@ -129,3 +130,88 @@ class VersionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class V2FormatTests(IsolatedTestCase):
+    def _v1_conn(self):
+        return {
+            "label": "glm", "kind": "subscription", "enabled": True,
+            "auth": {"type": "api-key", "status": "valid", "apiKeyRef": "file:glm"},
+            "transport": {"kind": "openai-chat", "baseUrl": "https://x.example/v4", "cliCommand": None},
+            "plan": {"url": "https://x.example/v4", "label": "glm"},
+            "window": {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": 300, "evidence": "user-confirmed"},
+            "activation": {"model": "GLM-5-Turbo", "prompt": "Reply with exactly: ok", "maxTokens": 4},
+            "schedule": {"mode": "hybrid",
+                         "fixed": {"at": ["06:00"], "days": "every-day", "catchUpWindowMinutes": 45, "skipIfActivatedWithinMinutes": 30},
+                         "interval": {"graceSeconds": 75, "jitterSeconds": 30}},
+        }
+
+    def test_save_compacts_to_flat_v2(self):
+        conf = config.empty_config()
+        conf["connections"]["glm"] = self._v1_conn()
+        config.save_config(conf)
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(on_disk["version"], 2)
+        self.assertEqual(on_disk["connections"]["glm"], {
+            "label": "glm", "url": "https://x.example/v4", "protocol": "openai-chat",
+            "apiKey": "file:glm", "model": "GLM-5-Turbo", "windowMinutes": 300,
+            "mode": "hybrid", "times": ["06:00"], "days": "every-day",
+        })
+
+    def test_load_expands_flat_v2(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 2,
+            "connections": {"glm": {
+                "label": "glm", "url": "https://x.example/v4", "apiKey": "$GLM_KEY",
+                "model": "GLM-5-Turbo", "windowMinutes": 300,
+                "mode": "hybrid", "times": ["06:00"], "days": "every-day",
+            }},
+        }))
+        conn = config.load_config()["connections"]["glm"]
+        self.assertEqual(conn["kind"], "subscription")
+        self.assertEqual(conn["transport"]["baseUrl"], "https://x.example/v4")
+        self.assertEqual(conn["auth"]["apiKeyRef"], "$GLM_KEY")
+        self.assertEqual(conn["window"]["durationMinutes"], 300)
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:00"])
+        self.assertEqual(conn["schedule"]["fixed"]["catchUpWindowMinutes"], 45)
+        self.assertEqual(config.connection_errors(conn, "glm"), [])
+
+    def test_v1_file_upgraded_in_place_on_load(self):
+        v1 = {"version": 1, "global": {}, "connections": {"glm": self._v1_conn()}}
+        Path(config.config_path()).write_text(json.dumps(v1))
+        conn = config.load_config()["connections"]["glm"]
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(on_disk["version"], 2)
+        self.assertNotIn("transport", on_disk["connections"]["glm"])
+        self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm")
+
+    def test_account_roundtrip_via_cli_flag(self):
+        conn = account_connection()
+        conn["transport"]["cliCommand"] = "/Users/x/.local/bin/codex"
+        conn["transport"]["kind"] = "codex-cli"
+        conf = config.empty_config()
+        conf["connections"]["cx"] = conn
+        config.save_config(conf)
+        on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["cx"]
+        self.assertEqual(on_disk["cli"], "/Users/x/.local/bin/codex")
+        self.assertNotIn("url", on_disk)
+        loaded = config.load_config()["connections"]["cx"]
+        self.assertEqual(loaded["transport"]["kind"], "codex-cli")
+
+    def test_custom_tuning_knobs_survive_roundtrip(self):
+        conn = self._v1_conn()
+        conn["schedule"]["fixed"]["catchUpWindowMinutes"] = 1441
+        conf = config.empty_config()
+        conf["connections"]["glm"] = conn
+        config.save_config(conf)
+        loaded = config.load_config()["connections"]["glm"]
+        self.assertEqual(loaded["schedule"]["fixed"]["catchUpWindowMinutes"], 1441)
+
+    def test_disabled_flag_roundtrips(self):
+        conn = self._v1_conn()
+        conn["enabled"] = False
+        conf = config.empty_config()
+        conf["connections"]["glm"] = conn
+        config.save_config(conf)
+        on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
+        self.assertFalse(on_disk["enabled"])

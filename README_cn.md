@@ -136,22 +136,33 @@ awewarm config set claude-code --times 06:35   # 每个工作日早晨一个锚�
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "connections": {
     "claude-code": {
-      "kind": "account",
-      "enabled": true,
-      "transport": {"kind": "claude-cli", "cliCommand": "claude"},
-      "window": {"status": "verified", "durationMinutes": 300},
-      "schedule": {
-        "mode": "hybrid",
-        "fixed": {"at": ["06:35"], "days": "weekday", "catchUpWindowMinutes": 45},
-        "interval": {"graceSeconds": 75, "jitterSeconds": 30}
-      }
+      "label": "Claude Code",
+      "cli": "/usr/local/bin/claude",
+      "model": "haiku",
+      "windowMinutes": 300,
+      "mode": "hybrid",
+      "times": ["06:35"],
+      "days": "weekday"
+    },
+    "glm": {
+      "label": "glm",
+      "url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "protocol": "openai-chat",
+      "apiKey": "file:glm",
+      "model": "GLM-5-Turbo",
+      "windowMinutes": 300,
+      "mode": "hybrid",
+      "times": ["06:00"],
+      "days": "every-day"
     }
   }
 }
 ```
+
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）或环境变量引用（`$GLM_API_KEY` / `${GLM_API_KEY}` 均可）。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
 
 ## 命令
 
