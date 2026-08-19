@@ -167,14 +167,13 @@ def _uninstall_launchd():
 
 
 def build_wake_spec(config):
-    """Earliest fixed slot across enabled connections → (pmset days, HH:MM:SS).
+    """Earliest wake time across enabled fixed/hybrid connections → (pmset days, HH:MM:SS).
 
-    pmset repeat holds a single repeating event, so the earliest slot wins the
-    wake time; later slots still fire on time when the Mac is awake and rely
-    on catch-up otherwise. Returns None when no enabled connection uses
-    fixed/hybrid scheduling.
+    pmset repeat holds a single repeating event, so the earliest computed wake
+    time wins; later slots still fire on time when the Mac is awake and rely
+    on catch-up otherwise. Returns None when no enabled connection opts in.
     """
-    earliest, every_day = None, False
+    earliest_minutes, every_day = None, False
     for conn in (config.get("connections") or {}).values():
         if not conn.get("enabled", True):
             continue
@@ -182,17 +181,23 @@ def build_wake_spec(config):
         if schedule.get("mode") not in ("fixed", "hybrid"):
             continue
         fixed = schedule.get("fixed") or {}
+        if not fixed.get("wakeWhenAsleep", True):
+            continue
         if fixed.get("days") == "every-day":
             every_day = True
+        lead = fixed.get("wakeLeadMinutes", WAKE_LEAD_MINUTES)
         for slot in fixed.get("at") or []:
-            if SLOT_RE.match(slot) and (earliest is None or slot < earliest):
-                earliest = slot
-    if earliest is None:
+            if not SLOT_RE.match(slot):
+                continue
+            hh, mm = (int(part) for part in slot.split(":"))
+            slot_minutes = hh * 60 + mm
+            wake_minutes = (slot_minutes - lead) % (24 * 60)
+            if earliest_minutes is None or wake_minutes < earliest_minutes:
+                earliest_minutes = wake_minutes
+    if earliest_minutes is None:
         return None
-    hh, mm = (int(part) for part in earliest.split(":"))
-    minutes = (hh * 60 + mm - WAKE_LEAD_MINUTES) % (24 * 60)
     days = DAY_LETTERS["every-day" if every_day else "weekday"]
-    return days, f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+    return days, f"{earliest_minutes // 60:02d}:{earliest_minutes % 60:02d}:00"
 
 
 def manual_wake_command(spec):
