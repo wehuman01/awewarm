@@ -44,7 +44,6 @@ DEFAULT_JITTER_SECONDS = 30
 DEFAULT_CATCHUP_MINUTES = 45
 DEFAULT_SKIP_IF_ACTIVATED_MINUTES = 30
 DEFAULT_FIXED_AT = "06:35"
-DEFAULT_WAKE_LEAD_MINUTES = 5
 DEFAULT_HISTORY_LIMIT = 20
 
 SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -144,21 +143,17 @@ def load_config(path=None):
             sched = conn.setdefault("schedule", {})
             if "wakeWhenAsleep" not in sched:
                 sched["wakeWhenAsleep"] = bool(global_cfg["wakeWhenAsleep"])
-                sched["wakeLeadMinutes"] = DEFAULT_WAKE_LEAD_MINUTES
         global_cfg.pop("wakeWhenAsleep")
         data["global"] = global_cfg
         _write_json(path or config_path(), data)
 
     for conn in data.get("connections", {}).values():
         sched = conn.get("schedule") if isinstance(conn.get("schedule"), dict) else None
-        if sched and ("wakeWhenAsleep" in sched or "wakeLeadMinutes" in sched):
+        if sched and "wakeWhenAsleep" in sched:
             continue
-        if "wakeWhenAsleep" in conn or "wakeLeadMinutes" in conn:
+        if "wakeWhenAsleep" in conn:
             sched = conn.setdefault("schedule", {})
-            if "wakeWhenAsleep" in conn:
-                sched["wakeWhenAsleep"] = bool(conn.pop("wakeWhenAsleep"))
-            if "wakeLeadMinutes" in conn:
-                sched["wakeLeadMinutes"] = conn.pop("wakeLeadMinutes")
+            sched["wakeWhenAsleep"] = bool(conn.pop("wakeWhenAsleep"))
             _write_json(path or config_path(), data)
 
     return {
@@ -204,7 +199,6 @@ def _expand_conn(conn_id, flat):
             "jitterSeconds": flat.get("jitterSeconds", DEFAULT_JITTER_SECONDS),
         },
         "wakeWhenAsleep": (flat.get("schedule") or {}).get("wakeWhenAsleep", flat.get("wakeWhenAsleep", True)),
-        "wakeLeadMinutes": (flat.get("schedule") or {}).get("wakeLeadMinutes", flat.get("wakeLeadMinutes", DEFAULT_WAKE_LEAD_MINUTES)),
     }
     return {
         "label": flat.get("label") or conn_id,
@@ -258,7 +252,6 @@ def _compact_conn(conn):
             if value is not None and value != default:
                 flat[flat_key] = value
     flat.setdefault("schedule", {})["wakeWhenAsleep"] = bool(schedule.get("wakeWhenAsleep", True))
-    flat["schedule"]["wakeLeadMinutes"] = schedule.get("wakeLeadMinutes", DEFAULT_WAKE_LEAD_MINUTES)
     interval = schedule.get("interval") or {}
     for run_key, default in (
         ("graceSeconds", DEFAULT_GRACE_SECONDS),
@@ -368,9 +361,6 @@ def connection_errors(conn, conn_id="<connection>"):
                     errors.append(f"{conn_id}: schedule.fixed.{key} must be an integer >= 0")
             if not isinstance(schedule.get("wakeWhenAsleep", True), bool):
                 errors.append(f"{conn_id}: schedule.wakeWhenAsleep must be a boolean")
-            wake_lead = schedule.get("wakeLeadMinutes", DEFAULT_WAKE_LEAD_MINUTES)
-            if not isinstance(wake_lead, int) or wake_lead < 0:
-                errors.append(f"{conn_id}: schedule.wakeLeadMinutes must be an integer >= 0")
     interval = schedule.get("interval")
     if schedule["mode"] in ("interval", "hybrid"):
         if not isinstance(interval, dict):

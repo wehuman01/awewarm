@@ -156,7 +156,7 @@ class V2FormatTests(IsolatedTestCase):
             "label": "glm", "url": "https://x.example/v4", "protocol": "openai-chat",
             "apiKey": "file:glm", "model": "GLM-5-Turbo", "windowMinutes": 300,
             "mode": "hybrid", "times": ["06:00"], "days": "every-day",
-            "schedule": {"wakeWhenAsleep": True, "wakeLeadMinutes": 5},
+            "schedule": {"wakeWhenAsleep": True},
         })
 
     def test_load_expands_flat_v2(self):

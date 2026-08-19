@@ -801,9 +801,8 @@ class AnchorTests(IsolatedTestCase):
 class ConfigSetWakeRefreshTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.sys.platform", "darwin")
     @mock.patch("awewarm.cli.install.refresh_wake", return_value=False)
-    @mock.patch("awewarm.cli.install.build_wake_spec", return_value=None)
     @mock.patch("awewarm.cli.install.scheduler_installed", return_value=True)
-    def test_schedule_edit_refreshes_installed_wake(self, _installed, _spec, refresh):
+    def test_schedule_edit_refreshes_installed_wake(self, _installed, refresh):
         write_config(account_connection(mode="fixed", fixed_at=("06:35",)))
         result = invoke(["config", "set", "claude-code-main", "--times", "07:00"])
         self.assertEqual(result.exit_code, 0, output_of(result))

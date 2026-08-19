@@ -136,12 +136,9 @@ awewarm config set claude-code --times 06:35   # one anchor per workday morning
 
 ### Sleeping Macs — calendar wake (macOS)
 
-Fixed slots on a sleeping Mac are covered twice:
+`scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the launchd agent. launchd wakes the Mac from sleep — lid closed and deep sleep included — and runs the tick at the exact slot time. No sudo, and *every* slot is protected. Entries fire every day regardless of the slot's day rule: the tick itself decides whether today is an active day, so a weekend wake for a weekday-only slot is a harmless no-op. Editing times/mode updates the entries immediately; the first tick after any edit heals drift automatically.
 
-- **launchd calendar wake (primary).** `scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the agent. launchd wakes the Mac from sleep — lid closed and deep sleep included — and runs the tick at the exact slot time. No sudo, and *every* slot is protected. Editing times/days/mode updates the entries immediately; the first tick after any edit heals drift automatically.
-- **pmset wake (fallback).** A single `wakeorpoweron` repeat is registered `wakeLeadMinutes` (default 5) before the *earliest* slot — pmset holds one repeating event, which is why it can't cover later slots. Its remaining value is booting a Mac that was fully shut down; it needs sudo (`awewarm scheduler install` offers it).
-
-Per connection, `schedule.wakeWhenAsleep: false` opts out of both. Missed slots still fire late within the catch-up window once the machine wakes.
+Per connection, `schedule.wakeWhenAsleep: false` opts out. Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
 
 ### Always-on servers (Linux)
 

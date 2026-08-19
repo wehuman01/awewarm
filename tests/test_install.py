@@ -265,72 +265,9 @@ class LinuxUninstallTests(IsolatedTestCase):
         self.assertFalse(install.uninstall_scheduler())
 
 
-class WakeSpecTests(IsolatedTestCase):
-    def _config(self, times, days="weekday", mode="fixed", enabled=True):
-        window = {
-            "status": "user-confirmed", "startRule": "unknown",
-            "durationMinutes": 300, "evidence": "user-confirmed",
-        } if mode == "interval" else {
-            "status": "unknown", "startRule": "unknown",
-            "durationMinutes": None, "evidence": "none",
-        }
-        cfg.save_config({"version": 2, "global": {}, "connections": {
-            "c1": {
-                "label": "c1", "kind": cfg.KIND_ACCOUNT, "enabled": enabled,
-                "auth": {"type": "local-cli", "status": "valid", "apiKeyRef": None},
-                "transport": {"kind": "claude-cli", "baseUrl": None, "cliCommand": "/usr/local/bin/claude"},
-                "window": window,
-                "activation": {"model": None, "prompt": cfg.DEFAULT_PROMPT, "maxTokens": cfg.DEFAULT_MAX_TOKENS},
-                "schedule": {"mode": mode, "fixed": {
-                    "at": times, "days": days,
-                    "catchUpWindowMinutes": cfg.DEFAULT_CATCHUP_MINUTES,
-                    "skipIfActivatedWithinMinutes": cfg.DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
-                }, "interval": {
-                    "graceSeconds": cfg.DEFAULT_GRACE_SECONDS,
-                    "jitterSeconds": cfg.DEFAULT_JITTER_SECONDS,
-                }},
-            }
-        }})
-
-    def test_earliest_slot_with_lead_and_weekday_letters(self):
-        self._config(["11:40", "06:00"])
-        self.assertEqual(install.build_wake_spec(cfg.load_config()), ("MTWRF", "05:55:00"))
-
-    def test_every_day_wins_when_any_connection_uses_it(self):
-        self._config(["06:00"], days="every-day")
-        self.assertEqual(install.build_wake_spec(cfg.load_config()), ("MTWRFSU", "05:55:00"))
-
-    def test_lead_wraps_past_midnight(self):
-        self._config(["00:03"])
-        self.assertEqual(install.build_wake_spec(cfg.load_config()), ("MTWRF", "23:58:00"))
-
-    def test_none_without_fixed_connections(self):
-        self._config(["06:00"], mode="interval")
-        self.assertIsNone(install.build_wake_spec(cfg.load_config()))
-
-    def test_disabled_connections_are_ignored(self):
-        self._config(["06:00"], enabled=False)
-        self.assertIsNone(install.build_wake_spec(cfg.load_config()))
-
-
-class WakeScheduleTests(IsolatedTestCase):
-    @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
-    def test_set_writes_state_on_success(self, run):
-        self.assertTrue(install.set_wake_schedule(("MTWRF", "05:55:00")))
-        self.assertEqual(
-            cfg.load_state()["wakeSchedule"],
-            {"type": install.WAKE_TYPE, "days": "MTWRF", "time": "05:55:00"},
-        )
-        argv = run.call_args[0][0]
-        self.assertEqual(argv[:2], ["sudo", "-n"])
-        self.assertIn("wakeorpoweron", argv)
-
-    @mock.patch("awewarm.install.subprocess.run")
-    def test_set_fails_after_both_sudo_attempts(self, run):
-        run.return_value = ok_run(returncode=1, stderr="no tty")
-        self.assertFalse(install.set_wake_schedule(("MTWRF", "05:55:00")))
-        self.assertEqual(run.call_count, 2)
-        self.assertNotIn("wakeSchedule", cfg.load_state())
+class LegacyPmsetCleanupTests(IsolatedTestCase):
+    """awewarm < 0.4 registered a pmset repeat wake; cancel_wake_schedule()
+    removes it without touching a schedule the user replaced."""
 
     def _recorded_state(self):
         state = cfg.load_state()
@@ -395,12 +332,9 @@ class CalendarEntriesTests(IsolatedTestCase):
         cfg.save_config(data)
         return cfg.load_config()
 
-    def test_weekday_slots_get_weekday_list(self):
+    def test_slots_wake_every_day_regardless_of_day_rule(self):
         config = self._save(self._conn(["06:35"]))
-        self.assertEqual(
-            install.calendar_entries(config),
-            [{"Hour": 6, "Minute": 35, "Weekday": [1, 2, 3, 4, 5]}],
-        )
+        self.assertEqual(install.calendar_entries(config), [{"Hour": 6, "Minute": 35}])
 
     def test_every_day_slots_omit_weekday(self):
         config = self._save(self._conn(["19:42"], days="every-day"))
@@ -414,16 +348,15 @@ class CalendarEntriesTests(IsolatedTestCase):
         )
         self.assertEqual(install.calendar_entries(config), [])
 
-    def test_duplicate_slots_collapse_distinct_days_do_not(self):
+    def test_duplicate_slots_across_day_rules_collapse(self):
+        # entries fire daily and the tick applies the day rule, so the same
+        # slot under different day rules needs only one entry
         config = self._save(
             self._conn(["06:35"]),
             self._conn(["06:35"]),
             self._conn(["06:35"], days="every-day"),
         )
-        self.assertEqual(
-            install.calendar_entries(config),
-            [{"Hour": 6, "Minute": 35}, {"Hour": 6, "Minute": 35, "Weekday": [1, 2, 3, 4, 5]}],
-        )
+        self.assertEqual(install.calendar_entries(config), [{"Hour": 6, "Minute": 35}])
 
     def test_entries_sorted_by_time(self):
         config = self._save(self._conn(["11:40", "06:00"], days="every-day"))

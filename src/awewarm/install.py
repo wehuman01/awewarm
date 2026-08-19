@@ -32,10 +32,10 @@ from .config import SLOT_RE, die, load_config, load_state, save_state, state_pat
 LABEL = "com.awewarm.scheduler"
 TICK_SECONDS = 60
 
-# macOS-only: pmset wake scheduling so fixed slots fire with the lid closed.
+# macOS-only: legacy pmset repeat events registered by awewarm < 0.4 are
+# cancelled on scheduler install/uninstall; wake-from-sleep itself is handled
+# by the launchd StartCalendarInterval entries below.
 WAKE_TYPE = "wakeorpoweron"
-WAKE_LEAD_MINUTES = 5
-DAY_LETTERS = {"weekday": "MTWRF", "every-day": "MTWRFSU"}
 
 
 def plist_path():
@@ -228,8 +228,9 @@ def calendar_entries(config):
     """launchd StartCalendarInterval entries: one per fixed slot that opted into
     wake. Calendar triggers wake the Mac from sleep (dark wake) and run the tick
     at the exact slot time — every slot is covered, unlike pmset repeat, which
-    holds a single event. wakeLeadMinutes does not apply here: the trigger runs
-    the tick itself, and a slot only fires once now >= slot time.
+    holds a single event. Entries fire every day regardless of the slot's day
+    rule: the tick itself decides whether today is an active day, so a weekend
+    wake for a weekday-only slot is a harmless no-op.
     """
     entries = {}
     for conn in (config.get("connections") or {}).values():
@@ -241,50 +242,12 @@ def calendar_entries(config):
         fixed = schedule.get("fixed") or {}
         if not fixed.get("wakeWhenAsleep", schedule.get("wakeWhenAsleep", True)):
             continue
-        weekday = None if fixed.get("days") == "every-day" else [1, 2, 3, 4, 5]
         for slot in fixed.get("at") or []:
             if not SLOT_RE.match(slot):
                 continue
             hh, mm = (int(part) for part in slot.split(":"))
-            entry = {"Hour": hh, "Minute": mm}
-            if weekday:
-                entry["Weekday"] = weekday
-            entries[(tuple(weekday or ()), hh, mm)] = entry
+            entries[(hh, mm)] = {"Hour": hh, "Minute": mm}
     return [entries[key] for key in sorted(entries)]
-
-
-def build_wake_spec(config):
-    """Earliest wake time across enabled fixed/hybrid connections → (pmset days, HH:MM:SS).
-
-    pmset repeat holds a single repeating event, so the earliest computed wake
-    time wins; later slots still fire on time when the Mac is awake and rely
-    on catch-up otherwise. Returns None when no enabled connection opts in.
-    """
-    earliest_minutes, every_day = None, False
-    for conn in (config.get("connections") or {}).values():
-        if not conn.get("enabled", True):
-            continue
-        schedule = conn.get("schedule") or {}
-        if schedule.get("mode") not in ("fixed", "hybrid"):
-            continue
-        fixed = schedule.get("fixed") or {}
-        if not fixed.get("wakeWhenAsleep", schedule.get("wakeWhenAsleep", True)):
-            continue
-        if fixed.get("days") == "every-day":
-            every_day = True
-        lead = schedule.get("wakeLeadMinutes", fixed.get("wakeLeadMinutes", WAKE_LEAD_MINUTES))
-        for slot in fixed.get("at") or []:
-            if not SLOT_RE.match(slot):
-                continue
-            hh, mm = (int(part) for part in slot.split(":"))
-            slot_minutes = hh * 60 + mm
-            wake_minutes = (slot_minutes - lead) % (24 * 60)
-            if earliest_minutes is None or wake_minutes < earliest_minutes:
-                earliest_minutes = wake_minutes
-    if earliest_minutes is None:
-        return None
-    days = DAY_LETTERS["every-day" if every_day else "weekday"]
-    return days, f"{earliest_minutes // 60:02d}:{earliest_minutes % 60:02d}:00"
 
 
 def refresh_wake(config):
@@ -311,11 +274,6 @@ def refresh_wake(config):
     return True
 
 
-def manual_wake_command(spec):
-    days, time = spec
-    return f"sudo pmset repeat {WAKE_TYPE} {days} {time}"
-
-
 def _sudo_pmset(args, interactive=True):
     """Run pmset with sudo; -n first so scripted installs fail fast instead of
     hanging, plain sudo second so interactive installs can prompt."""
@@ -327,17 +285,6 @@ def _sudo_pmset(args, interactive=True):
         if result.returncode == 0:
             return True
     return False
-
-
-def set_wake_schedule(spec, interactive=True):
-    """Register the pmset repeat wake and remember it in state.json."""
-    days, time = spec
-    if not _sudo_pmset(["repeat", WAKE_TYPE, days, time], interactive):
-        return False
-    state = load_state()
-    state["wakeSchedule"] = {"type": WAKE_TYPE, "days": days, "time": time}
-    save_state(state)
-    return True
 
 
 def _current_repeat_line():
@@ -353,7 +300,8 @@ def _current_repeat_line():
 
 
 def cancel_wake_schedule():
-    """Undo the wake we set — but only if the live schedule is still ours.
+    """One-time cleanup of the pmset repeat wake registered by awewarm < 0.4 —
+    cancelled only if the live schedule is still ours.
 
     Returns (status, spec): status is "none" (we never set one), "changed"
     (the user replaced it — leave it alone), "cancelled", or "failed".

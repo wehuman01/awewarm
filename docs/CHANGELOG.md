@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### pmset wake removal (macOS)
+
+The launchd `StartCalendarInterval` entries cover every fixed slot at its exact time with no sudo; the pmset `wakeorpoweron` fallback covered only the earliest slot, needed sudo, and duplicated schedule state. It is removed. `scheduler install` / `scheduler uninstall` cancel a pmset repeat left behind by earlier versions — only if it is still the one awewarm set (otherwise cancel it yourself: `sudo pmset repeat cancel wakeorpoweron <days> <time>`). Calendar entries now fire every day regardless of the slot's day rule; the tick applies the day rule, so a weekend wake for a weekday-only slot is a no-op. `schedule.wakeLeadMinutes` and `scheduler install --wake/--no-wake` are gone. A fully shut-down Mac no longer auto-boots; the first tick after power-on still catches up slots inside the catch-up window.
+
 ## v0.3.1
 
 `v0.3.1` replaces the macOS Keychain with a cross-platform `secrets.json` store, collapses the CLI surface to seven commands with legacy aliases, simplifies the manual-fire path to `run <id>`, and adds a macOS wake schedule so fixed-time warm-ups fire with the lid closed.

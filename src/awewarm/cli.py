@@ -994,84 +994,35 @@ Use --force to skip the prompt (for scripting).
 
 
 def _refresh_wake_after_edit():
-    """Keep the installed wake machinery in sync after schedule edits.
+    """Keep the installed calendar wake in sync after schedule edits.
 
-    Rewrites the launchd calendar entries when they drifted, and quietly
-    re-registers the pmset fallback (sudo -n only — never prompt here; the
-    manual command is printed when passwordless sudo is unavailable).
+    Rewrites the launchd calendar entries when they drifted.
     """
     if sys.platform != "darwin" or not install.scheduler_installed():
         return
-    config = load_config()
-    if install.refresh_wake(config):
+    if install.refresh_wake(load_config()):
         click.echo("✓ Calendar wake updated (launchd)")
-    spec = install.build_wake_spec(config)
-    if spec is None:
-        return
-    recorded = (load_state().get("wakeSchedule") or {})
-    days, time = spec
-    if recorded.get("days") == days and recorded.get("time") == time:
-        return
-    if install.set_wake_schedule(spec, interactive=False):
-        click.echo(f"✓ Wake schedule updated: {days} {time}")
-    else:
-        click.echo("  pmset fallback wake is stale — update manually:")
-        click.echo(f"  {install.manual_wake_command(spec)}")
 
 
-def _wake_flow(wake):
-    """macOS pmset wake schedule: per-connection wakeWhenAsleep + wakeLeadMinutes."""
+def _legacy_pmset_cleanup():
+    """Cancel a pmset repeat wake left behind by awewarm < 0.4, if any.
+
+    The calendar entries replaced it; this runs only on scheduler
+    install/uninstall and is a no-op once the state key is gone.
+    """
     if sys.platform != "darwin":
         return
-    config = load_config()
-    spec = install.build_wake_spec(config)
-    if spec is None:
-        return
-    if wake is not None:
-        for conn in config.get("connections", {}).values():
-            sched = (conn.get("schedule") or {})
-            if conn.get("enabled", True) and sched.get("mode") in ("fixed", "hybrid"):
-                if "wakeWhenAsleep" not in sched:
-                    sched["wakeWhenAsleep"] = wake
-        save_config(config)
-    else:
-        needs_prompt = False
-        for conn in config.get("connections", {}).values():
-            sched = (conn.get("schedule") or {})
-            if conn.get("enabled", True) and sched.get("mode") in ("fixed", "hybrid"):
-                if "wakeWhenAsleep" not in sched:
-                    needs_prompt = True
-                    break
-        if needs_prompt:
-            enabled = _wake_confirm_and_set(spec)
-            if enabled is not None:
-                for conn in config.get("connections", {}).values():
-                    sched = (conn.get("schedule") or {})
-                    if conn.get("enabled", True) and sched.get("mode") in ("fixed", "hybrid"):
-                        if "wakeWhenAsleep" not in sched:
-                            sched["wakeWhenAsleep"] = enabled
-                save_config(config)
-    days, time = spec
-    if install.set_wake_schedule(spec):
-        click.echo(f"✓ Wake schedule set: {days} {time}")
-    else:
-        click.echo("  sudo pmset failed — set it manually:")
-        click.echo(f"  sudo pmset repeat {install.WAKE_TYPE} {days} {time}")
+    status, spec = install.cancel_wake_schedule()
+    if status == "cancelled":
+        click.echo("✓ Legacy pmset wake cancelled (superseded by calendar wake)")
+    elif status == "failed":
+        click.echo(
+            "  could not cancel the legacy pmset wake — run manually:\n"
+            f"  sudo pmset repeat cancel {install.WAKE_TYPE} {spec['days']} {spec['time']}"
+        )
 
 
-def _wake_confirm_and_set(spec):
-    days, time = spec
-    click.echo(
-        f"\nmacOS wake guard: schedule {install.WAKE_TYPE} at {time} ({days})\n"
-        "  pro:  fixed-time warm fires on schedule even with the lid closed\n"
-        "  con:  needs sudo; on battery the Mac may fall back asleep shortly after"
-    )
-    if not click.confirm("Set this wake schedule?", default=True):
-        return False
-    return True
-
-
-def _scheduler_install(wake=None):
+def _scheduler_install():
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
     if sys.platform == "darwin":
@@ -1080,7 +1031,7 @@ def _scheduler_install(wake=None):
             times = ", ".join(f"{e['Hour']:02d}:{e['Minute']:02d}" for e in entries)
             click.echo(f"  Calendar wake at {times} — fires with the lid closed, no sudo")
     click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
-    _wake_flow(wake)
+    _legacy_pmset_cleanup()
 
 
 def _scheduler_uninstall():
@@ -1088,17 +1039,7 @@ def _scheduler_uninstall():
         click.echo("✓ Scheduler removed")
     else:
         click.echo("Scheduler was not installed")
-    if sys.platform == "darwin":
-        status, spec = install.cancel_wake_schedule()
-        if status == "cancelled":
-            click.echo("✓ Wake schedule cancelled")
-        elif status == "changed":
-            click.echo("Wake schedule left in place (no longer matches what awewarm set)")
-        elif status == "failed":
-            click.echo(
-                "  could not cancel the wake schedule — run manually:\n"
-                f"  sudo pmset repeat cancel {install.WAKE_TYPE} {spec['days']} {spec['time']}"
-            )
+    _legacy_pmset_cleanup()
 
 
 @cli.group()
@@ -1109,10 +1050,9 @@ The installed agent ticks once a minute."""
 
 
 @scheduler.command("install")
-@click.option("--wake/--no-wake", "wake", default=None, help="macOS only: also schedule a pmset wake so fixed times fire while asleep. Choice is remembered.")
-def scheduler_install(wake):
+def scheduler_install():
     """Install the background scheduler agent."""
-    _scheduler_install(wake)
+    _scheduler_install()
 
 
 @scheduler.command("uninstall")
