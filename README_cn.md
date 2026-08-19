@@ -29,7 +29,7 @@
 awewarm 管理两类连接：
 
 - **账号** —— 本机的 `claude` / `codex` CLI 登录。awewarm 复用它们的登录态，发送一条最小的无头请求（`Reply with exactly: ok`），不保存任何凭据。
-- **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + token）。token 存入 macOS 钥匙串，绝不落盘。
+- **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + API key）。API key 存入 macOS 钥匙串，绝不落盘。
 
 调度分三种模式：`fixed` / `interval` / `hybrid`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
 
@@ -43,7 +43,7 @@ pip3 install awewarm
 
 后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm run`。
 
-Windows 提示：没有钥匙串，订阅 token 走 `${ENV_VAR}` 引用 —— 用 `setx AWEWARM_TOKEN_<PLAN> "..."` 持久化（计划任务会继承用户环境变量）。
+Windows 提示：没有钥匙串，API key 走 `${ENV_VAR}` 引用 —— 用 `setx AWEWARM_API_KEY_<PLAN> "..."` 持久化（计划任务会继承用户环境变量）。
 
 ## 快速开始
 
@@ -55,7 +55,7 @@ Windows 提示：没有钥匙串，订阅 token 走 `${ENV_VAR}` 引用 —— �
 阅读 https://github.com/wehuman01/awewarm/blob/main/README.ai.md 并按其指引安装和配置 awewarm。
 ```
 
-Agent 会安装 CLI、只读扫描本机账号，并按你的要求调整调度。引导流程本身（`awewarm init`、`awewarm add plan`）留在你的终端完成 —— 它需要交互式输入选项和 token。装好之后可以直接问“下次保温是什么时候？”或“把 claude-code 改成 06:35 和 12:35”。
+Agent 会安装 CLI、只读扫描本机账号，并按你的要求调整调度。引导流程本身（`awewarm init`、`awewarm add plan`）留在你的终端完成 —— 它需要交互式输入选项和 API key。装好之后可以直接问“下次保温是什么时候？”或“把 claude-code 改成 06:35 和 12:35”。
 
 ### 手动安装
 
@@ -70,7 +70,7 @@ awewarm status      # 查看接下来会发生什么
 awewarm add plan
 ```
 
-依次输入 API base URL、token、协议和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 token 存入钥匙串。
+依次选择协议、输入 API base URL、API key 和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 API key 存入钥匙串。
 
 ## 配套工具
 

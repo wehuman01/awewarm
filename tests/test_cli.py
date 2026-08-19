@@ -159,7 +159,7 @@ class AddPlanTests(IsolatedTestCase):
         self.assertEqual(conn["transport"]["kind"], "anthropic-messages")
         self.assertEqual(conn["schedule"]["mode"], "fixed")
         self.assertEqual(conn["window"]["status"], "unknown")
-        self.assertEqual(conn["auth"]["tokenRef"], "${AWEWARM_TOKEN_GLM_CODING_PLAN}")
+        self.assertEqual(conn["auth"]["apiKeyRef"], "${AWEWARM_API_KEY_GLM_CODING_PLAN}")
         self.assertIn("Keychain unavailable", result.output)
 
     @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
@@ -304,15 +304,15 @@ class LifecycleTests(IsolatedTestCase):
         status = invoke(["status"])
         self.assertIn("disabled", status.output)
 
-    @mock.patch("awewarm.keychain.delete_token")
-    def test_remove_deletes_everything(self, delete_token):
+    @mock.patch("awewarm.keychain.delete_api_key")
+    def test_remove_deletes_everything(self, delete_api_key):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
         cfg.save_state({"version": 1, "connections": {"glm-coding-plan": cfg.default_conn_state()}})
         result = invoke(["remove", "glm-coding-plan"], input="y\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertEqual(cfg.load_config()["connections"], {})
         self.assertEqual(cfg.load_state()["connections"], {})
-        delete_token.assert_called_once_with("glm-coding-plan")
+        delete_api_key.assert_called_once_with("glm-coding-plan")
 
 
 class TimesTests(IsolatedTestCase):
@@ -365,13 +365,13 @@ class StatusTests(IsolatedTestCase):
 
 
 class InspectTests(IsolatedTestCase):
-    def test_inspect_json_redacts_token_ref(self):
+    def test_inspect_json_redacts_api_key_ref(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
         result = invoke(["inspect", "glm-coding-plan", "--json"])
         self.assertEqual(result.exit_code, 0)
         payload = json.loads(result.output)
         conn = payload["config"]["connections"]["glm-coding-plan"]
-        self.assertEqual(conn["auth"]["tokenRef"], "<redacted>")
+        self.assertEqual(conn["auth"]["apiKeyRef"], "<redacted>")
         self.assertEqual(payload["scheduler"]["installed"], False)
 
 

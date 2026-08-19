@@ -1,7 +1,7 @@
 """Send one minimal activation request through a connection's transport.
 
 Builders (activation_argv / http_request_parts) are pure and unit-tested;
-senders do the I/O. Results never contain tokens or auth headers.
+senders do the I/O. Results never contain API keys or auth headers.
 """
 import json
 import re
@@ -48,7 +48,7 @@ def activation_argv(connection):
     return None
 
 
-def http_request_parts(connection, token):
+def http_request_parts(connection, api_key):
     """(url, headers, body) for HTTP transports; None for CLI transports."""
     transport = connection["transport"]
     kind = transport["kind"]
@@ -62,7 +62,7 @@ def http_request_parts(connection, token):
     if kind == "anthropic-messages":
         url = base + ("/messages" if base.endswith("/v1") else "/v1/messages")
         headers = {
-            "x-api-key": token,
+            "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
@@ -74,7 +74,7 @@ def http_request_parts(connection, token):
     elif kind == "openai-chat":
         url = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
         headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
         }
         body = {
@@ -85,7 +85,7 @@ def http_request_parts(connection, token):
     elif kind == "openai-responses":
         url = base + ("/responses" if base.endswith("/v1") else "/v1/responses")
         headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
         }
         body = {"model": model, "input": prompt, "max_output_tokens": max_tokens}
@@ -150,8 +150,8 @@ def _send_cli(connection):
     return {"ok": False, "detail": _detail(proc.stderr or proc.stdout) or f"{command} exited {proc.returncode}"}
 
 
-def _send_http(connection, token):
-    parts = http_request_parts(connection, token)
+def _send_http(connection, api_key):
+    parts = http_request_parts(connection, api_key)
     url, headers, body = parts
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
@@ -175,10 +175,10 @@ def _send_http(connection, token):
         return {"ok": False, "detail": f"request failed: {reason}"}
 
 
-def send_activation(connection, token=None):
+def send_activation(connection, api_key=None):
     """Send one minimal activation request. Returns {"ok": bool, "detail": str}."""
     if connection["transport"]["kind"] in ("claude-cli", "codex-cli"):
         return _send_cli(connection)
-    if not token:
-        die("no token available for this subscription connection\nfix: re-add the plan with: awewarm add plan")
-    return _send_http(connection, token)
+    if not api_key:
+        die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm add plan")
+    return _send_http(connection, api_key)

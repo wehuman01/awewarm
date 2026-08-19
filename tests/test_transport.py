@@ -84,17 +84,17 @@ class HttpPartsTests(unittest.TestCase):
 class RedactTests(unittest.TestCase):
     def test_masks_secret_keys_recursively(self):
         view = {
-            "auth": {"type": "api-token", "tokenRef": "keychain:awewarm/x"},
+            "auth": {"type": "api-key", "apiKeyRef": "keychain:awewarm/x"},
             "nested": [{"apiKey": "abc", "name": "glm"}],
         }
         out = transport.redact(view)
-        self.assertEqual(out["auth"]["tokenRef"], "<redacted>")
+        self.assertEqual(out["auth"]["apiKeyRef"], "<redacted>")
         self.assertEqual(out["nested"][0]["apiKey"], "<redacted>")
         self.assertEqual(out["nested"][0]["name"], "glm")
 
     def test_empty_secret_left_as_is(self):
-        out = transport.redact({"tokenRef": None})
-        self.assertEqual(out["tokenRef"], None)
+        out = transport.redact({"apiKeyRef": None})
+        self.assertEqual(out["apiKeyRef"], None)
 
 
 class ExtractErrorTests(unittest.TestCase):
@@ -165,7 +165,7 @@ class SendHttpTests(unittest.TestCase):
     def test_success(self, urlopen):
         urlopen.return_value.__enter__ = lambda self: io.BytesIO(b"{}")
         urlopen.return_value.__exit__ = mock.Mock(return_value=False)
-        result = transport.send_activation(plan_connection(), token="tok")
+        result = transport.send_activation(plan_connection(), api_key="tok")
         self.assertTrue(result["ok"])
         request = urlopen.call_args[0][0]
         self.assertEqual(request.full_url, "https://open.bigmodel.cn/api/anthropic/v1/messages")
@@ -177,7 +177,7 @@ class SendHttpTests(unittest.TestCase):
             "url", 401, "Unauthorized", None, io.BytesIO(b'{"error":{"message":"bad key"}}')
         )
         urlopen.side_effect = error
-        result = transport.send_activation(plan_connection(), token="tok")
+        result = transport.send_activation(plan_connection(), api_key="tok")
         self.assertFalse(result["ok"])
         self.assertIn("401", result["detail"])
         self.assertIn("bad key", result["detail"])
@@ -185,13 +185,13 @@ class SendHttpTests(unittest.TestCase):
     @mock.patch("awewarm.transport.urllib.request.urlopen")
     def test_url_error(self, urlopen):
         urlopen.side_effect = transport.urllib.error.URLError("connection refused")
-        result = transport.send_activation(plan_connection(), token="tok")
+        result = transport.send_activation(plan_connection(), api_key="tok")
         self.assertFalse(result["ok"])
         self.assertIn("connection refused", result["detail"])
 
-    def test_subscription_without_token_dies(self):
+    def test_subscription_without_api_key_dies(self):
         with self.assertRaises(SystemExit):
-            transport.send_activation(plan_connection(), token=None)
+            transport.send_activation(plan_connection(), api_key=None)
 
 
 if __name__ == "__main__":

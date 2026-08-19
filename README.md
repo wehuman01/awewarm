@@ -29,7 +29,7 @@
 awewarm manages two kinds of connections:
 
 - **Account** — your local `claude` / `codex` CLI logins. awewarm reuses their login state and sends one minimal headless request (`Reply with exactly: ok`). No credentials are stored.
-- **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + token. The token goes to the macOS Keychain, never to disk.
+- **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + API key. The key goes to the macOS Keychain, never to disk.
 
 It schedules those requests in three modes — `fixed`, `interval`, and `hybrid` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
 
@@ -43,7 +43,7 @@ pip3 install awewarm
 
 The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm run`.
 
-Windows note: there is no Keychain there, so subscription tokens use `${ENV_VAR}` references — persist them with `setx AWEWARM_TOKEN_<PLAN> "..."` (scheduler tasks inherit user env vars).
+Windows note: there is no Keychain there, so API keys use `${ENV_VAR}` references — persist them with `setx AWEWARM_API_KEY_<PLAN> "..."` (scheduler tasks inherit user env vars).
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ Working in Claude Code, Codex, or another coding agent? Tell it:
 Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm.
 ```
 
-The agent installs the CLI, scans your local accounts (read-only), and tunes schedules on request. Onboarding itself (`awewarm init`, `awewarm add plan`) stays in your terminal — it prompts for choices and tokens. After setup you can ask things like "when is the next warm-up?" or "set claude-code to 06:35 and 12:35".
+The agent installs the CLI, scans your local accounts (read-only), and tunes schedules on request. Onboarding itself (`awewarm init`, `awewarm add plan`) stays in your terminal — it prompts for choices and API keys. After setup you can ask things like "when is the next warm-up?" or "set claude-code to 06:35 and 12:35".
 
 ### Manual setup
 
@@ -70,7 +70,7 @@ For a subscription endpoint instead:
 awewarm add plan
 ```
 
-You will be asked for the API base URL, token, protocol, and model; awewarm tests the endpoint with one minimal request, then stores the token in the Keychain.
+You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in the Keychain.
 
 ## Companion Tools
 

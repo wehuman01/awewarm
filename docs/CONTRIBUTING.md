@@ -49,9 +49,9 @@ first.
   (`intervalDisabledAt`); any success re-arms it. Failed attempts retry at most
   once per 5 minutes.
 - **Security**: `discover` is read-only (no network, existence checks only);
-  tokens live in the Keychain (via `security -i` stdin, never argv) or
+  API keys live in the Keychain (via `security -i` stdin, never argv) or
   `${ENV_VAR}` references; every display path goes through `transport.redact`;
-  logs never contain tokens or auth headers.
+  logs never contain API keys or auth headers.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.
 - **Update checks never run on scheduler ticks**: `update_check.check_async`

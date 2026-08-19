@@ -43,7 +43,7 @@ def account_connection(mode="hybrid", window_status="verified", fixed_at=("06:35
         "label": "Claude Code",
         "kind": "account",
         "enabled": True,
-        "auth": {"type": "local-cli", "status": "valid", "tokenRef": None},
+        "auth": {"type": "local-cli", "status": "valid", "apiKeyRef": None},
         "transport": {"kind": "claude-cli", "baseUrl": None, "cliCommand": "claude"},
         "plan": {"url": None, "label": None},
         "window": {
@@ -72,7 +72,7 @@ def plan_connection(mode="fixed", fixed_at=("06:35",), days="weekday", window_st
         "label": "GLM Coding Plan",
         "kind": "subscription",
         "enabled": True,
-        "auth": {"type": "api-token", "status": "valid", "tokenRef": "${AWEWARM_TOKEN_GLM_CODING_PLAN}"},
+        "auth": {"type": "api-key", "status": "valid", "apiKeyRef": "${AWEWARM_API_KEY_GLM_CODING_PLAN}"},
         "transport": {
             "kind": "anthropic-messages",
             "baseUrl": "https://open.bigmodel.cn/api/anthropic",

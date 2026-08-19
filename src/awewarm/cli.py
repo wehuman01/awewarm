@@ -91,25 +91,25 @@ def _find_connection(config, conn_id):
     die(f"unknown connection: {conn_id}\nknown connections: {known}\nrun: awewarm status")
 
 
-def _resolve_token(conn):
+def _resolve_api_key(conn):
     """Secret for subscription connections; None for local-CLI accounts."""
-    ref = (conn.get("auth") or {}).get("tokenRef")
+    ref = (conn.get("auth") or {}).get("apiKeyRef")
     if not ref:
         return None
-    return keychain.load_token(ref)
+    return keychain.load_api_key(ref)
 
 
 def _execute_activation(conn, conn_id, cs, now, kind, slot=None):
     """Send one real request and record the outcome in state."""
     schedule.record_attempt(cs, now)
-    token = None
+    api_key = None
     if conn["kind"] == "subscription":
-        token = _resolve_token(conn)
-        if token is None:
-            schedule.record_failure(cs, now, kind, "token unavailable (keychain or env)")
-            log_event(f"{conn_id} activation ({kind}) failed: token unavailable")
-            return {"ok": False, "detail": "token unavailable (keychain or env)"}
-    result = transport.send_activation(conn, token)
+        api_key = _resolve_api_key(conn)
+        if api_key is None:
+            schedule.record_failure(cs, now, kind, "API key unavailable (keychain or env)")
+            log_event(f"{conn_id} activation ({kind}) failed: API key unavailable")
+            return {"ok": False, "detail": "API key unavailable (keychain or env)"}
+    result = transport.send_activation(conn, api_key)
     if result["ok"]:
         schedule.record_success(cs, conn, now, kind, slot)
         log_event(f"{conn_id} activation ({kind}) ok")
@@ -190,7 +190,7 @@ def _account_connection(conn_id, finding, mode, fixed_at, days):
         "label": finding["label"],
         "kind": "account",
         "enabled": True,
-        "auth": {"type": "local-cli", "status": auth_status, "tokenRef": None},
+        "auth": {"type": "local-cli", "status": auth_status, "apiKeyRef": None},
         "transport": {
             "kind": discover.PROVIDER_TRANSPORTS[provider],
             "baseUrl": None,
@@ -211,12 +211,12 @@ def _account_connection(conn_id, finding, mode, fixed_at, days):
     }
 
 
-def _plan_connection(conn_id, label, base_url, token_ref, plan_url, transport_kind, model, mode, window, fixed_at, days):
+def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model, mode, window, fixed_at, days):
     return {
         "label": label,
         "kind": "subscription",
         "enabled": True,
-        "auth": {"type": "api-token", "status": "valid", "tokenRef": token_ref},
+        "auth": {"type": "api-key", "status": "valid", "apiKeyRef": api_key_ref},
         "transport": {"kind": transport_kind, "baseUrl": base_url, "cliCommand": None},
         "plan": {"url": plan_url or None, "label": label},
         "window": window,
@@ -319,7 +319,7 @@ def add():
 
 @add.command()
 def plan():
-    """Add a subscription endpoint (protocol + API base URL + token)."""
+    """Add a subscription endpoint (protocol + API base URL + API key)."""
     label = click.prompt("Plan name")
     click.echo(
         "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
@@ -331,9 +331,9 @@ def plan():
     base_url = click.prompt(f"API base URL ({_base_url_example(transport_kind)})").strip()
     if not base_url.startswith(("http://", "https://")):
         die("API base URL must start with http:// or https://")
-    token = click.prompt("Token", hide_input=True).strip()
-    if not token:
-        die("token must not be empty")
+    api_key = click.prompt("API key", hide_input=True).strip()
+    if not api_key:
+        die("API key must not be empty")
     plan_url = click.prompt("Plan URL (optional, kept as evidence)", default="", show_default=False)
     model = click.prompt("Model for warm-up requests", value_proc=_nonempty_proc, show_default=False)
 
@@ -342,7 +342,7 @@ def plan():
         "fixed", _unknown_window(), DEFAULT_FIXED_AT, "weekday",
     )
     click.echo("\nTesting endpoint...")
-    result = transport.send_activation(draft, token)
+    result = transport.send_activation(draft, api_key)
     if result["ok"]:
         click.echo("✓ Authentication accepted, minimal request supported")
     else:
@@ -375,7 +375,7 @@ def plan():
             save_state(state)
             click.echo(f"✓ Verification request recorded at {_fmt_moment(now, now)}")
         elif click.confirm("Send the verification request now?", default=True):
-            verify_result = transport.send_activation(draft, token)
+            verify_result = transport.send_activation(draft, api_key)
             if verify_result["ok"]:
                 cs = conn_state(state, conn_id)
                 schedule.record_attempt(cs, now)
@@ -407,24 +407,24 @@ def plan():
     else:
         fixed_at, days = _prompt_fixed_settings()
 
-    token_ref = keychain.store_token(conn_id, token)
-    if token_ref.startswith("keychain:"):
-        click.echo(f"✓ Token stored in Keychain ({token_ref.split(':', 1)[1]})")
+    api_key_ref = keychain.store_api_key(conn_id, api_key)
+    if api_key_ref.startswith("keychain:"):
+        click.echo(f"✓ API key stored in Keychain ({api_key_ref.split(':', 1)[1]})")
     else:
-        token_var = token_ref[2:-1]
+        api_key_var = api_key_ref[2:-1]
         if sys.platform == "win32":
             click.echo(
-                "⚠ Keychain unavailable on Windows — token NOT stored on disk.\n"
+                "⚠ Keychain unavailable on Windows — API key NOT stored on disk.\n"
                 f"  Persist it as a user env var (scheduler tasks inherit it):\n"
-                f"  setx {token_var} <your-token>"
+                f"  setx {api_key_var} <your-api-key>"
             )
         else:
             click.echo(
-                "⚠ Keychain unavailable — token NOT stored on disk.\n"
-                f"  Export it before awewarm runs:\n  export {token_var}=<your-token>"
+                "⚠ Keychain unavailable — API key NOT stored on disk.\n"
+                f"  Export it before awewarm runs:\n  export {api_key_var}=<your-api-key>"
             )
     config["connections"][conn_id] = _plan_connection(
-        conn_id, label, base_url, token_ref, plan_url, transport_kind, model,
+        conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model,
         mode, window, fixed_at, days,
     )
     save_config(config)
@@ -655,10 +655,10 @@ def times(connection, times):
 @cli.command()
 @click.argument("connection")
 def remove(connection):
-    """Delete a connection, its state, and its stored token."""
+    """Delete a connection, its state, and its stored API key."""
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
-    if not click.confirm(f"Remove '{conn.get('label', conn_id)}' and its stored token?", default=False):
+    if not click.confirm(f"Remove '{conn.get('label', conn_id)}' and its stored API key?", default=False):
         click.echo("aborted — nothing removed")
         return
     del config["connections"][conn_id]
@@ -666,7 +666,7 @@ def remove(connection):
     state = load_state()
     state["connections"].pop(conn_id, None)
     save_state(state)
-    keychain.delete_token(conn_id)
+    keychain.delete_api_key(conn_id)
     click.echo(f"✓ {conn_id} removed")
 
 

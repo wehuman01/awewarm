@@ -6,7 +6,7 @@ This document is for AI coding agents. Help the user install and configure `awew
 
 Every `awewarm activate --confirm`, `awewarm verify --confirm`, and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what a tick would do, `awewarm run --dry-run` is always safe.
 
-`awewarm init` and `awewarm add plan` are interactive (they prompt for choices and tokens). Tell the user to run them in their own terminal.
+`awewarm init` and `awewarm add plan` are interactive (they prompt for choices and API keys). Tell the user to run them in their own terminal.
 
 ## Language Behavior
 
@@ -153,9 +153,9 @@ This scans for local `claude` / `codex` CLIs and their login state. No network r
 
 > Run `awewarm init` in your terminal. It will list your local accounts, ask which ones to manage, and install the scheduler.
 
-For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + token), the command is `awewarm add plan` — also interactive (token prompt), so it also belongs in the user's terminal.
+For a subscription endpoint (OpenAI Chat / OpenAI Responses / Anthropic-compatible base URL + API key), the command is `awewarm add plan` — also interactive (API key prompt), so it also belongs in the user's terminal.
 
-Platform note: the scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer). On Windows there is no Keychain, so subscription tokens use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_TOKEN_<PLAN> "..."` (scheduler tasks inherit user env vars). On headless Linux/SSH accounts, the user may need `loginctl enable-linger $USER` first; without systemd, cron the tick: `* * * * * awewarm run`.
+Platform note: the scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer). On Windows there is no Keychain, so API keys use `${ENV_VAR}` references — the user persists them with `setx AWEWARM_API_KEY_<PLAN> "..."` (scheduler tasks inherit user env vars). On headless Linux/SSH accounts, the user may need `loginctl enable-linger $USER` first; without systemd, cron the tick: `* * * * * awewarm run`.
 
 ---
 
@@ -199,7 +199,7 @@ Local-only changes (run on user request):
 awewarm times <id> HH:MM...         # set fixed times
 awewarm enable <id> [--mode ...]    # enable / switch mode
 awewarm disable <id>                # pause scheduling
-awewarm remove <id>                 # delete connection + stored token (confirm first)
+awewarm remove <id>                 # delete connection + stored API key (confirm first)
 awewarm install / uninstall         # background scheduler (launchd / Task Scheduler / systemd)
 awewarm self-update                 # upgrade awewarm
 ```
@@ -208,7 +208,7 @@ User-only commands (interactive or quota-consuming):
 
 ```bash
 awewarm init                        # interactive onboarding
-awewarm add plan                    # interactive, prompts for token
+awewarm add plan                    # interactive, prompts for API key
 awewarm activate <id> --confirm     # sends a real request
 awewarm verify <id> --confirm       # sends a real request
 awewarm run                         # scheduler tick — may fire real requests
@@ -218,7 +218,7 @@ awewarm run                         # scheduler tick — may fire real requests
 
 - Never run `activate --confirm`, `verify --confirm`, or bare `run` unless the user explicitly asks — they consume plan quota.
 - Do not run `init` or `add plan` inside the agent — they are interactive.
-- Tokens live in the macOS Keychain (or `${ENV_VAR}` references), never in config files. Never ask the user to paste a token into chat; all awewarm output is redacted.
+- API keys live in the macOS Keychain (or `${ENV_VAR}` references), never in config files. Never ask the user to paste an API key into chat; all awewarm output is redacted.
 - Read config through `status` / `inspect`; never hand-edit config.json or state.json.
 - If any command fails, report the exact command and error message. Do not silently retry.
 
