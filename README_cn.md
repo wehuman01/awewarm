@@ -29,7 +29,7 @@
 awewarm 管理两类连接：
 
 - **账号** —— 本机的 `claude` / `codex` CLI 登录。awewarm 复用它们的登录态，发送一条最小的无头请求（`Reply with exactly: ok`），不保存任何凭据。
-- **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + API key）。API key 存入 macOS 钥匙串，绝不落盘。
+- **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + API key）。API key 存入 `~/.config/awewarm/secrets.json`（权限 600），也可以用环境变量引用、不落盘。
 
 调度分三种模式：`fixed` / `interval` / `hybrid`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
 
@@ -43,7 +43,7 @@ pip3 install awewarm
 
 后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm run`。
 
-Windows 提示：没有钥匙串，API key 走 `${ENV_VAR}` 引用 —— 用 `setx AWEWARM_API_KEY_<PLAN> "..."` 持久化（计划任务会继承用户环境变量）。
+环境变量方式：输入 `${GLM_API_KEY}` 这样的引用，awewarm 只保存引用本身（aweswitch 惯例）。注意后台调度器只能看到安装它的 shell 里的变量 —— 变量设好后请从该 shell 重新安装调度器。Windows 用 `setx` 持久化，计划任务会继承。
 
 ## 快速开始
 
@@ -70,7 +70,7 @@ awewarm status      # 查看接下来会发生什么
 awewarm config add
 ```
 
-依次选择协议、输入 API base URL、API key 和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 API key 存入钥匙串。同一条命令也能重新添加之前删掉的 `claude` / `codex` 本机账号 —— 它会列出在这台机器上检测到的所有可管理项。
+依次选择协议、输入 API base URL、API key 和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 API key 存入 `secrets.json` —— 如果你输入的是 `${ENV_VAR}` 引用则只保存引用。同一条命令也能重新添加之前删掉的 `claude` / `codex` 本机账号 —— 它会列出在这台机器上检测到的所有可管理项。
 
 ## 配套工具
 

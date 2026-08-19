@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Change: API key storage without the Keychain** — pasted keys now go to `~/.config/awewarm/secrets.json` (created with chmod 600), and `${ENV_VAR}` references (aweswitch convention) are a first-class option: `config add` accepts an env ref like `${GLM_API_KEY}` in the key prompt, and `config set <id> --api-key <key>` / `--api-key-env <VAR>` manage the source non-interactively. `config path` prints the secrets file location. Legacy `keychain:` refs migrate into secrets.json on first load; the Keychain code is removed — its `security -i` write path truncated stored keys to a single character and the truncation went unnoticed (activation failures surfaced as HTTP 401). Stored keys are read back and verified on save.
+
 ## v0.3.0
 
 `v0.3.0` redesigns the CLI surface down to seven visible commands. It also ships the window anchoring and versioned-base-URL fixes drafted in the unreleased v0.2.8 section below.

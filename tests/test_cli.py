@@ -7,7 +7,7 @@ from click.testing import CliRunner
 from helpers import IsolatedTestCase, account_connection, plan_connection
 
 import awewarm
-from awewarm import config as cfg, schedule
+from awewarm import config as cfg, keystore, schedule
 from awewarm.cli import cli, main
 
 RUNNER = CliRunner()
@@ -153,9 +153,8 @@ class ConfigAddPlanTests(IsolatedTestCase):
     ) + "\n"
 
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
-    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_add_plan_happy_path_fixed_mode(self, send, keychain_available, _discover):
+    def test_add_plan_happy_path_fixed_mode(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         result = invoke(["config", "add"], input=self.INPUT)
         self.assertEqual(result.exit_code, 0, output_of(result))
@@ -167,13 +166,12 @@ class ConfigAddPlanTests(IsolatedTestCase):
         self.assertEqual(conn["transport"]["kind"], "anthropic-messages")
         self.assertEqual(conn["schedule"]["mode"], "fixed")
         self.assertEqual(conn["window"]["status"], "unknown")
-        self.assertEqual(conn["auth"]["apiKeyRef"], "${AWEWARM_API_KEY_GLM_CODING_PLAN}")
-        self.assertIn("Keychain unavailable", result.output)
+        self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm-coding-plan")
+        self.assertIn("API key stored in", result.output)
 
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
-    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_add_plan_accepts_multiple_fixed_times(self, send, keychain_available, _discover):
+    def test_add_plan_accepts_multiple_fixed_times(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         multi = self.INPUT.replace("glm-4.7\n\n\n", "glm-4.7\n\n16:45, 06:35, 11:40\n")
         result = invoke(["config", "add"], input=multi)
@@ -204,9 +202,8 @@ class ConfigAddMenuTests(IsolatedTestCase):
         self.assertEqual(conn["transport"]["cliCommand"], "/Users/x/.local/bin/claude")
 
     @mock.patch("awewarm.discover.discover_accounts")
-    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_menu_endpoint_choice_runs_plan_flow(self, send, keychain_available, discover_accounts):
+    def test_menu_endpoint_choice_runs_plan_flow(self, send, discover_accounts):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding()]
         endpoint_input = "\n".join(["2", "GLM", "1", "http://x/v4", "k", "glm-4.7", "", "", ""]) + "\n"
@@ -374,7 +371,7 @@ class LifecycleTests(IsolatedTestCase):
         self.assertEqual(resumed.exit_code, 0)
         self.assertTrue(cfg.load_config()["connections"]["claude-code-main"]["enabled"])
 
-    @mock.patch("awewarm.keychain.delete_api_key")
+    @mock.patch("awewarm.keystore.delete_api_key")
     def test_remove_deletes_everything(self, delete_api_key):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
         cfg.save_state({"version": 1, "connections": {"glm-coding-plan": cfg.default_conn_state()}})
@@ -382,7 +379,45 @@ class LifecycleTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertEqual(cfg.load_config()["connections"], {})
         self.assertEqual(cfg.load_state()["connections"], {})
-        delete_api_key.assert_called_once_with("glm-coding-plan")
+        delete_api_key.assert_called_once_with("glm-coding-plan", "${AWEWARM_API_KEY_GLM_CODING_PLAN}")
+
+
+class ApiKeySetTests(IsolatedTestCase):
+    def setUp(self):
+        super().setUp()
+        write_config(plan_connection(), conn_id="glm-coding-plan")
+
+    def test_api_key_stored_in_secrets_file(self):
+        result = invoke(["config", "set", "glm-coding-plan", "--api-key", "sk-new-123"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("stored in", result.output)
+        conn = cfg.load_config()["connections"]["glm-coding-plan"]
+        self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm-coding-plan")
+        self.assertEqual(keystore.load_api_key("file:glm-coding-plan"), "sk-new-123")
+
+    def test_api_key_env_ref(self):
+        result = invoke(["config", "set", "glm-coding-plan", "--api-key-env", "GLM_API_KEY"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["glm-coding-plan"]
+        self.assertEqual(conn["auth"]["apiKeyRef"], "${GLM_API_KEY}")
+
+    def test_api_key_and_env_rejected_together(self):
+        result = invoke(["config", "set", "glm-coding-plan", "--api-key", "sk", "--api-key-env", "GLM_API_KEY"])
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_config_add_accepts_env_ref_input(self):
+        send = mock.MagicMock(return_value={"ok": True, "detail": "ok"})
+        with mock.patch("awewarm.transport.send_activation", send), \
+                mock.patch("awewarm.discover.discover_accounts", return_value=[]), \
+                mock.patch.dict("os.environ", {"GLM_API_KEY": "from-env"}, clear=False):
+            result = invoke(["config", "add"], input=(
+                "GLM Plan\n1\nhttps://open.bigmodel.cn/api/coding/paas/v4\n"
+                "${GLM_API_KEY}\nglm-4.7\n1\n06:00\n1\n"
+            ))
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["glm-plan"]
+        self.assertEqual(conn["auth"]["apiKeyRef"], "${GLM_API_KEY}")
+
 
 
 class SetTimesTests(IsolatedTestCase):
@@ -588,9 +623,8 @@ class LegacyAliasTests(IsolatedTestCase):
         install_scheduler.assert_called_once()
 
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
-    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_legacy_add_plan_routes_to_config_add(self, send, keychain_available, _discover):
+    def test_legacy_add_plan_routes_to_config_add(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         result = invoke(["add", "plan"], input=ConfigAddPlanTests.INPUT)
         self.assertEqual(result.exit_code, 0, output_of(result))
@@ -621,9 +655,8 @@ class MainReminderTests(IsolatedTestCase):
 
 class AddPlanUserAnchorTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
-    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
     @mock.patch("awewarm.transport.send_activation")
-    def test_mode3_with_open_window_anchors_renewal(self, send, keychain_available, _discover):
+    def test_mode3_with_open_window_anchors_renewal(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         with mock.patch("awewarm.cli._now") as now:
             from datetime import datetime

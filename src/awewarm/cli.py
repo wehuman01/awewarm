@@ -4,6 +4,7 @@ scheduler, update. Older command names still work as hidden aliases (removed
 in v1.0); `awewarm run` itself is fixed because installed scheduler agents
 invoke it verbatim."""
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from . import __version__, discover, install, keychain, schedule, transport
+from . import __version__, discover, install, keystore, schedule, transport
 from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
     DEFAULT_CATCHUP_MINUTES,
@@ -99,7 +100,7 @@ def _resolve_api_key(conn):
     ref = (conn.get("auth") or {}).get("apiKeyRef")
     if not ref:
         return None
-    return keychain.load_api_key(ref)
+    return keystore.load_api_key(ref)
 
 
 def _execute_activation(conn, conn_id, cs, now, kind, slot=None):
@@ -109,9 +110,9 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None):
     if conn["kind"] == "subscription":
         api_key = _resolve_api_key(conn)
         if api_key is None:
-            schedule.record_failure(cs, now, kind, "API key unavailable (keychain or env)")
+            schedule.record_failure(cs, now, kind, "API key unavailable (secrets file or env)")
             log_event(f"{conn_id} activation ({kind}) failed: API key unavailable")
-            return {"ok": False, "detail": "API key unavailable (keychain or env)"}
+            return {"ok": False, "detail": "API key unavailable (secrets file or env)"}
     result = transport.send_activation(conn, api_key)
     if result["ok"]:
         schedule.record_success(cs, conn, now, kind, slot)
@@ -339,9 +340,20 @@ def _add_plan_flow():
     base_url = click.prompt(f"API / plan URL ({_base_url_example(transport_kind)})").strip()
     if not base_url.startswith(("http://", "https://")):
         die("API base URL must start with http:// or https://")
-    api_key = click.prompt("API key", hide_input=True).strip()
-    if not api_key:
-        die("API key must not be empty")
+    api_key_input = click.prompt(
+        "API key (paste the key, or an env ref like ${GLM_API_KEY})", hide_input=True
+    ).strip()
+    env_match = keystore.ENV_REF_RE.match(api_key_input)
+    if env_match:
+        api_key_ref = api_key_input
+        api_key = os.environ.get(env_match.group(1))
+        if api_key is None:
+            die(f"env var {env_match.group(1)} is not set in this shell\n"
+                f"  fix: export it first, or paste the key itself")
+    else:
+        if not api_key_input:
+            die("API key must not be empty")
+        api_key = api_key_input
     model = click.prompt("Model for warm-up requests", value_proc=_nonempty_proc, show_default=False)
 
     draft = _plan_connection(
@@ -416,22 +428,15 @@ def _add_plan_flow():
     else:
         fixed_at, days = _prompt_fixed_settings()
 
-    api_key_ref = keychain.store_api_key(conn_id, api_key)
-    if api_key_ref.startswith("keychain:"):
-        click.echo(f"✓ API key stored in Keychain ({api_key_ref.split(':', 1)[1]})")
+    if not env_match:
+        api_key_ref = keystore.store_api_key(conn_id, api_key)
+        click.echo(f"✓ API key stored in {keystore.secrets_path()} (chmod 600)")
     else:
-        api_key_var = api_key_ref[2:-1]
-        if sys.platform == "win32":
-            click.echo(
-                "⚠ Keychain unavailable on Windows — API key NOT stored on disk.\n"
-                f"  Persist it as a user env var (scheduler tasks inherit it):\n"
-                f"  setx {api_key_var} <your-api-key>"
-            )
-        else:
-            click.echo(
-                "⚠ Keychain unavailable — API key NOT stored on disk.\n"
-                f"  Export it before awewarm runs:\n  export {api_key_var}=<your-api-key>"
-            )
+        click.echo(
+            f"✓ API key referenced from environment ({api_key_ref})\n"
+            "  note: the background scheduler only sees variables from the shell that\n"
+            "  installed it; re-install the scheduler from a shell where this var is set."
+        )
     config["connections"][conn_id] = _plan_connection(
         conn_id, label, base_url, api_key_ref, base_url, transport_kind, model,
         mode, window, fixed_at, days,
@@ -673,7 +678,7 @@ def config_add():
     _config_add()
 
 
-def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes):
+def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key, api_key_env):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     slots = []
@@ -682,9 +687,19 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
             slots = _slots_proc(times)
         except ValueError as exc:
             die(str(exc))
-    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, window_minutes)):
+    if api_key and api_key_env:
+        die("use either --api-key or --api-key-env, not both")
+    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, window_minutes, api_key, api_key_env)):
         _show_settings(conn_id, conn)
         return
+    if api_key_env:
+        if not keystore.ENV_REF_RE.match("${" + api_key_env + "}"):
+            die("env var name may only contain A-Z, 0-9 and underscore")
+        conn.setdefault("auth", {})["apiKeyRef"] = "${" + api_key_env + "}"
+    if api_key is not None:
+        if not api_key.strip() or "\n" in api_key:
+            die("--api-key must be a single non-empty line")
+        conn.setdefault("auth", {})["apiKeyRef"] = keystore.store_api_key(conn_id, api_key.strip())
     state = load_state()
     state_changed = False
     anchor_now = None
@@ -751,6 +766,10 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
         if window_notice:
             click.echo(window_notice)
         click.echo(f"Interval renewal is unlocked — switch modes with: awewarm config set {conn_id} --mode hybrid")
+    if api_key_env:
+        click.echo(f"✓ API key for {conn_id} now referenced from ${{{api_key_env}}}")
+    if api_key is not None:
+        click.echo(f"✓ API key for {conn_id} stored in {keystore.secrets_path()}")
 
 
 @config.command("set")
@@ -761,9 +780,11 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
 @click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection.")
 @click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
-def config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes):
+@click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
+@click.option("--api-key-env", "api_key_env", default=None, metavar="VAR", help="Reference an env var (e.g. GLM_API_KEY) instead of storing the key.")
+def config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key, api_key_env):
     """Show or change one connection's schedule settings."""
-    _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes)
+    _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minutes, api_key, api_key_env)
 
 
 def _config_remove(connection):
@@ -777,7 +798,7 @@ def _config_remove(connection):
     state = load_state()
     state["connections"].pop(conn_id, None)
     save_state(state)
-    keychain.delete_api_key(conn_id)
+    keystore.delete_api_key(conn_id, (conn.get("auth") or {}).get("apiKeyRef"))
     click.echo(f"✓ {conn_id} removed")
 
 
@@ -792,6 +813,7 @@ def config_remove(connection):
 def config_path_command():
     """Print config, state, and log paths."""
     click.echo(f"config: {config_path()}")
+    click.echo(f"secrets: {keystore.secrets_path()}")
     click.echo(f"state:  {state_path()}")
     click.echo(f"log:    {log_path()}")
 
@@ -936,7 +958,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
     if user_confirm:
         if not duration or duration <= 0:
             die("--user-confirm needs --duration <minutes> (the window length you verified)")
-        _config_set(connection, None, None, None, None, None, duration)
+        _config_set(connection, None, None, None, None, None, duration, None, None)
         return
     if confirm:
         _activate_now(connection, True, kind="verify")
@@ -965,7 +987,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
 def legacy_enable(connection, mode):
     """Legacy alias for `awewarm config set <id> --on [--mode M]`."""
     _moved(f"enable {connection}", f"config set {connection} --on")
-    _config_set(connection, None, None, mode, True, None, None)
+    _config_set(connection, None, None, mode, True, None, None, None, None)
 
 
 @cli.command("anchor", hidden=True)
@@ -974,7 +996,7 @@ def legacy_enable(connection, mode):
 def legacy_anchor(connection, reset_hhmm):
     """Legacy alias for `awewarm config set <id> --anchor HH:MM`."""
     _moved(f"anchor {connection}", f"config set {connection} --anchor {reset_hhmm}")
-    _config_set(connection, None, None, None, None, reset_hhmm, None)
+    _config_set(connection, None, None, None, None, reset_hhmm, None, None, None)
 
 
 @cli.command("disable", hidden=True)
@@ -982,7 +1004,7 @@ def legacy_anchor(connection, reset_hhmm):
 def legacy_disable(connection):
     """Legacy alias for `awewarm config set <id> --off`."""
     _moved(f"disable {connection}", f"config set {connection} --off")
-    _config_set(connection, None, None, None, False, None, None)
+    _config_set(connection, None, None, None, False, None, None, None, None)
 
 
 @cli.command("times", hidden=True)
@@ -991,7 +1013,7 @@ def legacy_disable(connection):
 def legacy_times(connection, times):
     """Legacy alias for `awewarm config set <id> --times HH:MM...`."""
     _moved(f"times {connection}", f"config set {connection} --times HH:MM...")
-    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None)
+    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None, None)
 
 
 @cli.command("remove", hidden=True)

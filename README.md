@@ -29,7 +29,7 @@
 awewarm manages two kinds of connections:
 
 - **Account** — your local `claude` / `codex` CLI logins. awewarm reuses their login state and sends one minimal headless request (`Reply with exactly: ok`). No credentials are stored.
-- **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + API key. The key goes to the macOS Keychain, never to disk.
+- **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + API key. The key is stored in `~/.config/awewarm/secrets.json` (chmod 600), or referenced from an env var without being stored.
 
 It schedules those requests in three modes — `fixed`, `interval`, and `hybrid` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
 
@@ -43,7 +43,7 @@ pip3 install awewarm
 
 The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm run`.
 
-Windows note: there is no Keychain there, so API keys use `${ENV_VAR}` references — persist them with `setx AWEWARM_API_KEY_<PLAN> "..."` (scheduler tasks inherit user env vars).
+Env-var keys: paste an env ref like `${GLM_API_KEY}` instead of the key itself and awewarm stores only the reference (aweswitch convention). Note the background scheduler only sees variables from the shell that installed it — re-install the scheduler from a shell where the variable is set. On Windows, persist such vars with `setx` so scheduler tasks inherit them.
 
 ## Quick Start
 
@@ -70,7 +70,7 @@ For a subscription endpoint instead:
 awewarm config add
 ```
 
-You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in the Keychain. The same command also re-adds a local `claude` / `codex` account you removed earlier — it lists whatever is detected on this machine.
+You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in `secrets.json` — or as an env reference if you typed `${ENV_VAR}`. The same command also re-adds a local `claude` / `codex` account you removed earlier — it lists whatever is detected on this machine.
 
 ## Companion Tools
 
