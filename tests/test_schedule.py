@@ -274,3 +274,32 @@ class EdgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowOverrideNoticeTests(unittest.TestCase):
+    def verified(self, minutes):
+        return {"status": "verified", "durationMinutes": minutes, "evidence": "builtin-provider"}
+
+    def test_none_without_verified_window(self):
+        self.assertIsNone(schedule.window_override_notice({"status": "unknown"}, 240))
+        self.assertIsNone(schedule.window_override_notice(None, 240))
+
+    def test_none_when_matching_or_invalid(self):
+        self.assertIsNone(schedule.window_override_notice(self.verified(300), 300))
+        self.assertIsNone(schedule.window_override_notice(self.verified(None), 240))
+
+    def test_shorter_duration_lands_inside_old_window(self):
+        notice = schedule.window_override_notice(self.verified(300), 240)
+        self.assertIn("inside the still-open window", notice)
+        self.assertIn("60 min cold gap", notice)
+
+    def test_shorter_duration_covered_by_grace(self):
+        # 299 min + 75s grace clears the 300-min window: still differs, warn softly.
+        notice = schedule.window_override_notice(self.verified(300), 299)
+        self.assertIn("every ~299 min", notice)
+        self.assertNotIn("cold gap", notice)
+
+    def test_longer_duration_warns_softly(self):
+        notice = schedule.window_override_notice(self.verified(300), 360)
+        self.assertIn("every ~360 min", notice)
+        self.assertNotIn("cold gap", notice)

@@ -548,6 +548,7 @@ def verify(connection, confirm, duration, user_confirm):
     if user_confirm:
         if not duration or duration <= 0:
             die("--user-confirm needs --duration <minutes> (the window length you verified)")
+        notice = schedule.window_override_notice(window, duration)
         conn["window"] = {
             "status": "user-confirmed",
             "startRule": window.get("startRule", "unknown"),
@@ -556,6 +557,8 @@ def verify(connection, confirm, duration, user_confirm):
         }
         save_config(config)
         click.echo(f"✓ Window recorded as {duration} minutes, user-confirmed.")
+        if notice:
+            click.echo(notice)
         click.echo(f"Interval renewal is unlocked — switch modes with: awewarm enable {conn_id} --mode hybrid")
         return
     if confirm:

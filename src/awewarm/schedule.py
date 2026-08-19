@@ -24,6 +24,34 @@ DEGRADE_AFTER_FAILURES = 3
 SLOT_KEEP_DAYS = 7
 
 
+def window_override_notice(old_window, new_minutes, grace_seconds=None):
+    """Warning when a user-set duration overrides a verified window, or None.
+
+    Advisory only — the caller prints it and the user decides. A renewal
+    cadence shorter than the real window fires inside the still-open window
+    and starts nothing, leaving a cold gap of the difference each cycle.
+    """
+    if not old_window or old_window.get("status") != "verified":
+        return None
+    real = old_window.get("durationMinutes")
+    if not isinstance(real, int) or real <= 0 or real == new_minutes:
+        return None
+    if grace_seconds is None:
+        grace_seconds = DEFAULT_GRACE_SECONDS
+    if new_minutes * 60 + grace_seconds < real * 60:
+        return (
+            f"⚠ The verified window is {real} minutes, but you recorded {new_minutes}."
+            f" Renewal fires {new_minutes} min + grace after each success — inside the"
+            " still-open window, so it starts nothing and leaves a"
+            f" ~{real - new_minutes} min cold gap each cycle."
+            f" Keep {real} unless you verified a different window yourself."
+        )
+    return (
+        f"⚠ The verified window is {real} minutes, but you recorded {new_minutes}."
+        f" Renewal now fires every ~{new_minutes} min instead."
+    )
+
+
 def parse_ts(value):
     """Parse an ISO timestamp written by this tool; None for missing/naive."""
     if not value:
