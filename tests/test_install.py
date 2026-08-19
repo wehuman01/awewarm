@@ -21,10 +21,18 @@ class BuildPlistTests(IsolatedTestCase):
     def test_plist_shape(self):
         plist = install.build_plist("/usr/local/bin/awewarm")
         self.assertEqual(plist["Label"], install.LABEL)
-        self.assertEqual(plist["ProgramArguments"], ["/usr/local/bin/awewarm", "run"])
+        self.assertEqual(plist["ProgramArguments"], ["/usr/local/bin/awewarm", "run", "--force"])
         self.assertEqual(plist["StartInterval"], 60)
         self.assertTrue(plist["RunAtLoad"])
         self.assertTrue(plist["StandardOutPath"].endswith("launchd.log"))
+
+    def test_plist_includes_calendar_entries(self):
+        entries = [{"Hour": 6, "Minute": 35, "Weekday": [1, 2, 3, 4, 5]}]
+        self.assertEqual(install.build_plist("/x", entries)["StartCalendarInterval"], entries)
+
+    def test_plist_omits_calendar_key_when_no_entries(self):
+        self.assertNotIn("StartCalendarInterval", install.build_plist("/x"))
+        self.assertNotIn("StartCalendarInterval", install.build_plist("/x", []))
 
     def test_plist_passes_awewarm_env_through(self):
         plist = install.build_plist("/usr/local/bin/awewarm")
@@ -142,7 +150,7 @@ class WindowsInstallTests(IsolatedTestCase):
             self.assertIn(flag, argv)
         self.assertEqual(argv[argv.index("/TN") + 1], install.LABEL)
         # /TR embeds the exe in quotes so paths with spaces survive
-        self.assertEqual(argv[argv.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" run')
+        self.assertEqual(argv[argv.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" run --force')
         self.assertTrue(install.scheduler_installed())
 
     @mock.patch("awewarm.install.sys.platform", "win32")
@@ -194,6 +202,10 @@ class LinuxUnitTests(IsolatedTestCase):
         self.assertIn(f"OnUnitActiveSec={install.TICK_SECONDS}s", text)
         self.assertIn("OnStartupSec=1min", text)
         self.assertIn("WantedBy=timers.target", text)
+
+    def test_timer_persists_across_reboot(self):
+        # a server rebooted mid-window gets its missed tick fired at boot
+        self.assertIn("Persistent=true", install.build_timer())
 
     def test_installed_detected_by_timer_file(self):
         with mock.patch("awewarm.install.sys.platform", "linux"):
@@ -347,6 +359,153 @@ class WakeScheduleTests(IsolatedTestCase):
         self.assertEqual(status, "changed")
         # no pmset mutation, only state cleanup
         run.assert_not_called()
+
+
+class CalendarEntriesTests(IsolatedTestCase):
+    @staticmethod
+    def _conn(times, days="weekday", mode="fixed", enabled=True, wake=None):
+        schedule = {"mode": mode, "fixed": {
+            "at": times, "days": days,
+            "catchUpWindowMinutes": cfg.DEFAULT_CATCHUP_MINUTES,
+            "skipIfActivatedWithinMinutes": cfg.DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
+        }, "interval": {
+            "graceSeconds": cfg.DEFAULT_GRACE_SECONDS,
+            "jitterSeconds": cfg.DEFAULT_JITTER_SECONDS,
+        }}
+        if wake is not None:
+            schedule["wakeWhenAsleep"] = wake
+        window = ({"status": "user-confirmed", "startRule": "unknown",
+                   "durationMinutes": 300, "evidence": "user-confirmed"}
+                  if mode == "interval" else
+                  {"status": "unknown", "startRule": "unknown",
+                   "durationMinutes": None, "evidence": "none"})
+        return {
+            "label": "c", "kind": cfg.KIND_ACCOUNT, "enabled": enabled,
+            "auth": {"type": "local-cli", "status": "valid", "apiKeyRef": None},
+            "transport": {"kind": "claude-cli", "baseUrl": None, "cliCommand": "/usr/local/bin/claude"},
+            "window": window,
+            "activation": {"model": None, "prompt": cfg.DEFAULT_PROMPT, "maxTokens": cfg.DEFAULT_MAX_TOKENS},
+            "schedule": schedule,
+        }
+
+    def _save(self, *conns):
+        data = cfg.empty_config()
+        for index, conn in enumerate(conns, 1):
+            data["connections"][f"c{index}"] = conn
+        cfg.save_config(data)
+        return cfg.load_config()
+
+    def test_weekday_slots_get_weekday_list(self):
+        config = self._save(self._conn(["06:35"]))
+        self.assertEqual(
+            install.calendar_entries(config),
+            [{"Hour": 6, "Minute": 35, "Weekday": [1, 2, 3, 4, 5]}],
+        )
+
+    def test_every_day_slots_omit_weekday(self):
+        config = self._save(self._conn(["19:42"], days="every-day"))
+        self.assertEqual(install.calendar_entries(config), [{"Hour": 19, "Minute": 42}])
+
+    def test_wake_opt_out_interval_and_disabled_are_excluded(self):
+        config = self._save(
+            self._conn(["06:35"], wake=False),
+            self._conn(["07:00"], mode="interval"),
+            self._conn(["08:00"], enabled=False),
+        )
+        self.assertEqual(install.calendar_entries(config), [])
+
+    def test_duplicate_slots_collapse_distinct_days_do_not(self):
+        config = self._save(
+            self._conn(["06:35"]),
+            self._conn(["06:35"]),
+            self._conn(["06:35"], days="every-day"),
+        )
+        self.assertEqual(
+            install.calendar_entries(config),
+            [{"Hour": 6, "Minute": 35}, {"Hour": 6, "Minute": 35, "Weekday": [1, 2, 3, 4, 5]}],
+        )
+
+    def test_entries_sorted_by_time(self):
+        config = self._save(self._conn(["11:40", "06:00"], days="every-day"))
+        entries = install.calendar_entries(config)
+        self.assertEqual([(e["Hour"], e["Minute"]) for e in entries], [(6, 0), (11, 40)])
+
+
+class RefreshWakeTests(IsolatedTestCase):
+    def _write_plist(self, entries):
+        install.plist_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(install.plist_path(), "wb") as handle:
+            plistlib.dump(install.build_plist("/opt/awewarm", entries), handle)
+
+    def _fixed_config(self):
+        config = cfg.empty_config()
+        config["connections"]["c1"] = CalendarEntriesTests._conn(["06:35"])
+        return config
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_noop_when_entries_match(self):
+        config = self._fixed_config()
+        self._write_plist(install.calendar_entries(config))
+        with mock.patch("awewarm.install._install_launchd") as reinstall:
+            self.assertFalse(install.refresh_wake(config))
+            reinstall.assert_not_called()
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_rewrites_when_entries_drifted(self):
+        config = self._fixed_config()
+        self._write_plist([])  # installed before the slot existed
+        with mock.patch("awewarm.install._install_launchd") as reinstall:
+            self.assertTrue(install.refresh_wake(config))
+            reinstall.assert_called_once()
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_noop_without_installed_plist(self):
+        self.assertFalse(install.refresh_wake(self._fixed_config()))
+
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    def test_noop_off_darwin(self):
+        self._write_plist([])
+        self.assertFalse(install.refresh_wake(self._fixed_config()))
+
+
+class SelfHealCalendarTests(IsolatedTestCase):
+    def _write_plist(self, entries):
+        install.plist_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(install.plist_path(), "wb") as handle:
+            plistlib.dump(install.build_plist("/opt/awewarm", entries), handle)
+
+    def _fixed_config(self):
+        config = cfg.empty_config()
+        config["connections"]["c1"] = CalendarEntriesTests._conn(["06:35"])
+        return config
+
+    @posix_uid
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_stale_calendar_triggers_reinstall(self, _uid):
+        self._write_plist([])  # current command line, pre-calendar plist
+        with mock.patch("awewarm.install.install_scheduler") as heal:
+            install._maybe_self_heal_job(self._fixed_config())
+            heal.assert_called_once()
+
+    @posix_uid
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_current_calendar_leaves_job_alone(self, _uid):
+        config = self._fixed_config()
+        self._write_plist(install.calendar_entries(config))
+        with mock.patch("awewarm.install.install_scheduler") as heal:
+            install._maybe_self_heal_job(config)
+            heal.assert_not_called()
+
+    @posix_uid
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    @mock.patch("awewarm.install.load_config")
+    def test_heal_loads_config_when_not_given(self, load, _uid):
+        load.return_value = self._fixed_config()
+        self._write_plist([])
+        with mock.patch("awewarm.install.install_scheduler") as heal:
+            install._maybe_self_heal_job()
+            heal.assert_called_once()
+            load.assert_called_once()
 
 
 if __name__ == "__main__":

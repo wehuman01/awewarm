@@ -458,6 +458,7 @@ def _add_plan_flow():
         save_state(state)
         click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
     click.echo(f"\n✓ {label} added ({conn_id}) in {mode} mode.")
+    _refresh_wake_after_edit()
     _scheduler_hint()
 
 
@@ -467,10 +468,11 @@ def _tick():
     Calls install._maybe_self_heal_job() at the top so an old scheduler job
     (e.g. left over from a pre-`--force` version after a manual `pip install
     --upgrade`) is rewritten on the first tick and the second tick onward
-    uses the current command line.
+    uses the current command line; on macOS it also heals stale calendar
+    wake entries after schedule edits.
     """
-    install._maybe_self_heal_job()
     config = load_config()
+    install._maybe_self_heal_job(config)
     state = load_state()
     now = _now(config)
     if not config["connections"]:
@@ -820,6 +822,8 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, window_minu
         click.echo(f"✓ API key for {conn_id} now referenced from ${{{api_key_env}}}")
     if api_key is not None:
         click.echo(f"✓ API key for {conn_id} stored in {keystore.secrets_path()}")
+    if any(value is not None for value in (times, days, mode, enabled)):
+        _refresh_wake_after_edit()
 
 
 @config.command("set")
@@ -852,6 +856,7 @@ def _config_remove(connection):
     save_state(state)
     keystore.delete_api_key(conn_id, (conn.get("auth") or {}).get("apiKeyRef"))
     click.echo(f"✓ {conn_id} removed")
+    _refresh_wake_after_edit()
 
 
 @config.command("remove")
@@ -971,6 +976,32 @@ The background scheduler calls this with --force every minute.
     _tick()
 
 
+def _refresh_wake_after_edit():
+    """Keep the installed wake machinery in sync after schedule edits.
+
+    Rewrites the launchd calendar entries when they drifted, and quietly
+    re-registers the pmset fallback (sudo -n only — never prompt here; the
+    manual command is printed when passwordless sudo is unavailable).
+    """
+    if sys.platform != "darwin" or not install.scheduler_installed():
+        return
+    config = load_config()
+    if install.refresh_wake(config):
+        click.echo("✓ Calendar wake updated (launchd)")
+    spec = install.build_wake_spec(config)
+    if spec is None:
+        return
+    recorded = (load_state().get("wakeSchedule") or {})
+    days, time = spec
+    if recorded.get("days") == days and recorded.get("time") == time:
+        return
+    if install.set_wake_schedule(spec, interactive=False):
+        click.echo(f"✓ Wake schedule updated: {days} {time}")
+    else:
+        click.echo("  pmset fallback wake is stale — update manually:")
+        click.echo(f"  {install.manual_wake_command(spec)}")
+
+
 def _wake_flow(wake):
     """macOS pmset wake schedule: per-connection wakeWhenAsleep + wakeLeadMinutes."""
     if sys.platform != "darwin":
@@ -1026,6 +1057,11 @@ def _wake_confirm_and_set(spec):
 def _scheduler_install(wake=None):
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
+    if sys.platform == "darwin":
+        entries = install.calendar_entries(load_config())
+        if entries:
+            times = ", ".join(f"{e['Hour']:02d}:{e['Minute']:02d}" for e in entries)
+            click.echo(f"  Calendar wake at {times} — fires with the lid closed, no sudo")
     click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
     _wake_flow(wake)
 

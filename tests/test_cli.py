@@ -248,12 +248,14 @@ class RunTests(IsolatedTestCase):
         conn["schedule"]["fixed"]["catchUpWindowMinutes"] = 1441
         return conn
 
-    def test_dry_run_plans_without_sending_or_writing(self):
+    def test_run_requires_force_without_tty(self):
+        # The confirm prompt needs a terminal; a non-tty `run` without
+        # --force must die before sending anything or writing state.
         write_config(self.always_due_conn())
         with mock.patch("awewarm.transport.send_activation") as send:
-            result = invoke(["run", "--dry-run"])
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("[dry-run] would activate", result.output)
+            result = invoke(["run"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("requires --force", output_of(result))
         send.assert_not_called()
         self.assertFalse(cfg.state_path().exists())
 
@@ -261,12 +263,12 @@ class RunTests(IsolatedTestCase):
     def test_run_fires_and_completes_slot(self, send):
         send.return_value = {"ok": True, "detail": "ok"}
         write_config(self.always_due_conn())
-        result = invoke(["run"])
+        result = invoke(["run", "--force"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("activated", result.output)
         state = cfg.load_state()
         self.assertIsNotNone(state["connections"]["claude-code-main"]["lastActivationAt"])
-        second = invoke(["run"])
+        second = invoke(["run", "--force"])
         self.assertIn("nothing due", second.output)
         self.assertEqual(send.call_count, 1)
 
@@ -274,7 +276,7 @@ class RunTests(IsolatedTestCase):
     def test_run_failure_recorded_not_fatal(self, send):
         send.return_value = {"ok": False, "detail": "claude not found in PATH"}
         write_config(self.always_due_conn())
-        result = invoke(["run"])
+        result = invoke(["run", "--force"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         state = cfg.load_state()
         self.assertEqual(state["connections"]["claude-code-main"]["lastResult"], "failure")
@@ -285,35 +287,38 @@ class RunTests(IsolatedTestCase):
         conn = self.always_due_conn()
         conn["enabled"] = False
         write_config(conn)
-        result = invoke(["run"])
+        result = invoke(["run", "--force"])
         self.assertIn("nothing due", result.output)
         send.assert_not_called()
 
 
 class RunConnectionTests(IsolatedTestCase):
     @mock.patch("awewarm.transport.send_activation")
-    def test_run_id_fires_without_confirm(self, send):
+    def test_run_id_fires_with_force(self, send):
         send.return_value = {"ok": True, "detail": "ok"}
         write_config(account_connection(mode="fixed"))
-        result = invoke(["run", "claude-code-main"])
+        result = invoke(["run", "claude-code-main", "--force"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         state = cfg.load_state()
         self.assertEqual(state["connections"]["claude-code-main"]["history"][-1]["kind"], "manual")
         send.assert_called_once()
 
-    def test_run_unknown_connection(self):
-        write_config(account_connection(mode="fixed"))
-        result = invoke(["run", "nope"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("unknown connection", output_of(result))
-
-    def test_run_id_dry_run_sends_nothing(self):
+    def test_run_id_requires_force_without_tty(self):
+        # The old --dry-run flag is gone; the non-tty guard is what now keeps
+        # a scripted `run <id>` from firing anything.
         write_config(account_connection(mode="fixed"))
         with mock.patch("awewarm.transport.send_activation") as send:
-            result = invoke(["run", "claude-code-main", "--dry-run"])
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("[dry-run] would activate", result.output)
+            result = invoke(["run", "claude-code-main"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("requires --force", output_of(result))
         send.assert_not_called()
+        self.assertFalse(cfg.state_path().exists())
+
+    def test_run_unknown_connection(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["run", "nope", "--force"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("unknown connection", output_of(result))
 
     def anchored_interval_conn(self):
         write_config(account_connection(mode="interval", fixed_at=()))
@@ -330,7 +335,7 @@ class RunConnectionTests(IsolatedTestCase):
             from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
             send.return_value = {"ok": True, "detail": "ok"}
-            result = invoke(["run", "claude-code-main"])
+            result = invoke(["run", "claude-code-main", "--force"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         cs = cfg.load_state()["connections"]["claude-code-main"]
         self.assertEqual(cs["nextDueAt"], "2026-08-19T15:01:15+08:00")
@@ -343,7 +348,7 @@ class RunConnectionTests(IsolatedTestCase):
             from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
             send.return_value = {"ok": True, "detail": "ok"}
-            result = invoke(["run", "claude-code-main", "--reset-due"])
+            result = invoke(["run", "claude-code-main", "--reset-due", "--force"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         cs = cfg.load_state()["connections"]["claude-code-main"]
         due = schedule.parse_ts(cs["nextDueAt"])
@@ -797,6 +802,35 @@ class AnchorTests(IsolatedTestCase):
         self.assertEqual(conn["schedule"]["mode"], "hybrid")
         cs = cfg.load_state()["connections"]["claude-code-main"]
         self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
+
+
+class ConfigSetWakeRefreshTests(IsolatedTestCase):
+    @mock.patch("awewarm.cli.sys.platform", "darwin")
+    @mock.patch("awewarm.cli.install.refresh_wake", return_value=False)
+    @mock.patch("awewarm.cli.install.build_wake_spec", return_value=None)
+    @mock.patch("awewarm.cli.install.scheduler_installed", return_value=True)
+    def test_schedule_edit_refreshes_installed_wake(self, _installed, _spec, refresh):
+        write_config(account_connection(mode="fixed", fixed_at=("06:35",)))
+        result = invoke(["config", "set", "claude-code-main", "--times", "07:00"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        refresh.assert_called_once()
+
+    @mock.patch("awewarm.cli.sys.platform", "darwin")
+    @mock.patch("awewarm.cli.install.refresh_wake")
+    def test_no_refresh_without_installed_scheduler(self, refresh):
+        # scheduler_installed() reads the isolated temp env → not installed
+        write_config(account_connection(mode="fixed", fixed_at=("06:35",)))
+        result = invoke(["config", "set", "claude-code-main", "--times", "07:00"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        refresh.assert_not_called()
+
+    @mock.patch("awewarm.cli.sys.platform", "linux")
+    @mock.patch("awewarm.cli.install.refresh_wake")
+    def test_no_refresh_off_darwin(self, refresh):
+        write_config(account_connection(mode="fixed", fixed_at=("06:35",)))
+        result = invoke(["config", "set", "claude-code-main", "--times", "07:00"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        refresh.assert_not_called()
 
 
 if __name__ == "__main__":

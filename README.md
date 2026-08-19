@@ -134,6 +134,19 @@ awewarm config set claude-code --times 06:35   # one anchor per workday morning
 
 **Example** — a verified account with a 06:35 weekday anchor: interval renews all day (renewal ignores the weekday rule and continues over the weekend), and Monday 06:35 re-anchors the chain no matter what happened overnight.
 
+### Sleeping Macs — calendar wake (macOS)
+
+Fixed slots on a sleeping Mac are covered twice:
+
+- **launchd calendar wake (primary).** `scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the agent. launchd wakes the Mac from sleep — lid closed and deep sleep included — and runs the tick at the exact slot time. No sudo, and *every* slot is protected. Editing times/days/mode updates the entries immediately; the first tick after any edit heals drift automatically.
+- **pmset wake (fallback).** A single `wakeorpoweron` repeat is registered `wakeLeadMinutes` (default 5) before the *earliest* slot — pmset holds one repeating event, which is why it can't cover later slots. Its remaining value is booting a Mac that was fully shut down; it needs sudo (`awewarm scheduler install` offers it).
+
+Per connection, `schedule.wakeWhenAsleep: false` opts out of both. Missed slots still fire late within the catch-up window once the machine wakes.
+
+### Always-on servers (Linux)
+
+No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` over (or re-run `init`), export API keys as env vars (`--api-key-env`) rather than copying secrets, and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts.
+
 ## Config
 
 Users never hand-edit config; `init` / `config add` generate it at `~/.config/awewarm/config.json` (state at `~/.local/state/awewarm/state.json`). The shape, for reference:

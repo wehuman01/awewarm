@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import SLOT_RE, die, load_state, save_state, state_path
+from .config import SLOT_RE, die, load_config, load_state, save_state, state_path
 
 LABEL = "com.awewarm.scheduler"
 TICK_SECONDS = 60
@@ -58,7 +58,7 @@ def timer_path():
     return unit_dir() / "awewarm.timer"
 
 
-def build_plist(exe):
+def build_plist(exe, calendar=None):
     out_log = state_path().parent / "launchd.log"
     environment = {
         key: value
@@ -69,7 +69,7 @@ def build_plist(exe):
     # dirs, so bare CLI names like "claude" would not resolve inside ticks.
     if os.environ.get("PATH"):
         environment["PATH"] = os.environ["PATH"]
-    return {
+    plist = {
         "Label": LABEL,
         "ProgramArguments": [exe, "run", "--force"],
         "StartInterval": TICK_SECONDS,
@@ -78,6 +78,9 @@ def build_plist(exe):
         "StandardErrorPath": str(out_log),
         "EnvironmentVariables": environment,
     }
+    if calendar:
+        plist["StartCalendarInterval"] = calendar
+    return plist
 
 
 def resolve_exe():
@@ -127,12 +130,13 @@ def scheduler_installed():
     return False
 
 
-def _maybe_self_heal_job():
-    """Rewrite the installed scheduler job if its command line is outdated.
+def _maybe_self_heal_job(config=None):
+    """Rewrite the installed scheduler job if its command line is outdated or,
+    on macOS, its calendar wake entries no longer match the config.
 
     Called at the top of every scheduler tick. Cheap (one file read or one
     `schtasks /Query`). No-op in the common case where the job already
-    includes `--force`.
+    includes `--force` and the calendar entries are current.
 
     Covers users who upgraded via `pip install --upgrade awewarm` directly,
     bypassing `awewarm update` — the next tick detects the old job, rewrites
@@ -145,9 +149,13 @@ def _maybe_self_heal_job():
                 return
             with open(plist, "rb") as handle:
                 data = plistlib.load(handle)
-            if "--force" in (data.get("ProgramArguments") or []):
+            if "--force" not in (data.get("ProgramArguments") or []):
+                install_scheduler()
                 return
-            install_scheduler()
+            if (data.get("StartCalendarInterval") or []) != calendar_entries(
+                config or load_config()
+            ):
+                install_scheduler()
             return
         if sys.platform == "win32":
             try:
@@ -178,7 +186,7 @@ def _install_launchd():
     plist = plist_path()
     plist.parent.mkdir(parents=True, exist_ok=True)
     with open(plist, "wb") as handle:
-        plistlib.dump(build_plist(resolve_exe()), handle)
+        plistlib.dump(build_plist(resolve_exe(), calendar_entries(load_config())), handle)
     uid = os.getuid()
     # A stale registration for the same label breaks bootstrap; ignore errors.
     subprocess.run(
@@ -216,6 +224,35 @@ def _uninstall_launchd():
     return was_present
 
 
+def calendar_entries(config):
+    """launchd StartCalendarInterval entries: one per fixed slot that opted into
+    wake. Calendar triggers wake the Mac from sleep (dark wake) and run the tick
+    at the exact slot time — every slot is covered, unlike pmset repeat, which
+    holds a single event. wakeLeadMinutes does not apply here: the trigger runs
+    the tick itself, and a slot only fires once now >= slot time.
+    """
+    entries = {}
+    for conn in (config.get("connections") or {}).values():
+        if not conn.get("enabled", True):
+            continue
+        schedule = conn.get("schedule") or {}
+        if schedule.get("mode") not in ("fixed", "hybrid"):
+            continue
+        fixed = schedule.get("fixed") or {}
+        if not fixed.get("wakeWhenAsleep", schedule.get("wakeWhenAsleep", True)):
+            continue
+        weekday = None if fixed.get("days") == "every-day" else [1, 2, 3, 4, 5]
+        for slot in fixed.get("at") or []:
+            if not SLOT_RE.match(slot):
+                continue
+            hh, mm = (int(part) for part in slot.split(":"))
+            entry = {"Hour": hh, "Minute": mm}
+            if weekday:
+                entry["Weekday"] = weekday
+            entries[(tuple(weekday or ()), hh, mm)] = entry
+    return [entries[key] for key in sorted(entries)]
+
+
 def build_wake_spec(config):
     """Earliest wake time across enabled fixed/hybrid connections → (pmset days, HH:MM:SS).
 
@@ -250,15 +287,40 @@ def build_wake_spec(config):
     return days, f"{earliest_minutes // 60:02d}:{earliest_minutes % 60:02d}:00"
 
 
+def refresh_wake(config):
+    """Rewrite the installed launchd agent when its calendar wake entries no
+    longer match the config (fixed times/days/wake opt-in changed).
+
+    Called from config-editing commands; the tick's self-heal covers the same
+    drift for edits that bypass the CLI. Returns True when the plist was
+    rewritten. No-op on other platforms or when nothing is installed.
+    """
+    if sys.platform != "darwin":
+        return False
+    plist = plist_path()
+    if not plist.exists():
+        return False
+    try:
+        with open(plist, "rb") as handle:
+            data = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return False
+    if (data.get("StartCalendarInterval") or []) == calendar_entries(config):
+        return False
+    _install_launchd()
+    return True
+
+
 def manual_wake_command(spec):
     days, time = spec
     return f"sudo pmset repeat {WAKE_TYPE} {days} {time}"
 
 
-def _sudo_pmset(args):
+def _sudo_pmset(args, interactive=True):
     """Run pmset with sudo; -n first so scripted installs fail fast instead of
     hanging, plain sudo second so interactive installs can prompt."""
-    for prefix in (["sudo", "-n"], ["sudo"]):
+    prefixes = (["sudo", "-n"], ["sudo"]) if interactive else (["sudo", "-n"],)
+    for prefix in prefixes:
         result = subprocess.run(
             [*prefix, "pmset", *args], capture_output=True, text=True, timeout=60
         )
@@ -267,10 +329,10 @@ def _sudo_pmset(args):
     return False
 
 
-def set_wake_schedule(spec):
+def set_wake_schedule(spec, interactive=True):
     """Register the pmset repeat wake and remember it in state.json."""
     days, time = spec
-    if not _sudo_pmset(["repeat", WAKE_TYPE, days, time]):
+    if not _sudo_pmset(["repeat", WAKE_TYPE, days, time], interactive):
         return False
     state = load_state()
     state["wakeSchedule"] = {"type": WAKE_TYPE, "days": days, "time": time}
@@ -349,8 +411,9 @@ def build_service(exe):
 
 def build_timer():
     # AccuracySec tightens systemd's default 1-minute coalescing window so
-    # ticks keep a ~60s cadence. Missed ticks are recovered from state.json
-    # (catch-up windows), so no Persistent=true is needed.
+    # ticks keep a ~60s cadence. Persistent=true fires a missed tick at boot,
+    # which matters on an always-on server that was rebooted mid-window;
+    # ordinary missed ticks are still recovered from state.json catch-up.
     return (
         "[Unit]\n"
         "Description=Run the awewarm scheduler tick every minute\n"
@@ -358,6 +421,7 @@ def build_timer():
         "OnStartupSec=1min\n"
         f"OnUnitActiveSec={TICK_SECONDS}s\n"
         "AccuracySec=5s\n"
+        "Persistent=true\n"
         "[Install]\n"
         "WantedBy=timers.target\n"
     )
