@@ -59,7 +59,8 @@ class SecretsFileTests(IsolatedTestCase):
 
     def test_legacy_keychain_ref_migrates_to_secrets(self):
         fake = mock.Mock(returncode=0, stdout="legacy-key-123\n")
-        with mock.patch.object(keystore.subprocess, "run", return_value=fake):
+        with mock.patch.object(keystore.subprocess, "run", return_value=fake), \
+             mock.patch.object(keystore.sys, "platform", "darwin"):
             self.assertEqual(keystore.load_api_key("keychain:awewarm/glm"), "legacy-key-123")
         self.assertEqual(keystore.load_api_key("file:glm"), "legacy-key-123")
 
