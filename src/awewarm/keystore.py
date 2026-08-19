@@ -1,10 +1,10 @@
-"""API key storage: secrets.json next to the config, or ${ENV_VAR} references.
+"""API key storage: secrets.json next to the config.
 
-Pasted keys land in ~/.config/awewarm/secrets.json (0600). Env-var refs follow
-the aweswitch convention: the config stores only a pointer, the secret stays in
-the user's environment. `keychain:` refs from older releases are migrated into
-secrets.json on first load — the Keychain code was removed after it was found
-to truncate stored keys.
+Pasted keys land in ~/.config/awewarm/secrets.json (0600) so every process —
+including the launchd scheduler, which has no shell environment — can read
+them. `${ENV_VAR}` refs were removed after they proved unreadable from launchd;
+`keychain:` refs from older releases are migrated into secrets.json on first
+load — the Keychain code was removed after it was found to truncate stored keys.
 """
 import json
 import os
@@ -14,21 +14,9 @@ import sys
 
 from .config import config_path, die
 
-ENV_REF_RE = re.compile(r"^\$\{?([A-Z0-9_]+)\}?$")
-
-
-def normalize_env_ref(text):
-    """`$VAR` and `${VAR}` both normalize to `${VAR}`."""
-    match = ENV_REF_RE.match((text or "").strip())
-    return "${" + match.group(1) + "}" if match else None
-
 
 def secrets_path():
     return os.path.join(os.path.dirname(os.path.abspath(config_path())), "secrets.json")
-
-
-def env_ref_for(conn_id):
-    return "${AWEWARM_API_KEY_" + re.sub(r"[^A-Z0-9]+", "_", conn_id.upper()).strip("_") + "}"
 
 
 def _read_secrets():
@@ -67,14 +55,17 @@ def load_api_key(api_key_ref):
     """Resolve an apiKeyRef to a secret, or None when unavailable."""
     if not api_key_ref:
         return None
-    match = ENV_REF_RE.match(api_key_ref)
-    if match:
-        return os.environ.get(match.group(1))
     if api_key_ref.startswith("file:"):
         return _read_secrets().get(api_key_ref.split(":", 1)[1]) or None
     if api_key_ref.startswith("keychain:"):
         return _migrate_keychain_ref(api_key_ref)
-    die(f"unrecognized apiKeyRef: {api_key_ref!r}\nfix: use file:<conn-id> or ${{ENV_VAR_NAME}}")
+    if re.fullmatch(r"\$\{?[A-Za-z0-9_]+\}?", api_key_ref):
+        die(
+            f"env-var refs are no longer supported ({api_key_ref!r}) — the launchd\n"
+            "scheduler cannot read shell variables.\n"
+            "fix: store the key with: awewarm config set <connection> --api-key <key>"
+        )
+    die(f"unrecognized apiKeyRef: {api_key_ref!r}\nfix: use file:<conn-id>")
 
 
 def _migrate_keychain_ref(ref):

@@ -29,7 +29,7 @@
 awewarm manages two kinds of connections:
 
 - **Account** — your local `claude` / `codex` CLI logins. awewarm reuses their login state and sends one minimal headless request (`Reply with exactly: ok`). No credentials are stored.
-- **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + API key. The key is stored in `~/.config/awewarm/secrets.json` (chmod 600), or referenced from an env var without being stored.
+- **Subscription plan** — any OpenAI Chat / OpenAI Responses / Anthropic-compatible endpoint with a base URL + API key. The key is stored in `~/.config/awewarm/secrets.json` (chmod 600) so the background scheduler can always read it.
 
 It schedules those requests in three modes — `fixed`, `interval`, and `hybrid` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
 
@@ -43,7 +43,7 @@ pip3 install awewarm
 
 The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm tick`.
 
-Env-var keys: paste an env ref like `${GLM_API_KEY}` instead of the key itself and awewarm stores only the reference (aweswitch convention). Note the background scheduler only sees variables from the shell that installed it — re-install the scheduler from a shell where the variable is set. On Windows, persist such vars with `setx` so scheduler tasks inherit them.
+All keys live in `secrets.json` — env-var references were removed because the background scheduler (launchd/systemd/Task Scheduler) cannot read shell variables and would silently fail with "API key unavailable".
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ For a subscription endpoint instead:
 awewarm config add
 ```
 
-You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in `secrets.json` — or as an env reference if you typed `${ENV_VAR}`. The same command also re-adds a local `claude` / `codex` account you removed earlier — it lists whatever is detected on this machine.
+You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in `secrets.json`. The same command also re-adds a local `claude` / `codex` account you removed earlier — it lists whatever is detected on this machine.
 
 ## Companion Tools
 
@@ -145,7 +145,7 @@ Per connection, `schedule.wakeWhenAsleep: false` opts out of both. Missed slots 
 
 ### Always-on servers (Linux)
 
-No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` over (or re-run `init`), export API keys as env vars (`--api-key-env`) rather than copying secrets, and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts.
+No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` and `secrets.json` over (or re-run `init`), and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts.
 
 ## Config
 
@@ -179,7 +179,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` (the pasted key lives in `~/.config/awewarm/secrets.json`, chmod 600) or an env reference like `$GLM_API_KEY` / `${GLM_API_KEY}`. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
 
 ## Commands
 

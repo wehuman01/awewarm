@@ -8,17 +8,11 @@ from awewarm import keystore
 
 
 class EnvRefTests(unittest.TestCase):
-    def test_env_ref_format(self):
-        self.assertEqual(keystore.env_ref_for("glm-coding-plan"), "${AWEWARM_API_KEY_GLM_CODING_PLAN}")
-
-    def test_load_env_ref_present(self):
-        with mock.patch.dict("os.environ", {"AWEWARM_API_KEY_GLM": "sekret"}):
-            self.assertEqual(keystore.load_api_key("${AWEWARM_API_KEY_GLM}"), "sekret")
-
-    def test_load_env_ref_missing(self):
-        with mock.patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("AWEWARM_API_KEY_GLM", None)
-            self.assertIsNone(keystore.load_api_key("${AWEWARM_API_KEY_GLM}"))
+    def test_env_ref_dies_with_migration_hint(self):
+        # Env-var refs were removed: the launchd scheduler cannot read shell
+        # variables, so refs must die with guidance instead of silently failing.
+        with self.assertRaises(SystemExit):
+            keystore.load_api_key("${AWEWARM_API_KEY_GLM}")
 
     def test_unrecognized_ref_dies(self):
         with self.assertRaises(SystemExit):
@@ -63,15 +57,3 @@ class SecretsFileTests(IsolatedTestCase):
              mock.patch.object(keystore.sys, "platform", "darwin"):
             self.assertEqual(keystore.load_api_key("keychain:awewarm/glm"), "legacy-key-123")
         self.assertEqual(keystore.load_api_key("file:glm"), "legacy-key-123")
-
-
-class BareDollarRefTests(unittest.TestCase):
-    def test_normalize_both_notations(self):
-        self.assertEqual(keystore.normalize_env_ref("$GLM_API_KEY"), "${GLM_API_KEY}")
-        self.assertEqual(keystore.normalize_env_ref("${GLM_API_KEY}"), "${GLM_API_KEY}")
-        self.assertIsNone(keystore.normalize_env_ref("GLM_API_KEY"))
-        self.assertIsNone(keystore.normalize_env_ref("sk-literal"))
-
-    def test_load_bare_ref(self):
-        with mock.patch.dict("os.environ", {"GLM_API_KEY": "v"}):
-            self.assertEqual(keystore.load_api_key("$GLM_API_KEY"), "v")

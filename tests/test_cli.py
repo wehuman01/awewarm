@@ -464,28 +464,22 @@ class ApiKeySetTests(IsolatedTestCase):
         self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm-coding-plan")
         self.assertEqual(keystore.load_api_key("file:glm-coding-plan"), "sk-new-123")
 
-    def test_api_key_env_ref(self):
+    def test_api_key_env_option_removed(self):
         result = invoke(["config", "set", "glm-coding-plan", "--api-key-env", "GLM_API_KEY"])
-        self.assertEqual(result.exit_code, 0, output_of(result))
-        conn = cfg.load_config()["connections"]["glm-coding-plan"]
-        self.assertEqual(conn["auth"]["apiKeyRef"], "${GLM_API_KEY}")
-
-    def test_api_key_and_env_rejected_together(self):
-        result = invoke(["config", "set", "glm-coding-plan", "--api-key", "sk", "--api-key-env", "GLM_API_KEY"])
         self.assertNotEqual(result.exit_code, 0)
 
-    def test_config_add_accepts_env_ref_input(self):
+    def test_config_add_stores_pasted_key_in_secrets(self):
         send = mock.MagicMock(return_value={"ok": True, "detail": "ok"})
         with mock.patch("awewarm.transport.send_activation", send), \
-                mock.patch("awewarm.discover.discover_accounts", return_value=[]), \
-                mock.patch.dict("os.environ", {"GLM_API_KEY": "from-env"}, clear=False):
+                mock.patch("awewarm.discover.discover_accounts", return_value=[]):
             result = invoke(["config", "add"], input=(
                 "GLM Plan\n1\nhttps://open.bigmodel.cn/api/coding/paas/v4\n"
-                "${GLM_API_KEY}\nglm-4.7\n1\n06:00\n1\n"
+                "sk-pasted-key\nglm-4.7\n1\n06:00\n1\n"
             ))
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm-plan"]
-        self.assertEqual(conn["auth"]["apiKeyRef"], "${GLM_API_KEY}")
+        self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm-plan")
+        self.assertEqual(keystore.load_api_key("file:glm-plan"), "sk-pasted-key")
 
 
 
