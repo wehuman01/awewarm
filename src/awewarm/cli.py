@@ -634,8 +634,9 @@ def _show_settings(conn_id, conn):
 
 
 def _status_block(conn_id, conn, state, now, detailed):
+    enabled = conn.get("enabled", True)
     errors = connection_errors(conn, conn_id)
-    if not conn.get("enabled", True):
+    if not enabled:
         word = "disabled"
     elif errors:
         word = "invalid"
@@ -671,6 +672,9 @@ def _status_block(conn_id, conn, state, now, detailed):
             click.echo(f"  Fixed times: {times_line}")
     last = schedule.parse_ts(cs.get("lastActivationAt"))
     click.echo(f"  Last activation: {_fmt_moment(last, now)}")
+    if not enabled:
+        click.echo("  Next due: none (disabled)")
+        return
     due_at, due_kind = schedule.next_due(conn, cs, now)
     click.echo(f"  Next due: {_fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
 

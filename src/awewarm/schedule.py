@@ -94,13 +94,7 @@ def grid_times(anchor_hhmm, window_minutes):
         return []
     start = int(match.group(1)) * 60 + int(match.group(2))
     step = window_minutes + 5
-    slots = []
-    for k in range(8):  # guard only: the day bound below already caps the list
-        minutes = start + k * step
-        if minutes >= 24 * 60:  # wrapped past the anchor — day is covered
-            break
-        slots.append(f"{minutes // 60:02d}:{minutes % 60:02d}")
-    return slots
+    return [f"{minutes // 60:02d}:{minutes % 60:02d}" for minutes in range(start, 24 * 60, step)]
 
 
 def compute_next_due(connection, success_at, jitter_seconds=None):

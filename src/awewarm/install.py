@@ -176,10 +176,12 @@ def _maybe_self_heal_job(config=None):
             if "tick" in svc.read_text():
                 return
             install_scheduler()
-    except (OSError, subprocess.SubprocessError, ValueError):
-        # A self-heal failure must not break the tick — the old job, even
-        # with a stale command line, will just hit the non-tty error path
-        # which produces a clear log entry. The next tick retries.
+    except (OSError, subprocess.SubprocessError, ValueError, SystemExit):
+        # A self-heal failure must not break the tick — including die()
+        # (SystemExit) from resolve_exe or a failed launchctl bootstrap.
+        # The old job, even with a stale command line, will just hit the
+        # non-tty error path which produces a clear log entry. The next
+        # tick retries.
         return
 
 

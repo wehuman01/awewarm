@@ -579,6 +579,16 @@ class StatusTests(IsolatedTestCase):
         self.assertIn("Times: 06:35", result.output)
         self.assertIn("Next due:", result.output)
 
+    def test_status_disabled_connection_shows_no_due_moment(self):
+        conn = account_connection(mode="fixed")
+        conn["enabled"] = False
+        write_config(conn)
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("(claude-code-main) — disabled", result.output)
+        self.assertIn("Next due: none (disabled)", result.output)
+        self.assertNotIn("(fixed)", result.output)  # no moment that will never fire
+
     def test_status_json_redacts_api_key_ref(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
         result = invoke(["status", "glm-coding-plan", "--json"])

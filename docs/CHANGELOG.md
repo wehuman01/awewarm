@@ -2,7 +2,7 @@
 
 ## v0.3.5
 
-`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, defers interval's first fire with `--start`, retunes `status` to show the active schedule, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
+`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, defers interval's first fire with `--start`, retunes `status` to show the active schedule, hardens the tick's self-heal, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
 
 ### hybrid mode removed — fixed and interval only
 
@@ -10,7 +10,7 @@ Three scheduling modes collapsed to two. The combination mode was the source of 
 
 ### Full-day slot grid offered at setup
 
-`config add` / `init` now know that one fixed time rarely covers a day. When the window duration is known (verified built-in accounts, or a plan whose window you just recorded), the fixed-times prompt asks for the plan's daily quota reset time and offers a full-day grid — one slot per window, spaced window + 5 min apart, anchored on the reset time so drift stays minimal (e.g. reset 01:14 + 300-min window → 01:14, 06:19, 11:24, 16:29, 21:34). Accepting the grid defaults days to every-day; declining keeps the single entered time with the usual weekday default. Windows under 2 h offer no grid (interval mode fits those better).
+`config add` / `init` now know that one fixed time rarely covers a day. When the window duration is known (verified built-in accounts, or a plan whose window you just recorded), the fixed-times prompt asks for the plan's daily quota reset time and offers a full-day grid — one slot per window, spaced window + 5 min apart, anchored on the reset time so drift stays minimal (e.g. reset 01:14 + 300-min window → 01:14, 06:19, 11:24, 16:29, 21:34). Accepting the grid defaults days to every-day; declining keeps the single entered time with the usual weekday default. Windows under 2 h offer no grid (interval mode fits those better). Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so windows under ~3 h were silently cut off mid-day (a 120-min plan got 16.6 h of coverage, not 24); the cap is gone and short-window grids now span the full day.
 
 ### pmset wake removal (macOS)
 
@@ -18,7 +18,11 @@ The launchd `StartCalendarInterval` entries cover every fixed slot at its exact 
 
 ### Status shows the active schedule
 
-`awewarm status` now prints the schedule line that actually drives the connection. Fixed mode shows `Times: 06:19, 11:24, 16:29, 21:34 (every-day)` — the window said nothing about when fixed mode fires. Interval mode keeps `Window: 300 minutes, user-confirmed`, since the window is its renewal clock. The detailed view (`status <id>`) still shows the other one, with evidence.
+`awewarm status` now prints the schedule line that actually drives the connection. Fixed mode shows `Times: 06:19, 11:24, 16:29, 21:34 (every-day)` — the window said nothing about when fixed mode fires. Interval mode keeps `Window: 300 minutes, user-confirmed`, since the window is its renewal clock. The detailed view (`status <id>`) still shows the other one, with evidence. Disabled connections print `Next due: none (disabled)` instead of a moment the tick would never fire.
+
+### Tick self-heal can no longer abort the tick
+
+The tick's opening self-heal pass (rewrites a stale scheduler job) called paths that `die()` on failure — e.g. `awewarm` missing from launchd's sparse PATH, or a failed `launchctl bootstrap`. `die()` raises `SystemExit`, which the pass's error filter didn't catch, so a failed heal aborted the whole tick and skipped that minute's due activations. `SystemExit` is now caught alongside the I/O errors, restoring the intended behavior: the old job keeps running, the tick proceeds, and the next tick retries the heal.
 
 ### Interval start gate (`--start`)
 

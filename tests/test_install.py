@@ -471,6 +471,15 @@ class SelfHealCalendarTests(IsolatedTestCase):
             heal.assert_called_once()
             load.assert_called_once()
 
+    @posix_uid
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_failed_heal_does_not_break_the_tick(self, _uid):
+        # die() raises SystemExit (e.g. resolve_exe on launchd's sparse PATH);
+        # a failed self-heal must not abort the tick's activations.
+        self._write_plist([])  # stale job triggers the heal attempt
+        with mock.patch("awewarm.install.install_scheduler", side_effect=SystemExit("awewarm: boom")):
+            install._maybe_self_heal_job(self._fixed_config())  # must not raise
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -413,6 +413,14 @@ class GridTimesTests(unittest.TestCase):
     def test_halfday_window_gives_two_slots(self):
         self.assertEqual(schedule.grid_times("09:00", 720), ["09:00", "21:05"])
 
+    def test_short_window_grid_fills_the_whole_day(self):
+        # The old range(8) guard cut short-window grids off mid-day.
+        self.assertEqual(
+            schedule.grid_times("00:00", 120),
+            ["00:00", "02:05", "04:10", "06:15", "08:20", "10:25",
+             "12:30", "14:35", "16:40", "18:45", "20:50", "22:55"],
+        )
+
     def test_short_windows_return_no_grid(self):
         self.assertEqual(schedule.grid_times("06:00", 60), [])
 
