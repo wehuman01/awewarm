@@ -4,9 +4,9 @@ This document is for AI coding agents. Help the user install and configure `awew
 
 ## Quota Is Money
 
-Every `awewarm run --now <id> --confirm` and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what a tick would do, `awewarm run --dry-run` is always safe.
+Every `awewarm run <id>` and bare `awewarm run` sends REAL requests against the user's coding-plan quota. Never run them unless the user explicitly asks. To preview what a tick would do, `awewarm run --dry-run` is always safe.
 
-`awewarm init` and `awewarm config add` are interactive (they prompt for choices and API keys). Tell the user to run them in their own terminal.
+`awewarm init` and `awewarm config add` are interactive (they prompt for choices and API keys, and send one test request per added connection). Tell the user to run them in their own terminal.
 
 ## Language Behavior
 
@@ -178,7 +178,7 @@ awewarm config set <id> --off                       # pause while on vacation
 awewarm scheduler install                           # (re)install the background scheduler
 ```
 
-`interval` and `hybrid` modes stay locked until the window is verified or user-confirmed. If the user wants them, guide the three-step flow in the skill (`awewarm run --now <id> --confirm`, observe the quota reset, `awewarm config set <id> --window <minutes>`) — but the `--confirm` request itself consumes quota, so only run it when the user asks.
+`interval` and `hybrid` modes stay locked until the window is verified or user-confirmed. If the user wants them, guide the three-step flow in the skill (`awewarm run <id>`, observe the quota reset, `awewarm config set <id> --window <minutes>`) — but that request itself consumes quota, so only run it when the user asks.
 
 ## Useful commands
 
@@ -211,7 +211,7 @@ User-only commands (interactive or quota-consuming):
 ```bash
 awewarm init                        # interactive onboarding
 awewarm config add                  # interactive, prompts for API key
-awewarm run --now <id> --confirm    # sends a real request
+awewarm run <id> [--reset-due]       # sends a real request (schedule untouched unless --reset-due)
 awewarm run                         # scheduler tick — may fire real requests
 ```
 
@@ -219,7 +219,7 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 
 ## Safety Rules
 
-- Never run `run --now --confirm` or bare `run` unless the user explicitly asks — they consume plan quota.
+- Never run `run <id>` or bare `run` unless the user explicitly asks — they consume plan quota.
 - Do not run `init` or `config add` inside the agent — they are interactive.
 - API keys live in the macOS Keychain (or `${ENV_VAR}` references), never in config files. Never ask the user to paste an API key into chat; all awewarm output is redacted.
 - Read config through `status`; never hand-edit config.json or state.json.

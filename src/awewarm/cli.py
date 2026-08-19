@@ -104,7 +104,7 @@ def _resolve_api_key(conn):
     return keystore.load_api_key(ref)
 
 
-def _execute_activation(conn, conn_id, cs, now, kind, slot=None):
+def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True):
     """Send one real request and record the outcome in state."""
     schedule.record_attempt(cs, now)
     api_key = None
@@ -116,7 +116,7 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None):
             return {"ok": False, "detail": "API key unavailable (secrets file or env)"}
     result = transport.send_activation(conn, api_key)
     if result["ok"]:
-        schedule.record_success(cs, conn, now, kind, slot)
+        schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
         log_event(f"{conn_id} activation ({kind}) ok")
     else:
         schedule.record_failure(cs, now, kind, result["detail"])
@@ -317,6 +317,15 @@ def _add_account_flow(config, state, finding, confirm_first=True):
         fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     conn_id = unique_connection_id(config, finding["label"])
     conn = _account_connection(conn_id, finding, mode, fixed_at, days)
+    click.echo(f"\nTesting {finding['label']} warm-up (one minimal request)...")
+    test = transport.send_activation(conn)
+    if test["ok"]:
+        click.echo("✓ Activation test passed")
+    else:
+        click.echo(f"✗ Activation test failed: {test['detail']}")
+        if not click.confirm("Save this connection anyway?", default=False):
+            click.echo("aborted — nothing was saved")
+            return None, False
     config["connections"][conn_id] = conn
     anchored = False
     if mode in ("hybrid", "interval") and verified and click.confirm(
@@ -499,10 +508,12 @@ def _tick(dry_run):
         click.echo("nothing due")
 
 
-def _activate_now(target, confirm, dry_run=False, kind="manual"):
-    """Fire one connection immediately, outside its schedule."""
-    if not confirm:
-        die("activation sends a real request that consumes plan quota\nre-run with --confirm to proceed")
+def _activate_now(target, dry_run=False, kind="manual", reset_due=False):
+    """Fire one connection immediately, outside its schedule.
+
+    The schedule itself is untouched unless reset_due is set — a manual fire
+    must not push the renewal cadence out by a full window.
+    """
     config = load_config()
     conn_id, conn = _find_connection(config, target)
     if dry_run:
@@ -510,10 +521,13 @@ def _activate_now(target, confirm, dry_run=False, kind="manual"):
         return
     state = load_state()
     cs = conn_state(state, conn_id)
-    result = _execute_activation(conn, conn_id, cs, _now(config), kind)
+    now = _now(config)
+    result = _execute_activation(conn, conn_id, cs, now, kind, reset_due=reset_due)
     save_state(state)
     if result["ok"]:
-        click.echo(f"✓ {conn_id} activated{': ' + result['detail'] if result['detail'] else ''}")
+        due_at, _ = schedule.next_due(conn, cs, now)
+        note = f" — next due {_fmt_moment(due_at, now)}" if due_at else ""
+        click.echo(f"✓ {conn_id} activated{': ' + result['detail'] if result['detail'] else ''}{note}")
     else:
         die(f"activation failed: {result['detail']}")
 
@@ -897,15 +911,16 @@ def status_command(connection, as_json):
 
 
 @cli.command("run")
+@click.argument("connection", required=False)
 @click.option("--dry-run", "dry_run", is_flag=True, help="Print planned actions without sending anything.")
-@click.option("--now", "now_id", metavar="ID", default=None, help="Fire this one connection immediately instead of waiting for its slot.")
-@click.option("--confirm", is_flag=True, help="With --now: actually send the request (it consumes plan quota).")
-def run_command(dry_run, now_id, confirm):
+@click.option("--reset-due", "reset_due", is_flag=True, help="With a connection: recompute its next due from this run instead of keeping the schedule.")
+def run_command(connection, dry_run, reset_due):
     """One scheduler tick (fires whatever is due).
 
-The background scheduler calls this once a minute."""
-    if now_id is not None:
-        _activate_now(now_id, confirm, dry_run)
+The background scheduler calls this once a minute. With a CONNECTION id, fires
+that one connection immediately — a real request that consumes plan quota."""
+    if connection is not None:
+        _activate_now(connection, dry_run=dry_run, reset_due=reset_due)
         return
     _tick(dry_run)
 
@@ -989,13 +1004,10 @@ def legacy_add(kind):
 
 @cli.command("activate", hidden=True)
 @click.argument("connection")
-@click.option("--confirm", is_flag=True, help="Actually send the request (it consumes plan quota).")
-def legacy_activate(connection, confirm):
-    """Legacy alias: run --now <id> --confirm.
-
-Full form: awewarm run --now <id> --confirm."""
-    _moved(f"activate {connection}", f"run --now {connection} --confirm")
-    _activate_now(connection, confirm)
+def legacy_activate(connection):
+    """Legacy alias: run <id>."""
+    _moved(f"activate {connection}", f"run {connection}")
+    _activate_now(connection)
 
 
 @cli.command("verify", hidden=True)
@@ -1012,7 +1024,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
         _config_set(connection, None, None, None, None, None, duration, None, None)
         return
     if confirm:
-        _activate_now(connection, True, kind="verify")
+        _activate_now(connection, kind="verify", reset_due=True)
         click.echo(
             "Watch when your plan's window/quota resets, compute the elapsed minutes since\n"
             f"that request, then record it:\n  awewarm config set {connection} --window <minutes>"
@@ -1026,7 +1038,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
         click.echo(f"Duration: {window['durationMinutes']} minutes, start rule: {window['startRule']}")
     click.echo(
         "\nTo verify a window manually:\n"
-        f"  1. awewarm run --now {conn_id} --confirm   (sends one minimal request)\n"
+        f"  1. awewarm run {conn_id}   (sends one minimal request)\n"
         "  2. note when the plan's window/quota resets relative to that request\n"
         f"  3. awewarm config set {conn_id} --window <minutes>"
     )

@@ -200,8 +200,12 @@ def record_attempt(conn_state, now):
     conn_state["lastAttemptAt"] = iso(now)
 
 
-def record_success(conn_state, connection, now, kind, slot=None):
-    """Apply a successful activation: anchor, renewal chain, slot completion."""
+def record_success(conn_state, connection, now, kind, slot=None, reset_due=True):
+    """Apply a successful activation: anchor, renewal chain, slot completion.
+
+    reset_due=False keeps the interval chain's nextDueAt untouched, for manual
+    fires that must not push the renewal cadence out by a full window.
+    """
     conn_state["lastActivationAt"] = iso(now)
     conn_state["lastResult"] = "success"
     conn_state["lastError"] = None
@@ -212,7 +216,7 @@ def record_success(conn_state, connection, now, kind, slot=None):
         slots = conn_state["completedSlots"].setdefault(day_key, [])
         if slot not in slots:
             slots.append(slot)
-    if connection["schedule"]["mode"] in ("interval", "hybrid"):
+    if reset_due and connection["schedule"]["mode"] in ("interval", "hybrid"):
         conn_state["nextDueAt"] = iso(compute_next_due(connection, now))
     _push_history(conn_state, now, kind, "success", None)
 

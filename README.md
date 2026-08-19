@@ -64,6 +64,8 @@ awewarm init        # scan local accounts, pick a schedule, install the schedule
 awewarm status      # see what will happen next
 ```
 
+Every added connection — account or endpoint — gets one test request during setup, so a broken model or bad key surfaces immediately instead of at 6 a.m.
+
 For a subscription endpoint instead:
 
 ```bash
@@ -111,11 +113,13 @@ awewarm config set claude-code --mode fixed
 After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor.
 
 ```bash
-awewarm run --now my-plan --confirm        # 1. one minimal request, timestamped
+awewarm run my-plan                        # 1. one minimal request, timestamped
 # ...watch when the plan's quota resets, note the elapsed minutes...
 awewarm config set my-plan --window 300    # 2. record the window (unlocks interval)
 awewarm config set my-plan --mode interval # 3. rolling renewal
 ```
+
+A manual `run <id>` never shifts the renewal chain — the next due moment stays as scheduled. Add `--reset-due` to restart the chain from this run instead.
 
 **Example** — an always-on machine you want warm around the clock, nights and weekends included. After 3 consecutive failures renewal pauses itself (status shows `degraded`) and resumes on the next success.
 
@@ -176,7 +180,7 @@ awewarm config show / edit            # print the on-disk config / open it in $E
 awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
 awewarm run [--dry-run]               # one scheduler tick (the background scheduler calls this)
-awewarm run --now <id> --confirm      # send one real request immediately
+awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
 awewarm scheduler install / uninstall # background scheduler (launchd / Task Scheduler / systemd)
 awewarm update [--check]              # upgrade to the latest PyPI release
 ```

@@ -109,7 +109,9 @@ class DiscoverCommandTests(IsolatedTestCase):
 
 class InitTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts")
-    def test_init_adds_claude_account_hybrid(self, discover_accounts):
+    @mock.patch("awewarm.transport.send_activation")
+    def test_init_adds_claude_account_hybrid(self, send, discover_accounts):
+        send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [
             claude_finding(),
             {
@@ -136,6 +138,8 @@ class InitTests(IsolatedTestCase):
         # names from user-local install dirs
         self.assertEqual(conn["transport"]["cliCommand"], "/Users/x/.local/bin/claude")
         self.assertIn("mode hybrid", result.output)
+        self.assertIn("Activation test passed", result.output)
+        send.assert_called_once()
 
 
 class ConfigAddPlanTests(IsolatedTestCase):
@@ -191,7 +195,9 @@ class ConfigAddPlanTests(IsolatedTestCase):
 
 class ConfigAddMenuTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts")
-    def test_menu_readds_a_removed_account(self, discover_accounts):
+    @mock.patch("awewarm.transport.send_activation")
+    def test_menu_readds_a_removed_account(self, send, discover_accounts):
+        send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding()]
         # menu choice 1 (Claude Code) / mode (default hybrid) / times / days / window open? (no)
         result = invoke(["config", "add"], input="1\n\n\n\n\n")
@@ -284,35 +290,93 @@ class RunTests(IsolatedTestCase):
         send.assert_not_called()
 
 
-class RunNowTests(IsolatedTestCase):
-    def test_now_requires_confirm(self):
-        write_config(account_connection(mode="fixed"))
-        result = invoke(["run", "--now", "claude-code-main"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("--confirm", output_of(result))
-
+class RunConnectionTests(IsolatedTestCase):
     @mock.patch("awewarm.transport.send_activation")
-    def test_now_with_confirm_records_manual(self, send):
+    def test_run_id_fires_without_confirm(self, send):
         send.return_value = {"ok": True, "detail": "ok"}
         write_config(account_connection(mode="fixed"))
-        result = invoke(["run", "--now", "claude-code-main", "--confirm"])
+        result = invoke(["run", "claude-code-main"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         state = cfg.load_state()
         self.assertEqual(state["connections"]["claude-code-main"]["history"][-1]["kind"], "manual")
+        send.assert_called_once()
 
-    def test_now_unknown_connection(self):
+    def test_run_unknown_connection(self):
         write_config(account_connection(mode="fixed"))
-        result = invoke(["run", "--now", "nope", "--confirm"])
+        result = invoke(["run", "nope"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("unknown connection", output_of(result))
 
-    def test_now_dry_run_sends_nothing(self):
+    def test_run_id_dry_run_sends_nothing(self):
         write_config(account_connection(mode="fixed"))
         with mock.patch("awewarm.transport.send_activation") as send:
-            result = invoke(["run", "--now", "claude-code-main", "--confirm", "--dry-run"])
+            result = invoke(["run", "claude-code-main", "--dry-run"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("[dry-run] would activate", result.output)
         send.assert_not_called()
+
+    def anchored_interval_conn(self):
+        write_config(account_connection(mode="interval", fixed_at=()))
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["lastActivationAt"] = "2026-08-19T10:00:00+08:00"
+        cs["nextDueAt"] = "2026-08-19T15:01:15+08:00"
+        cfg.save_state(state)
+
+    def test_manual_run_keeps_next_due_by_default(self):
+        self.anchored_interval_conn()
+        with mock.patch("awewarm.cli._now") as now, mock.patch("awewarm.transport.send_activation") as send:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            send.return_value = {"ok": True, "detail": "ok"}
+            result = invoke(["run", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(cs["nextDueAt"], "2026-08-19T15:01:15+08:00")
+        self.assertIn("15:01", result.output)
+
+    def test_manual_run_reset_due_recomputes(self):
+        self.anchored_interval_conn()
+        with mock.patch("awewarm.cli._now") as now, mock.patch("awewarm.transport.send_activation") as send:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            send.return_value = {"ok": True, "detail": "ok"}
+            result = invoke(["run", "claude-code-main", "--reset-due"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        due = schedule.parse_ts(cs["nextDueAt"])
+        # 12:00 + 300 min + 75 s grace + up to 30 s jitter
+        self.assertEqual(due.strftime("%H:%M"), "17:01")
+        self.assertGreaterEqual(due.second, 15)
+
+
+class AccountAddTestTests(IsolatedTestCase):
+    @mock.patch("awewarm.discover.discover_accounts")
+    @mock.patch("awewarm.transport.send_activation")
+    def test_account_test_failure_decline_aborts(self, send, discover_accounts):
+        send.return_value = {"ok": False, "detail": "claude exited 1"}
+        discover_accounts.return_value = [claude_finding()]
+        # menu 1 / mode / times / days / save anyway? no
+        result = invoke(["config", "add"], input="1\n\n\n\nn\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Activation test failed", result.output)
+        self.assertIn("aborted", output_of(result))
+        self.assertEqual(cfg.load_config()["connections"], {})
+        send.assert_called_once()
+
+    @mock.patch("awewarm.discover.discover_accounts")
+    @mock.patch("awewarm.transport.send_activation")
+    def test_account_test_failure_accept_saves(self, send, discover_accounts):
+        send.return_value = {"ok": False, "detail": "claude exited 1"}
+        discover_accounts.return_value = [claude_finding()]
+        # menu 1 / mode / times / days / save anyway? yes / window open? no
+        result = invoke(["config", "add"], input="1\n\n\n\ny\n\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Activation test failed", result.output)
+        conn = cfg.load_config()["connections"]["claude-code"]
+        self.assertEqual(conn["kind"], "account")
 
 
 class WindowSetTests(IsolatedTestCase):
@@ -595,11 +659,16 @@ class LegacyAliasTests(IsolatedTestCase):
         conn = cfg.load_config()["connections"]["glm-coding-plan"]
         self.assertEqual(conn["window"]["status"], "user-confirmed")
 
-    def test_legacy_activate_routes_to_run_now(self):
+    @mock.patch("awewarm.transport.send_activation")
+    def test_legacy_activate_fires_directly(self, send):
+        send.return_value = {"ok": True, "detail": "ok"}
         write_config(account_connection(mode="fixed"))
         result = invoke(["activate", "claude-code-main"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("--confirm", output_of(result))
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("moved to", output_of(result))
+        self.assertIn("run claude-code-main", output_of(result))
+        state = cfg.load_state()
+        self.assertEqual(state["connections"]["claude-code-main"]["history"][-1]["kind"], "manual")
 
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
     def test_legacy_self_update_check(self, _pypi):

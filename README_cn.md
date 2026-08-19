@@ -64,6 +64,8 @@ awewarm init        # 扫描本机账号、选择调度、安装后台调度器
 awewarm status      # 查看接下来会发生什么
 ```
 
+无论账号还是 endpoint，添加时都会发一条测试请求 —— 模型名错误或 key 失效当场暴露，而不是等到早上六点。
+
 接入订阅 endpoint：
 
 ```bash
@@ -111,11 +113,13 @@ awewarm config set claude-code --mode fixed
 每次成功后，下一条请求排在「窗口时长 + 余量」之后（默认 300 分钟 + 75 秒，另加最多 30 秒抖动）。余量加在旧窗口**关闭之后** —— 提前发只会落进旧窗口，什么也开启不了。还没有成功记录时，会立即发一条作为首个锚点。
 
 ```bash
-awewarm run --now my-plan --confirm        # 1. 发一条最小请求并记下时间
+awewarm run my-plan                        # 1. 发一条最小请求并记下时间
 # ...观察套餐配额何时重置，记下经过的分钟数...
 awewarm config set my-plan --window 300    # 2. 记录窗口时长（解锁 interval）
 awewarm config set my-plan --mode interval # 3. 滚动续期
 ```
+
+手动 `run <id>` 不会移动续期链 —— 下次到期时刻保持原计划不变；加 `--reset-due` 才从本次请求重新起算。
 
 **案例** —— 一台常开的机器，希望夜里和周末也持续保温。连续失败 3 次后续期会自动暂停（status 显示 `degraded`），下次成功即恢复。
 
@@ -176,7 +180,7 @@ awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR �
 awewarm config path                   # 配置 / 状态 / 日志路径
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
 awewarm run [--dry-run]               # 一次调度 tick（后台调度器每分钟调用）
-awewarm run --now <id> --confirm      # 立即发送一条真实请求
+awewarm run <id> [--reset-due]        # 立即触发该连接（默认不动原计划，--reset-due 才重算下次到期）
 awewarm scheduler install / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）
 awewarm update [--check]              # 升级到最新 PyPI 版本
 ```
