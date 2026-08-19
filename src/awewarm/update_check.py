@@ -64,8 +64,9 @@ def get_pypi_latest():
 def _should_skip(args):
     if any(flag in args for flag in ("-h", "--help", "-v", "-V", "--version")):
         return True
-    # `run` is the scheduler tick (once a minute) and update is about to
-    # replace the installed package — neither should hit PyPI.
+    # `awewarm run` (incl. `awewarm run --force`, the scheduler tick, once a
+    # minute) and `update` (about to replace the installed package) should
+    # never hit PyPI.
     return bool(args) and args[0] in ("run", "update", "self-update")
 
 

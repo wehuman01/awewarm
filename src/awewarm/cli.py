@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """awewarm CLI: seven visible commands — init, discover, config, status, run,
 scheduler, update. Older command names still work as hidden aliases (removed
-in v1.0); `awewarm run` itself is fixed because installed scheduler agents
-invoke it verbatim."""
+in v1.0); the scheduler's `awewarm run --force` invocation is fixed because
+installed scheduler agents run it verbatim and self-heal if it's outdated."""
 import json
 import os
 import re
@@ -461,8 +461,15 @@ def _add_plan_flow():
     _scheduler_hint()
 
 
-def _tick(dry_run):
-    """One scheduler pass over every enabled connection."""
+def _tick():
+    """One scheduler pass over every enabled connection.
+
+    Calls install._maybe_self_heal_job() at the top so an old scheduler job
+    (e.g. left over from a pre-`--force` version after a manual `pip install
+    --upgrade`) is rewritten on the first tick and the second tick onward
+    uses the current command line.
+    """
+    install._maybe_self_heal_job()
     config = load_config()
     state = load_state()
     now = _now(config)
@@ -483,32 +490,55 @@ def _tick(dry_run):
         cs = conn_state(state, conn_id)
         for action in schedule.plan_actions(conn, cs, now):
             if action["type"] == "skip-slot":
-                if dry_run:
-                    click.echo(f"[dry-run] would mark slot {action['slot']} skipped ({action['why']}) for {conn_id}")
-                    continue
                 schedule.record_skip(cs, now, action["slot"], action["why"])
                 skipped += 1
                 continue
             reason = action["reason"]
             slot_note = f", slot {action['slot']}" if action.get("slot") else ""
-            if dry_run:
-                click.echo(f"[dry-run] would activate {conn_id} ({reason}{slot_note})")
-                continue
             result = _execute_activation(conn, conn_id, cs, now, reason, action.get("slot"))
             mark = "✓" if result["ok"] else "✗"
             suffix = f" — {result['detail']}" if result["detail"] else ""
             click.echo(f"{mark} activated {conn_id} ({reason}{slot_note}){suffix}")
             activated.append(result["ok"])
         schedule.prune_state(cs, now)
-    if not dry_run:
-        save_state(state)
+    save_state(state)
     if activated or skipped:
         click.echo(f"{sum(activated)} activated, {len(activated) - sum(activated)} failed, {skipped} slots skipped")
     else:
         click.echo("nothing due")
 
 
-def _activate_now(target, dry_run=False, kind="manual", reset_due=False):
+def _plan_summary(connection):
+    """Human description of what `awewarm run` is about to do, for the confirm prompt.
+
+    Computed before the prompt so a user who runs `awewarm run` with nothing due
+    doesn't get asked "Proceed? [y/N]" and then told "nothing to do".
+    """
+    if connection is not None:
+        return f"Activate {connection}"
+    config = load_config()
+    enabled = {
+        cid: conn for cid, conn in config["connections"].items()
+        if conn.get("enabled", True)
+    }
+    if not enabled:
+        return "No enabled connections"
+    state = load_state()
+    now = _now(config)
+    due = []
+    for cid in sorted(enabled):
+        cs = conn_state(state, cid)
+        actions = schedule.plan_actions(enabled[cid], cs, now)
+        if any(a["type"] == "activate" for a in actions):
+            due.append(cid)
+    if not due:
+        return f"No connections due right now (checked {len(enabled)} enabled)"
+    if len(due) == 1:
+        return f"Activate {due[0]}"
+    return f"Activate {', '.join(due)} ({len(due)} connections)"
+
+
+def _activate_now(target, reset_due=False):
     """Fire one connection immediately, outside its schedule.
 
     The schedule itself is untouched unless reset_due is set — a manual fire
@@ -516,13 +546,10 @@ def _activate_now(target, dry_run=False, kind="manual", reset_due=False):
     """
     config = load_config()
     conn_id, conn = _find_connection(config, target)
-    if dry_run:
-        click.echo(f"[dry-run] would activate {conn_id} ({kind})")
-        return
     state = load_state()
     cs = conn_state(state, conn_id)
     now = _now(config)
-    result = _execute_activation(conn, conn_id, cs, now, kind, reset_due=reset_due)
+    result = _execute_activation(conn, conn_id, cs, now, "manual", reset_due=reset_due)
     save_state(state)
     if result["ok"]:
         due_at, _ = schedule.next_due(conn, cs, now)
@@ -626,7 +653,7 @@ def init_command():
         save_state(state)
     for line in added:
         click.echo(line)
-    if click.confirm("\nInstall the background scheduler now (runs `awewarm run` every minute)?", default=True):
+    if click.confirm("\nInstall the background scheduler now (runs `awewarm run --force` every minute)?", default=True):
         _scheduler_install()
     else:
         click.echo("Scheduler not installed — start it later with: awewarm scheduler install")
@@ -911,17 +938,37 @@ def status_command(connection, as_json):
 
 @cli.command("run")
 @click.argument("connection", required=False)
-@click.option("--dry-run", "dry_run", is_flag=True, help="Print planned actions without sending anything.")
-@click.option("--reset-due", "reset_due", is_flag=True, help="With a connection: recompute its next due from this run instead of keeping the schedule.")
-def run_command(connection, dry_run, reset_due):
-    """One scheduler tick (fires whatever is due).
+@click.option("--force", is_flag=True,
+              help="Skip the confirmation prompt. The background scheduler always uses --force.")
+@click.option("--reset-due", "reset_due", is_flag=True,
+              help="With CONNECTION: reset the interval chain from this run.")
+def run_command(connection, force, reset_due):
+    """Fire connections manually or run one scheduler tick.
 
-The background scheduler calls this once a minute. With a CONNECTION id, fires
-that one connection immediately — a real request that consumes plan quota."""
+By default, prompts for confirmation before sending any real request.
+The background scheduler calls this with --force every minute.
+
+\b
+  awewarm run                activate all connections due right now (prompts)
+  awewarm run <id>           activate one connection immediately (prompts)
+  awewarm run --force        tick, no prompt (the scheduler uses this)
+  awewarm run <id> --force   fire one connection, no prompt
+  awewarm run <id> --reset-due --force   fire one connection and reset its interval chain
+    """
+    if not sys.stdin.isatty() and not force:
+        die(
+            "awewarm run requires --force when stdin is not a terminal.\n"
+            "The background scheduler always uses --force."
+        )
+    summary = _plan_summary(connection)
+    if not force:
+        if not click.confirm(f"{summary}. Proceed?", default=False):
+            click.echo("Cancelled.")
+            return
     if connection is not None:
-        _activate_now(connection, dry_run=dry_run, reset_due=reset_due)
+        _activate_now(connection, reset_due=reset_due)
         return
-    _tick(dry_run)
+    _tick()
 
 
 def _wake_flow(wake):
@@ -1041,7 +1088,10 @@ def _self_update(check_only):
     click.echo(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
     if result.returncode == 0:
-        click.echo("Done. The scheduler tick picks up the new version on its next run.")
+        if install.scheduler_installed():
+            install.install_scheduler()
+            click.echo("Scheduler job refreshed to match the new command line.")
+        click.echo("Done. The scheduler picks up the new version on its next tick.")
     else:
         raise SystemExit(result.returncode)
 
@@ -1088,7 +1138,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
         _config_set(connection, None, None, None, None, None, duration, None, None)
         return
     if confirm:
-        _activate_now(connection, kind="verify", reset_due=True)
+        _activate_now(connection, reset_due=True)
         click.echo(
             "Watch when your plan's window/quota resets, compute the elapsed minutes since\n"
             f"that request, then record it:\n  awewarm config set {connection} --window <minutes>"
