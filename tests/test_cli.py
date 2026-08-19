@@ -260,7 +260,7 @@ class RunTests(IsolatedTestCase):
         self.assertFalse(cfg.state_path().exists())
 
     @mock.patch("awewarm.transport.send_activation")
-    def test_run_fires_and_completes_slot(self, send):
+    def test_run_fires_every_enabled_connection(self, send):
         send.return_value = {"ok": True, "detail": "ok"}
         write_config(self.always_due_conn())
         result = invoke(["run", "--force"])
@@ -269,8 +269,8 @@ class RunTests(IsolatedTestCase):
         state = cfg.load_state()
         self.assertIsNotNone(state["connections"]["claude-code-main"]["lastActivationAt"])
         second = invoke(["run", "--force"])
-        self.assertIn("nothing due", second.output)
-        self.assertEqual(send.call_count, 1)
+        self.assertIn("1 of 1 activated", second.output)
+        self.assertEqual(send.call_count, 2)
 
     @mock.patch("awewarm.transport.send_activation")
     def test_run_failure_recorded_not_fatal(self, send):
@@ -280,7 +280,7 @@ class RunTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         state = cfg.load_state()
         self.assertEqual(state["connections"]["claude-code-main"]["lastResult"], "failure")
-        self.assertIn("failed", result.output)
+        self.assertIn("0 of 1 activated", result.output)
 
     @mock.patch("awewarm.transport.send_activation")
     def test_run_skips_disabled_connection(self, send):
@@ -288,7 +288,7 @@ class RunTests(IsolatedTestCase):
         conn["enabled"] = False
         write_config(conn)
         result = invoke(["run", "--force"])
-        self.assertIn("nothing due", result.output)
+        self.assertIn("No enabled connections", result.output)
         send.assert_not_called()
 
 

@@ -1,12 +1,12 @@
 """System scheduler installation: launchd on macOS, Task Scheduler on Windows,
 systemd user timer on Linux.
 
-The agent simply invokes `awewarm run --force` once a minute; all scheduling
-state lives in state.json, so the task definition itself is static. Where
-systemd is unavailable (e.g. some servers or containers), cron the same
-command. The tick self-heals: if the installed job's command line is stale
-(older awewarm, or a pre-`--force` upgrade done via `pip install --upgrade`
-directly), the next tick rewrites it.
+The agent simply invokes `awewarm tick` once a minute; all scheduling state
+lives in state.json, so the task definition itself is static. Where systemd
+is unavailable (e.g. some servers or containers), cron the same command. The
+tick self-heals: if the installed job's command line is stale (older
+awewarm, or an upgrade done via `pip install --upgrade` directly), the
+next tick rewrites it.
 
 Windows notes: schtasks tasks run in the user context and inherit user env
 vars (what `setx` writes), so unlike the launchd plist nothing needs to bake
@@ -71,7 +71,7 @@ def build_plist(exe, calendar=None):
         environment["PATH"] = os.environ["PATH"]
     plist = {
         "Label": LABEL,
-        "ProgramArguments": [exe, "run", "--force"],
+        "ProgramArguments": [exe, "tick"],
         "StartInterval": TICK_SECONDS,
         "RunAtLoad": True,
         "StandardOutPath": str(out_log),
@@ -103,7 +103,7 @@ def install_scheduler():
     die(
         "automatic scheduler install supports macOS (launchd), Windows (Task Scheduler),\n"
         "and Linux (systemd user timer)\n"
-        "elsewhere, cron the tick instead:\n  * * * * * awewarm run --force"
+        "elsewhere, cron the tick instead:\n  * * * * * awewarm tick"
     )
 
 
@@ -136,7 +136,7 @@ def _maybe_self_heal_job(config=None):
 
     Called at the top of every scheduler tick. Cheap (one file read or one
     `schtasks /Query`). No-op in the common case where the job already
-    includes `--force` and the calendar entries are current.
+    invokes `awewarm tick` and the calendar entries are current.
 
     Covers users who upgraded via `pip install --upgrade awewarm` directly,
     bypassing `awewarm update` — the next tick detects the old job, rewrites
@@ -149,7 +149,7 @@ def _maybe_self_heal_job(config=None):
                 return
             with open(plist, "rb") as handle:
                 data = plistlib.load(handle)
-            if "--force" not in (data.get("ProgramArguments") or []):
+            if "tick" not in (data.get("ProgramArguments") or []):
                 install_scheduler()
                 return
             if (data.get("StartCalendarInterval") or []) != calendar_entries(
@@ -164,7 +164,7 @@ def _maybe_self_heal_job(config=None):
                 return
             if result.returncode != 0:
                 return
-            if "--force" in (result.stdout or ""):
+            if "tick" in (result.stdout or ""):
                 return
             install_scheduler()
             return
@@ -172,7 +172,7 @@ def _maybe_self_heal_job(config=None):
             svc = service_path()
             if not svc.exists():
                 return
-            if "--force" in svc.read_text():
+            if "tick" in svc.read_text():
                 return
             install_scheduler()
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -380,13 +380,13 @@ def _install_windows():
     # The exe path is quoted inside /TR so paths with spaces survive.
     result = _schtasks(
         ["/Create", "/F", "/SC", "MINUTE", "/MO", str(TICK_SECONDS // 60),
-         "/TN", LABEL, "/TR", f'"{exe}" run --force']
+         "/TN", LABEL, "/TR", f'"{exe}" tick']
     )
     if result.returncode != 0:
         die(
             f"schtasks failed to create the {LABEL} task\n{(result.stderr or result.stdout or '').strip()}\n"
             "fix: resolve the schtasks error, or create the task manually:\n"
-            f'  schtasks /Create /SC MINUTE /TN {LABEL} /TR "{exe} run --force"'
+            f'  schtasks /Create /SC MINUTE /TN {LABEL} /TR "{exe} tick"'
         )
     return LABEL
 
@@ -397,7 +397,7 @@ def build_service(exe):
         "Description=awewarm scheduler tick",
         "[Service]",
         "Type=oneshot",
-        f"ExecStart={exe} run --force",
+        f"ExecStart={exe} tick",
     ]
     # Same reasoning as the launchd plist: the user manager's environment is
     # sparser than a login shell, so propagate AWEWARM_* and PATH explicitly.
@@ -437,7 +437,7 @@ def _install_linux():
     if shutil.which("systemctl") is None:
         die(
             "systemctl not found — this system has no systemd\n"
-            "cron the tick instead:\n  * * * * * awewarm run --force"
+            "cron the tick instead:\n  * * * * * awewarm tick"
         )
     exe = resolve_exe()
     unit_dir().mkdir(parents=True, exist_ok=True)
@@ -456,7 +456,7 @@ def _install_linux():
             )
         die(
             f"systemctl failed to enable the awewarm timer\n{stderr.strip()}{hint}\n"
-            "or cron the tick instead:\n  * * * * * awewarm run --force"
+            "or cron the tick instead:\n  * * * * * awewarm tick"
         )
     return timer_path()
 

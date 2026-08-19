@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""awewarm CLI: seven visible commands — init, discover, config, status, run,
-scheduler, update. Older command names still work as hidden aliases (removed
-in v1.0); the scheduler's `awewarm run --force` invocation is fixed because
-installed scheduler agents run it verbatim and self-heal if it's outdated."""
+"""awewarm CLI: eight visible commands — init, discover, config, status, run,
+tick (hidden), scheduler, update. Older command names still work as hidden
+aliases (removed in v1.0); the scheduler's `awewarm tick` invocation is fixed
+because installed scheduler agents run it verbatim and self-heal if outdated."""
 import json
 import os
 import re
@@ -463,13 +463,16 @@ def _add_plan_flow():
 
 
 def _tick():
-    """One scheduler pass over every enabled connection.
+    """One scheduler pass over every enabled connection: fire what's due only.
 
     Calls install._maybe_self_heal_job() at the top so an old scheduler job
-    (e.g. left over from a pre-`--force` version after a manual `pip install
+    (e.g. left over from a pre-`tick` version after a manual `pip install
     --upgrade`) is rewritten on the first tick and the second tick onward
     uses the current command line; on macOS it also heals stale calendar
     wake entries after schedule edits.
+
+    This is the body of `awewarm tick`, called by the scheduler every minute.
+    Distinct from `_fire_all`, which fires unconditionally regardless of due.
     """
     config = load_config()
     install._maybe_self_heal_job(config)
@@ -513,31 +516,21 @@ def _tick():
 def _plan_summary(connection):
     """Human description of what `awewarm run` is about to do, for the confirm prompt.
 
-    Computed before the prompt so a user who runs `awewarm run` with nothing due
-    doesn't get asked "Proceed? [y/N]" and then told "nothing to do".
+    Computed before the prompt so a user who runs `awewarm run` with no enabled
+    connections doesn't get asked "Proceed? [y/N]" and then told "nothing to do".
     """
     if connection is not None:
         return f"Activate {connection}"
     config = load_config()
-    enabled = {
-        cid: conn for cid, conn in config["connections"].items()
+    enabled = [
+        cid for cid, conn in config["connections"].items()
         if conn.get("enabled", True)
-    }
+    ]
     if not enabled:
         return "No enabled connections"
-    state = load_state()
-    now = _now(config)
-    due = []
-    for cid in sorted(enabled):
-        cs = conn_state(state, cid)
-        actions = schedule.plan_actions(enabled[cid], cs, now)
-        if any(a["type"] == "activate" for a in actions):
-            due.append(cid)
-    if not due:
-        return f"No connections due right now (checked {len(enabled)} enabled)"
-    if len(due) == 1:
-        return f"Activate {due[0]}"
-    return f"Activate {', '.join(due)} ({len(due)} connections)"
+    if len(enabled) == 1:
+        return f"Fire the only enabled connection ({enabled[0]})"
+    return f"Fire all {len(enabled)} enabled connections"
 
 
 def _activate_now(target, reset_due=False):
@@ -559,6 +552,43 @@ def _activate_now(target, reset_due=False):
         click.echo(f"✓ {conn_id} activated{': ' + result['detail'] if result['detail'] else ''}{note}")
     else:
         die(f"activation failed: {result['detail']}")
+
+
+def _fire_all():
+    """Fire every enabled connection immediately, ignoring its schedule.
+
+    Used by `awewarm run` (no id). Each connection gets one real request,
+    recorded as kind="manual" with reset_due=False so the interval chain is
+    not pushed forward. This is the user-facing "warm everything right now"
+    verb — different from `tick`, which only fires what's due.
+    """
+    config = load_config()
+    state = load_state()
+    now = _now(config)
+    enabled = {
+        cid: conn for cid, conn in config["connections"].items()
+        if conn.get("enabled", True)
+    }
+    if not enabled:
+        click.echo("No enabled connections")
+        return
+    ok = 0
+    for conn_id in sorted(enabled):
+        conn = enabled[conn_id]
+        errors = connection_errors(conn, conn_id)
+        if errors:
+            log_event(f"skipping {conn_id}: {errors[0]}")
+            click.echo(f"skipping {conn_id}: {errors[0]}")
+            continue
+        cs = conn_state(state, conn_id)
+        result = _execute_activation(conn, conn_id, cs, now, "manual")
+        mark = "✓" if result["ok"] else "✗"
+        suffix = f" — {result['detail']}" if result["detail"] else ""
+        click.echo(f"{mark} activated {conn_id}{suffix}")
+        if result["ok"]:
+            ok += 1
+    save_state(state)
+    click.echo(f"{ok} of {len(enabled)} activated")
 
 
 def _ensure_fixed(conn):
@@ -655,7 +685,7 @@ def init_command():
         save_state(state)
     for line in added:
         click.echo(line)
-    if click.confirm("\nInstall the background scheduler now (runs `awewarm run --force` every minute)?", default=True):
+    if click.confirm("\nInstall the background scheduler now (runs `awewarm tick` every minute)?", default=True):
         _scheduler_install()
     else:
         click.echo("Scheduler not installed — start it later with: awewarm scheduler install")
@@ -941,29 +971,43 @@ def status_command(connection, as_json):
     _show_status(connection, as_json)
 
 
+@cli.command("tick", hidden=True)
+def tick_command():
+    """One scheduler tick: fire what's currently due, ignore the rest.
+
+Hidden — called by the background scheduler agent (launchd on macOS, Task
+Scheduler on Windows, systemd user timer on Linux) once a minute. Not
+intended for interactive use; use `awewarm run` to fire manually.
+    """
+    _tick()
+
+
 @cli.command("run")
 @click.argument("connection", required=False)
 @click.option("--force", is_flag=True,
-              help="Skip the confirmation prompt. The background scheduler always uses --force.")
+              help="Skip the confirmation prompt.")
 @click.option("--reset-due", "reset_due", is_flag=True,
               help="With CONNECTION: reset the interval chain from this run.")
 def run_command(connection, force, reset_due):
-    """Fire connections manually or run one scheduler tick.
+    """Fire connections immediately, ignoring the schedule.
+
+`awewarm run` is the user-facing "fire now" verb. It does NOT check whether
+anything is due — it fires unconditionally. The scheduler tick is a separate
+command: `awewarm tick` (called by the background agent every minute, hidden).
 
 By default, prompts for confirmation before sending any real request.
-The background scheduler calls this with --force every minute.
+Use --force to skip the prompt (for scripting).
 
 \b
-  awewarm run                activate all connections due right now (prompts)
-  awewarm run <id>           activate one connection immediately (prompts)
-  awewarm run --force        tick, no prompt (the scheduler uses this)
+  awewarm run                fire all enabled connections (prompts)
+  awewarm run --force        fire all, no prompt
+  awewarm run <id>           fire one connection (prompts)
   awewarm run <id> --force   fire one connection, no prompt
-  awewarm run <id> --reset-due --force   fire one connection and reset its interval chain
+  awewarm run <id> --reset-due --force   fire one and reset its interval chain
     """
     if not sys.stdin.isatty() and not force:
         die(
-            "awewarm run requires --force when stdin is not a terminal.\n"
-            "The background scheduler always uses --force."
+            "awewarm run requires --force when stdin is not a terminal."
         )
     summary = _plan_summary(connection)
     if not force:
@@ -973,7 +1017,7 @@ The background scheduler calls this with --force every minute.
     if connection is not None:
         _activate_now(connection, reset_due=reset_due)
         return
-    _tick()
+    _fire_all()
 
 
 def _refresh_wake_after_edit():

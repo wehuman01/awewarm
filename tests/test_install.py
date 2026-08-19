@@ -21,7 +21,7 @@ class BuildPlistTests(IsolatedTestCase):
     def test_plist_shape(self):
         plist = install.build_plist("/usr/local/bin/awewarm")
         self.assertEqual(plist["Label"], install.LABEL)
-        self.assertEqual(plist["ProgramArguments"], ["/usr/local/bin/awewarm", "run", "--force"])
+        self.assertEqual(plist["ProgramArguments"], ["/usr/local/bin/awewarm", "tick"])
         self.assertEqual(plist["StartInterval"], 60)
         self.assertTrue(plist["RunAtLoad"])
         self.assertTrue(plist["StandardOutPath"].endswith("launchd.log"))
@@ -150,7 +150,7 @@ class WindowsInstallTests(IsolatedTestCase):
             self.assertIn(flag, argv)
         self.assertEqual(argv[argv.index("/TN") + 1], install.LABEL)
         # /TR embeds the exe in quotes so paths with spaces survive
-        self.assertEqual(argv[argv.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" run --force')
+        self.assertEqual(argv[argv.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" tick')
         self.assertTrue(install.scheduler_installed())
 
     @mock.patch("awewarm.install.sys.platform", "win32")
@@ -191,7 +191,7 @@ class WindowsUninstallTests(IsolatedTestCase):
 class LinuxUnitTests(IsolatedTestCase):
     def test_service_exec_start_and_env(self):
         text = install.build_service("/home/x/.local/bin/awewarm")
-        self.assertIn("ExecStart=/home/x/.local/bin/awewarm run", text)
+        self.assertIn("ExecStart=/home/x/.local/bin/awewarm tick", text)
         self.assertIn("Type=oneshot", text)
         # sparse user-manager env gets AWEWARM_* and PATH baked in, like the plist
         self.assertIn(f'Environment="AWEWARM_CONFIG={cfg.config_path()}"', text)
@@ -223,7 +223,7 @@ class LinuxInstallTests(IsolatedTestCase):
         timer = install.install_scheduler()
         self.assertTrue(timer.exists())
         self.assertTrue(install.service_path().exists())
-        self.assertIn("ExecStart=/home/x/.local/bin/awewarm run", timer.parent.joinpath("awewarm.service").read_text())
+        self.assertIn("ExecStart=/home/x/.local/bin/awewarm tick", timer.parent.joinpath("awewarm.service").read_text())
         commands = [call[0][0] for call in run.call_args_list]
         self.assertTrue(any("daemon-reload" in argv for argv in commands))
         self.assertTrue(any("enable" in argv and "awewarm.timer" in argv for argv in commands))
