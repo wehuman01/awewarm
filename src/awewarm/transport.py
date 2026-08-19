@@ -48,6 +48,18 @@ def activation_argv(connection):
     return None
 
 
+VERSIONED_BASE_RE = re.compile(r"/v\d+$")
+
+
+def endpoint_url(base, path):
+    """Append an endpoint path to a base URL.
+
+    Bases already ending in a version segment (/v1, /v4, ...) are complete:
+    the endpoint hangs off them directly. Only a bare host gets /v1 added.
+    """
+    return base + path if VERSIONED_BASE_RE.search(base) else base + "/v1" + path
+
+
 def http_request_parts(connection, api_key):
     """(url, headers, body) for HTTP transports; None for CLI transports."""
     transport = connection["transport"]
@@ -60,7 +72,7 @@ def http_request_parts(connection, api_key):
     prompt = activation["prompt"]
     max_tokens = activation.get("maxTokens", 4)
     if kind == "anthropic-messages":
-        url = base + ("/messages" if base.endswith("/v1") else "/v1/messages")
+        url = endpoint_url(base, "/messages")
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -72,7 +84,7 @@ def http_request_parts(connection, api_key):
             "messages": [{"role": "user", "content": prompt}],
         }
     elif kind == "openai-chat":
-        url = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
+        url = endpoint_url(base, "/chat/completions")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
@@ -83,7 +95,7 @@ def http_request_parts(connection, api_key):
             "messages": [{"role": "user", "content": prompt}],
         }
     elif kind == "openai-responses":
-        url = base + ("/responses" if base.endswith("/v1") else "/v1/responses")
+        url = endpoint_url(base, "/responses")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",

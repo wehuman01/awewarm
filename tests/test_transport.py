@@ -196,3 +196,18 @@ class SendHttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EndpointUrlTests(unittest.TestCase):
+    def test_versioned_base_appends_endpoint_directly(self):
+        # GLM's coding endpoint is versioned /v4 — must not gain an extra /v1.
+        url = transport.endpoint_url("https://open.bigmodel.cn/api/coding/paas/v4", "/chat/completions")
+        self.assertEqual(url, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions")
+
+    def test_bare_host_gains_v1(self):
+        url = transport.endpoint_url("https://api.anthropic.com", "/messages")
+        self.assertEqual(url, "https://api.anthropic.com/v1/messages")
+
+    def test_v1_base_appends_endpoint_directly(self):
+        url = transport.endpoint_url("https://api.openai.com/v1", "/responses")
+        self.assertEqual(url, "https://api.openai.com/v1/responses")
