@@ -177,6 +177,25 @@ def plan_actions(connection, conn_state, now):
     return actions
 
 
+def apply_user_anchor(conn_state, connection, reset_at):
+    """Seed renewal from a user-reported reset time (window already open).
+
+    The window is treated as having opened at reset - duration, so renewal
+    fires right after the reported close instead of a wasteful immediate
+    first anchor that would land inside the still-open window.
+    """
+    duration_minutes = connection["window"]["durationMinutes"]
+    opened_at = reset_at - timedelta(minutes=duration_minutes)
+    conn_state["lastActivationAt"] = iso(opened_at)
+    conn_state["lastAttemptAt"] = iso(opened_at)
+    conn_state["lastResult"] = "success"
+    conn_state["lastError"] = None
+    conn_state["consecutiveFailures"] = 0
+    conn_state["intervalDisabledAt"] = None
+    conn_state["nextDueAt"] = iso(compute_next_due(connection, opened_at, jitter_seconds=0))
+    _push_history(conn_state, opened_at, "user-anchor", "success", None)
+
+
 def record_attempt(conn_state, now):
     conn_state["lastAttemptAt"] = iso(now)
 

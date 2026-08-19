@@ -7,7 +7,7 @@ from click.testing import CliRunner
 from helpers import IsolatedTestCase, account_connection, plan_connection
 
 import awewarm
-from awewarm import config as cfg
+from awewarm import config as cfg, schedule
 from awewarm.cli import cli, main
 
 RUNNER = CliRunner()
@@ -117,7 +117,7 @@ class InitTests(IsolatedTestCase):
             },
         ]
         # manage? (enter=default y) / mode (enter=default hybrid) / time / days / install? no
-        result = invoke(["init"], input="\n\n\n\nn\n")
+        result = invoke(["init"], input="\n\n\n\n\nn\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         data = cfg.load_config()
         self.assertIn("claude-code", data["connections"])
@@ -439,3 +439,28 @@ class MainReminderTests(IsolatedTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddPlanUserAnchorTests(IsolatedTestCase):
+    @mock.patch("awewarm.keychain.is_keychain_available", return_value=False)
+    @mock.patch("awewarm.transport.send_activation")
+    def test_mode3_with_open_window_anchors_renewal(self, send, keychain_available):
+        send.return_value = {"ok": True, "detail": "ok"}
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["add", "plan"], input="\n".join([
+                "GLM", "1", "http://x/v4", "k", "glm-4.7",
+                "3",        # warm-up mode: configure interval manually
+                "300",      # duration
+                "2",        # interval only (no fixed settings prompts)
+                "y",        # window already open
+                "13:27",    # current window closes at
+            ]) + "\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Renewal anchored", result.output)
+        state = cfg.load_state()
+        cs = state["connections"]["glm"]
+        self.assertEqual(schedule.parse_ts(cs["lastActivationAt"]).strftime("%H:%M"), "08:27")
+        self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")

@@ -168,6 +168,31 @@ def _choice_prompt(label, choices, default):
         show_choices=False,
     )
 
+def _prompt_window_reset(config):
+    """Optional HH:MM today when the currently-open window closes (None if not open).
+
+    Lets the chain anchor past a window the user already opened by hand,
+    instead of burning an immediate first anchor inside it.
+    """
+    now = _now(config)
+
+    def parse(value):
+        value = value.strip()
+        if not value:
+            return None
+        if not SLOT_RE.match(value):
+            raise click.BadParameter("use HH:MM, e.g. 13:27")
+        moment = schedule.slot_datetime(now.date(), value, now.tzinfo)
+        if moment <= now:
+            raise click.BadParameter("that time already passed today — enter a later time, or leave empty")
+        return moment
+
+    return click.prompt(
+        "Current window closes at (optional, HH:MM — empty if no window is open)",
+        default="", show_default=False, value_proc=parse,
+    )
+
+
 def _prompt_fixed_settings():
     fixed_at = click.prompt(
         "Fixed activation times (one or more, comma-separated)",
@@ -269,6 +294,8 @@ def init():
             click.echo(line)
     click.echo()
     config = load_config()
+    state = load_state()
+    state_changed = False
     added = []
     for finding in findings:
         if not finding["installed"]:
@@ -296,13 +323,24 @@ def init():
         else:
             fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
         conn_id = unique_connection_id(config, finding["label"])
-        config["connections"][conn_id] = _account_connection(conn_id, finding, mode, fixed_at, days)
+        conn = _account_connection(conn_id, finding, mode, fixed_at, days)
+        config["connections"][conn_id] = conn
+        if mode in ("hybrid", "interval") and verified and click.confirm(
+            f"Is {finding['label']}'s window already open right now?", default=False
+        ):
+            reset_at = _prompt_window_reset(config)
+            if reset_at is not None:
+                schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
+                state_changed = True
+                click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
         added.append(f"✓ {finding['label']} added — mode {mode}, fixed {', '.join(fixed_at)} {days}")
     if not added and not config["connections"]:
         click.echo("No manageable local accounts found.")
         click.echo("Add a subscription endpoint instead: awewarm add plan")
         return
     save_config(config)
+    if state_changed:
+        save_state(state)
     for line in added:
         click.echo(line)
     if click.confirm("\nInstall the background scheduler now (runs `awewarm run` every minute)?", default=True):
@@ -365,6 +403,7 @@ def plan():
     mode_choice = _choice_prompt("Select warm-up mode", ["1", "2", "3"], "1")
     window = _unknown_window()
     mode = "fixed"
+    reset_at = None
     fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     config = load_config()
     conn_id = unique_connection_id(config, label)
@@ -409,6 +448,8 @@ def plan():
         mode = "hybrid" if mode_choice_2 == "1" else "interval"
         if mode == "hybrid":
             fixed_at, days = _prompt_fixed_settings()
+        if click.confirm("Is this plan's window already open right now?", default=False):
+            reset_at = _prompt_window_reset(config)
     else:
         fixed_at, days = _prompt_fixed_settings()
 
@@ -433,6 +474,11 @@ def plan():
         mode, window, fixed_at, days,
     )
     save_config(config)
+    if reset_at is not None:
+        conn = config["connections"][conn_id]
+        schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
+        save_state(state)
+        click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
     click.echo(f"\n✓ {label} added ({conn_id}) in {mode} mode.")
     if install.scheduler_installed():
         click.echo("Scheduler already installed — it will pick this plan up automatically.")

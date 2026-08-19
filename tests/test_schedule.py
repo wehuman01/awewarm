@@ -303,3 +303,33 @@ class WindowOverrideNoticeTests(unittest.TestCase):
         notice = schedule.window_override_notice(self.verified(300), 360)
         self.assertIn("every ~360 min", notice)
         self.assertNotIn("cold gap", notice)
+
+
+class UserAnchorTests(unittest.TestCase):
+    def conn(self):
+        return account_connection(mode="interval", fixed_at=())
+
+    def test_anchor_infers_open_time_from_reset(self):
+        conn = self.conn()
+        cs = default_conn_state()
+        reset = at(WEDNESDAY, "13:27")
+        schedule.apply_user_anchor(cs, conn, reset)
+        # 300-min window: opened 08:27, renewal due reset + grace (no jitter)
+        self.assertEqual(schedule.parse_ts(cs["lastActivationAt"]), at(WEDNESDAY, "08:27"))
+        due = schedule.parse_ts(cs["nextDueAt"])
+        self.assertEqual(due, at(WEDNESDAY, "13:27") + timedelta(seconds=75))
+
+    def test_no_first_anchor_fire_before_reset(self):
+        conn = self.conn()
+        cs = default_conn_state()
+        schedule.apply_user_anchor(cs, conn, at(WEDNESDAY, "13:27"))
+        actions = schedule.plan_actions(conn, cs, at(WEDNESDAY, "13:28") - timedelta(seconds=1))
+        self.assertEqual(actions, [])
+
+    def test_fires_right_after_reset(self):
+        conn = self.conn()
+        cs = default_conn_state()
+        schedule.apply_user_anchor(cs, conn, at(WEDNESDAY, "13:27"))
+        actions = schedule.plan_actions(conn, cs, at(WEDNESDAY, "13:29"))
+        self.assertEqual([a["type"] for a in actions], ["activate"])
+        self.assertEqual(actions[0]["reason"], "interval")
