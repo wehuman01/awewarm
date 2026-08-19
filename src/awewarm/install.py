@@ -181,11 +181,11 @@ def build_wake_spec(config):
         if schedule.get("mode") not in ("fixed", "hybrid"):
             continue
         fixed = schedule.get("fixed") or {}
-        if not fixed.get("wakeWhenAsleep", True):
+        if not fixed.get("wakeWhenAsleep", schedule.get("wakeWhenAsleep", True)):
             continue
         if fixed.get("days") == "every-day":
             every_day = True
-        lead = fixed.get("wakeLeadMinutes", WAKE_LEAD_MINUTES)
+        lead = schedule.get("wakeLeadMinutes", fixed.get("wakeLeadMinutes", WAKE_LEAD_MINUTES))
         for slot in fixed.get("at") or []:
             if not SLOT_RE.match(slot):
                 continue

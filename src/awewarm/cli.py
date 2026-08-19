@@ -934,27 +934,27 @@ def _wake_flow(wake):
         return
     if wake is not None:
         for conn in config.get("connections", {}).values():
-            fixed = (conn.get("schedule") or {}).get("fixed") or {}
-            if conn.get("enabled", True) and (conn.get("schedule") or {}).get("mode") in ("fixed", "hybrid"):
-                if "wakeWhenAsleep" not in fixed:
-                    fixed["wakeWhenAsleep"] = wake
+            sched = (conn.get("schedule") or {})
+            if conn.get("enabled", True) and sched.get("mode") in ("fixed", "hybrid"):
+                if "wakeWhenAsleep" not in sched:
+                    sched["wakeWhenAsleep"] = wake
         save_config(config)
     else:
         needs_prompt = False
         for conn in config.get("connections", {}).values():
-            fixed = (conn.get("schedule") or {}).get("fixed") or {}
-            if conn.get("enabled", True) and (conn.get("schedule") or {}).get("mode") in ("fixed", "hybrid"):
-                if "wakeWhenAsleep" not in fixed:
+            sched = (conn.get("schedule") or {})
+            if conn.get("enabled", True) and sched.get("mode") in ("fixed", "hybrid"):
+                if "wakeWhenAsleep" not in sched:
                     needs_prompt = True
                     break
         if needs_prompt:
             enabled = _wake_confirm_and_set(spec)
             if enabled is not None:
                 for conn in config.get("connections", {}).values():
-                    fixed = (conn.get("schedule") or {}).get("fixed") or {}
-                    if conn.get("enabled", True) and (conn.get("schedule") or {}).get("mode") in ("fixed", "hybrid"):
-                        if "wakeWhenAsleep" not in fixed:
-                            fixed["wakeWhenAsleep"] = enabled
+                    sched = (conn.get("schedule") or {})
+                    if conn.get("enabled", True) and sched.get("mode") in ("fixed", "hybrid"):
+                        if "wakeWhenAsleep" not in sched:
+                            sched["wakeWhenAsleep"] = enabled
                 save_config(config)
     days, time = spec
     if install.set_wake_schedule(spec):
