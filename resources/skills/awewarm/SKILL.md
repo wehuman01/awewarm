@@ -1,6 +1,6 @@
 ---
 name: awewarm
-description: "Use when helping users manage awewarm warm-up schedules — checking status, changing fixed times, switching fixed/interval/hybrid modes, verifying plan windows, or installing the background scheduler. 中文触发词：保温、保活、订阅窗口、warm-up、awewarm、固定时间、调度模式、5小时窗口。"
+description: "Use when helping users manage awewarm warm-up schedules — checking status, changing fixed times, switching fixed/interval modes, verifying plan windows, or installing the background scheduler. 中文触发词：保温、保活、订阅窗口、warm-up、awewarm、固定时间、调度模式、5小时窗口。"
 ---
 
 # awewarm
@@ -34,7 +34,7 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 | "When is the next warm-up?", "下次什么时候触发" | `awewarm status` |
 | "What can awewarm see?", "检测一下本机" | `awewarm discover` |
 | "Change warm-up times to 9:00 and 14:00", "改保温时间点" | `awewarm config set <id> --times 09:00,14:00` |
-| "Switch to hybrid / interval / fixed", "切换模式" | `awewarm config set <id> --mode <mode>`; interval/hybrid need a verified window |
+| "Switch to interval / fixed", "切换模式" | `awewarm config set <id> --mode <mode>`; interval needs a verified window |
 | "Pause while I'm on vacation", "休假暂停" | `awewarm config set <id> --off` (resume with `--on`) |
 | "Add my GLM subscription", "添加订阅套餐" | Tell the user to run `awewarm config add` in their terminal (interactive API key prompt). It also re-adds removed local accounts. |
 | "Verify the window", "验证窗口时长" | Guide the 3-step verify flow below; only send the real request if the user asks. |
@@ -57,9 +57,8 @@ Subscription API keys live in `secrets.json` next to the config (0600) — never
 |---|---|---|
 | `fixed` | fixed local times (`weekday` or `every-day`), each slot may fire late within its catch-up window (default 45 min) | no |
 | `interval` | `window duration + grace + jitter` after each success | yes |
-| `hybrid` | both — fixed anchors re-anchor the interval chain | yes |
 
-Gating rule: `interval`/`hybrid` are locked until the window is verified or user-confirmed with `awewarm config set <id> --window <minutes>`.
+Gating rule: `interval` is locked until the window is verified or user-confirmed with `awewarm config set <id> --window <minutes>`.
 
 ## Workflows
 
@@ -82,7 +81,7 @@ Times are HH:MM (comma- or space-separated), sorted and de-duplicated on save. S
 ### Switch mode / pause / resume
 
 ```bash
-awewarm config set claude-code --mode hybrid
+awewarm config set claude-code --mode interval
 awewarm config set claude-code --off     # pause (config and state kept)
 awewarm config set claude-code --on      # resume
 ```
@@ -93,7 +92,7 @@ If a mode switch reports the window is not verified, guide the verify workflow f
 
 1. `awewarm run <id>` — one real request, timestamped (user must ask for it). Prompts for confirmation; pass `--force` only if the user is running it scripted. By default the run does NOT move the next due moment; `--reset-due` restarts the interval chain from this run.
 2. The user watches when the plan's quota/window resets and computes elapsed minutes
-3. `awewarm config set <id> --window <minutes>` — unlocks interval/hybrid
+3. `awewarm config set <id> --window <minutes>` — unlocks interval
 
 ### Anchor an already-open window
 

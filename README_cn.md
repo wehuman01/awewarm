@@ -31,7 +31,7 @@ awewarm 管理两类连接：
 - **账号** —— 本机的 `claude` / `codex` CLI 登录。awewarm 复用它们的登录态，发送一条最小的无头请求（`Reply with exactly: ok`），不保存任何凭据。
 - **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + API key）。API key 存入 `~/.config/awewarm/secrets.json`（权限 600），也可以用环境变量引用、不落盘。
 
-调度分三种模式：`fixed` / `interval` / `hybrid`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
+调度分两种模式：`fixed` / `interval`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
 
 ## 安装
 
@@ -85,13 +85,12 @@ awewarm 是 AI 编程 agent 工具家族的一员：
 
 ## 调度模式
 
-三种模式发送的都是同一条最小请求，区别只在触发时机。用 `awewarm config set <id> --mode fixed|interval|hybrid` 切换；用 `awewarm status` 查看当前模式和下一次触发时间。
+两种模式发送的都是同一条最小请求，区别只在触发时机。用 `awewarm config set <id> --mode fixed|interval` 切换；用 `awewarm status` 查看当前模式和下一次触发时间。
 
 | 模式 | 触发时机 | 需要已验证窗口 | 适用场景 |
 | --- | --- | --- | --- |
 | `fixed` | 每天固定时间点 | 否 | 作息规律；窗口语义未验证的套餐 |
 | `interval` | 每次成功后 窗口时长 + 余量 | 是 | 常开机器的全天候保温 |
-| `hybrid` | 两者兼有 | 是 | 推荐默认 |
 
 ### `fixed` —— 绝对时间，始终安全
 
@@ -123,17 +122,6 @@ awewarm config set my-plan --mode interval # 3. 滚动续期
 
 **案例** —— 一台常开的机器，希望夜里和周末也持续保温。连续失败 3 次后续期会自动暂停（status 显示 `degraded`），下次成功即恢复。
 
-### `hybrid` —— fixed 锚定 + interval 续期（推荐）
-
-两个引擎同时运转：interval 让链条不断，fixed 时间点在确定时刻重新锚定 —— 即使机器睡过了 interval 的到期时间，每个工作日仍从预期时刻开始。落在最近一次成功后 30 分钟内的时间点会自动跳过。
-
-```bash
-awewarm config set claude-code --mode hybrid   # init 时窗口已验证
-awewarm config set claude-code --times 06:35   # 每个工作日早晨一个锚点
-```
-
-**案例** —— 已验证的账号配一个 06:35 工作日锚点：interval 全天续期（续期不受 weekday 规则限制，周末也持续），无论夜里发生了什么，周一 06:35 都会把链条重新锚定。
-
 ## 配置
 
 用户不需要手改配置；`init` / `config add` 会生成 `~/.config/awewarm/config.json`（状态在 `~/.local/state/awewarm/state.json`）。结构示例：
@@ -147,7 +135,7 @@ awewarm config set claude-code --times 06:35   # 每个工作日早晨一个锚�
       "cli": "/usr/local/bin/claude",
       "model": "haiku",
       "windowMinutes": 300,
-      "mode": "hybrid",
+      "mode": "fixed",
       "times": ["06:35"],
       "days": "weekday"
     },
@@ -158,7 +146,7 @@ awewarm config set claude-code --times 06:35   # 每个工作日早晨一个锚�
       "apiKey": "file:glm",
       "model": "GLM-5-Turbo",
       "windowMinutes": 300,
-      "mode": "hybrid",
+      "mode": "fixed",
       "times": ["06:00"],
       "days": "every-day"
     }
@@ -166,7 +154,7 @@ awewarm config set claude-code --times 06:35   # 每个工作日早晨一个锚�
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）或环境变量引用（`$GLM_API_KEY` / `${GLM_API_KEY}` 均可）。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
 
 ## 命令
 

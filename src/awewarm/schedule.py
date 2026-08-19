@@ -165,8 +165,23 @@ def _due_fixed(connection, conn_state, now):
     return pending_skip, activate
 
 
+def interval_thaw_at(connection, conn_state):
+    """When a failure-paused interval may probe again, or None when running.
+
+    A probe that fails re-freezes for another full window (record_failure
+    re-stamps intervalDisabledAt), so degraded connections back off without
+    going silent forever — pure interval mode has no fixed slot to rescue it.
+    """
+    disabled_at = parse_ts(conn_state.get("intervalDisabledAt"))
+    if disabled_at is None:
+        return None
+    cooldown = timedelta(minutes=(connection["window"].get("durationMinutes") or 60))
+    return disabled_at + cooldown
+
+
 def _due_interval(connection, conn_state, now):
-    if conn_state.get("intervalDisabledAt"):
+    thaw_at = interval_thaw_at(connection, conn_state)
+    if thaw_at is not None and now < thaw_at:
         return None
     if _last_success(conn_state) is None:
         # No anchor yet: fire once to open the first window.
@@ -249,7 +264,9 @@ def record_failure(conn_state, now, kind, error):
     conn_state["lastError"] = str(error)[:300]
     conn_state["consecutiveFailures"] = conn_state.get("consecutiveFailures", 0) + 1
     mode_degrades = conn_state.get("consecutiveFailures", 0) >= DEGRADE_AFTER_FAILURES
-    if mode_degrades and not conn_state.get("intervalDisabledAt"):
+    if mode_degrades:
+        # Re-stamped on every degrading failure: a failed cooldown probe
+        # re-freezes for another full window instead of retrying every tick.
         conn_state["intervalDisabledAt"] = iso(now)
     _push_history(conn_state, now, kind, "failure", conn_state["lastError"])
 
@@ -305,8 +322,11 @@ def next_due(connection, conn_state, now):
                 if candidates:
                     break
             day += timedelta(days=1)
-    if mode == "interval" and not conn_state.get("intervalDisabledAt"):
-        if _last_success(conn_state) is None:
+    if mode == "interval":
+        thaw_at = interval_thaw_at(connection, conn_state)
+        if thaw_at is not None and now < thaw_at:
+            candidates.append((thaw_at, "interval (probing after pause)"))
+        elif _last_success(conn_state) is None:
             candidates.append((now, "interval (first anchor)"))
         else:
             due = parse_ts(conn_state.get("nextDueAt"))

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.3.5
+
+`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
 
 ### hybrid mode removed — fixed and interval only
 

@@ -121,7 +121,7 @@ awewarm config set my-plan --mode interval # 3. rolling renewal
 
 A manual `run <id>` never shifts the renewal chain — the next due moment stays as scheduled. Add `--reset-due` to restart the chain from this run instead.
 
-**Example** — an always-on machine you want warm around the clock, nights and weekends included. After 3 consecutive failures renewal pauses itself (status shows `degraded`) and resumes on the next success.
+**Example** — an always-on machine you want warm around the clock, nights and weekends included. After 3 consecutive failures renewal pauses itself (status shows `degraded`), then probes again automatically after one window of cooldown — a failed probe re-freezes for another window, and any success resumes normal renewal.
 
 ### Sleeping Macs — calendar wake (macOS)
 

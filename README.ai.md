@@ -173,12 +173,12 @@ On the user's request you may also:
 
 ```bash
 awewarm config set <id> --times 06:35,11:40,16:45   # set fixed warm-up times
-awewarm config set <id> --mode hybrid               # switch mode (interval/hybrid need a verified window)
+awewarm config set <id> --mode interval              # switch mode (interval needs a verified window)
 awewarm config set <id> --off                       # pause while on vacation
 awewarm scheduler install                           # (re)install the background scheduler
 ```
 
-`interval` and `hybrid` modes stay locked until the window is verified or user-confirmed. If the user wants them, guide the three-step flow in the skill (`awewarm run <id>`, observe the quota reset, `awewarm config set <id> --window <minutes>`) — but that request itself consumes quota, so only run it when the user asks.
+`interval` mode stays locked until the window is verified or user-confirmed. If the user wants it, guide the three-step flow in the skill (`awewarm run <id>`, observe the quota reset, `awewarm config set <id> --window <minutes>`) — but that request itself consumes quota, so only run it when the user asks.
 
 ## Useful commands
 

@@ -195,6 +195,35 @@ class FailurePolicyTests(unittest.TestCase):
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:47"))
         self.assertEqual(actions[0]["type"], "activate")
 
+    def test_degraded_interval_probes_after_cooldown(self):
+        conn = account_connection(mode="interval", fixed_at=())
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
+        for i in range(3):
+            schedule.record_failure(conn_state, at(WEDNESDAY, "12:07") + timedelta(minutes=i), "interval", "boom")
+        disabled_at = schedule.parse_ts(conn_state["intervalDisabledAt"])
+        # frozen inside the 300-min cooldown, free to probe one minute after it
+        frozen = disabled_at + timedelta(minutes=299)
+        self.assertEqual(schedule.plan_actions(conn, conn_state, frozen), [])
+        thawed = disabled_at + timedelta(minutes=301)
+        actions = schedule.plan_actions(conn, conn_state, thawed)
+        self.assertEqual([a["reason"] for a in actions], ["interval"])
+
+    def test_failed_probe_refreezes_for_another_cooldown(self):
+        conn = account_connection(mode="interval", fixed_at=())
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
+        conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
+        conn_state["consecutiveFailures"] = 3  # already degraded; this is the probe
+        schedule.record_failure(conn_state, at(WEDNESDAY, "13:01"), "interval", "boom")
+        re_frozen = schedule.parse_ts(conn_state["intervalDisabledAt"])
+        self.assertEqual(re_frozen, at(WEDNESDAY, "13:01"))
+        self.assertEqual(
+            schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "13:10")), []
+        )
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "18:02"))
+        self.assertEqual([a["reason"] for a in actions], ["interval"])
+
     def test_history_capped(self):
         conn = account_connection(mode="interval", fixed_at=())
         conn_state = default_conn_state()
@@ -255,11 +284,13 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(due_at, now)
         self.assertIn("first anchor", kind)
 
-    def test_next_due_degraded_interval_returns_none(self):
+    def test_next_due_degraded_interval_advertises_thaw(self):
         conn = account_connection(mode="interval", fixed_at=())
         conn_state = default_conn_state()
         conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
-        self.assertEqual(schedule.next_due(conn, conn_state, at(WEDNESDAY, "09:00")), (None, None))
+        due_at, kind = schedule.next_due(conn, conn_state, at(WEDNESDAY, "09:00"))
+        self.assertEqual(due_at, at(WEDNESDAY, "13:00"))
+        self.assertIn("probing", kind)
 
 
 if __name__ == "__main__":
