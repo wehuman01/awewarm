@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -28,6 +29,12 @@ class IsolatedTestCase(unittest.TestCase):
         self._saved = {key: os.environ.get(key) for key in ENV_KEYS}
         os.environ.update(overrides)
         self.addCleanup(self._restore_env)
+        # Interactive add flows include the wake prompt (macOS/Windows only);
+        # pin the platform so prompt sequences in test inputs match everywhere.
+        # Method-level platform patches override this.
+        platform_patch = mock.patch("awewarm.cli.sys.platform", "darwin")
+        platform_patch.start()
+        self.addCleanup(platform_patch.stop)
 
     def _restore_env(self):
         for key, value in self._saved.items():
