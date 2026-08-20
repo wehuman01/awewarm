@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.4.0
+
 The unreleased entry adds remote delegation: an always-on `awewarm serve` process can tick subscription connections for a machine that sleeps, pairing over a cloudflared tunnel and keeping every secret on the local machine.
 
 ### Remote delegation: `serve`, `remote`, `--remote`
