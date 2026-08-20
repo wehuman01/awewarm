@@ -855,21 +855,21 @@ class StatusTests(IsolatedTestCase):
         result = invoke(["status", "claude-code-main"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Times: 06:35 (weekday)", result.output)
-        self.assertIn("Window: 300 minutes, user-confirmed (evidence: user-confirmed)", result.output)
+        self.assertIn("Window: 300 minutes, verified (evidence: builtin-provider)", result.output)
 
     def test_status_interval_shows_window_not_times(self):
         write_config(account_connection(mode="interval"))
         result = invoke(["status"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Mode: interval", result.output)
-        self.assertIn("Window: 300 minutes, user-confirmed", result.output)
+        self.assertIn("Window: 300 minutes, verified", result.output)
         self.assertNotIn("Times:", result.output)
 
     def test_status_interval_detail_keeps_fixed_times(self):
         write_config(account_connection(mode="interval"))
         result = invoke(["status", "claude-code-main"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Window: 300 minutes, user-confirmed (evidence: user-confirmed)", result.output)
+        self.assertIn("Window: 300 minutes, verified (evidence: builtin-provider)", result.output)
         self.assertIn("Fixed times: 06:35 (weekday)", result.output)
 
     def test_status_single_connection_shows_detail(self):

@@ -1,4 +1,5 @@
 import io
+import subprocess
 import unittest
 from unittest import mock
 
@@ -26,7 +27,18 @@ class ArgvBuilderTests(unittest.TestCase):
         conn["activation"]["model"] = "gpt-5-codex"
         self.assertEqual(
             transport.activation_argv(conn),
-            ["codex", "exec", "-m", "gpt-5-codex", "Reply with exactly: ok"],
+            # Scheduled ticks run outside any git repo; exec refuses those
+            # without --skip-git-repo-check.
+            ["codex", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex", "Reply with exactly: ok"],
+        )
+
+    def test_codex_argv_without_model(self):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        conn["activation"]["model"] = None
+        self.assertEqual(
+            transport.activation_argv(conn),
+            ["codex", "exec", "--skip-git-repo-check", "Reply with exactly: ok"],
         )
 
     def test_http_transport_returns_none(self):
@@ -122,6 +134,9 @@ class SendCliTests(unittest.TestCase):
         self.assertEqual(result["detail"], "ok")
         argv = run.call_args[0][0]
         self.assertEqual(argv[0], "/usr/local/bin/claude")
+        # The CLIs append piped stdin to the prompt; a headless tick must not
+        # let them read (and block on) awewarm's own stdin.
+        self.assertEqual(run.call_args[1]["stdin"], subprocess.DEVNULL)
 
     @mock.patch("awewarm.transport.subprocess.run")
     @mock.patch("awewarm.transport.shutil.which", return_value="/usr/local/bin/claude")

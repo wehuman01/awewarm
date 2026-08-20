@@ -20,6 +20,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from .discover import BUILTIN_WINDOWS
+
 CONFIG_VERSION = 2
 STATE_VERSION = 1
 
@@ -294,6 +296,14 @@ def _expand_conn(conn_id, flat, global_settings):
         if isinstance(duration, int) and duration > 0
         else {"status": "unknown", "startRule": "unknown", "durationMinutes": None, "evidence": "none"}
     )
+    if kind == KIND_ACCOUNT:
+        # The flat format cannot carry window evidence; re-derive the builtin
+        # provider window (Claude Code's verified 5 h) unless the user recorded
+        # a different duration, so a save/load round trip does not downgrade it.
+        provider = "claude-code" if transport["kind"] == "claude-cli" else "codex"
+        builtin = BUILTIN_WINDOWS[provider]
+        if builtin["status"] == "verified" and window["durationMinutes"] in (None, builtin["durationMinutes"]):
+            window = dict(builtin)
     settings = {**global_settings, **(flat.get("settings") or {})}
     schedule = {
         "mode": flat.get("mode") or "fixed",

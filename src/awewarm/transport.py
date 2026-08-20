@@ -41,7 +41,9 @@ def activation_argv(connection):
             argv += ["--model", activation["model"]]
         return argv + [activation["prompt"]]
     if kind == "codex-cli":
-        argv = [transport.get("cliCommand") or "codex", "exec"]
+        # Scheduled ticks run outside any git repo (launchd's cwd is /, systemd's
+        # the home dir); codex exec refuses those without this flag.
+        argv = [transport.get("cliCommand") or "codex", "exec", "--skip-git-repo-check"]
         if activation.get("model"):
             argv += ["-m", activation["model"]]
         return argv + [activation["prompt"]]
@@ -152,6 +154,9 @@ def _send_cli(connection):
         proc = subprocess.run(
             argv, capture_output=True, text=True,
             timeout=CLI_TIMEOUT_SECONDS,
+            # Both CLIs append piped stdin to the prompt; an open pipe would
+            # block the headless tick until the timeout. Never read our stdin.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "detail": f"{command} timed out after {CLI_TIMEOUT_SECONDS}s"}

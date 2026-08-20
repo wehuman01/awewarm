@@ -38,6 +38,28 @@ class RoundtripTests(IsolatedTestCase):
         loaded = config.load_config()
         self.assertEqual(loaded["connections"].keys(), {"claude-code-main", "glm-plan"})
 
+    def test_account_builtin_window_survives_roundtrip(self):
+        # The flat format cannot carry evidence; the builtin verified window
+        # must be re-derived on load instead of downgraded to user-confirmed.
+        data = config.empty_config()
+        data["connections"]["claude-code"] = account_connection()
+        config.save_config(data)
+        window = config.load_config()["connections"]["claude-code"]["window"]
+        self.assertEqual(window["status"], "verified")
+        self.assertEqual(window["evidence"], "builtin-provider")
+        self.assertEqual(window["durationMinutes"], 300)
+        self.assertEqual(window["startRule"], "first-successful-request")
+
+    def test_account_custom_window_not_upgraded_to_builtin(self):
+        data = config.empty_config()
+        conn = account_connection(window_status="user-confirmed")
+        conn["window"]["durationMinutes"] = 240
+        data["connections"]["claude-code"] = conn
+        config.save_config(data)
+        window = config.load_config()["connections"]["claude-code"]["window"]
+        self.assertEqual(window["status"], "user-confirmed")
+        self.assertEqual(window["durationMinutes"], 240)
+
     def test_save_writes_indented_json_with_trailing_newline(self):
         data = config.empty_config()
         data["connections"]["claude-code-main"] = account_connection(mode="fixed")
