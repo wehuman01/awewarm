@@ -24,12 +24,7 @@ Interval mode chains windows. After each success, the next request is scheduled 
 
 Most cron tools have two states: working or broken. awewarm has four:
 
-```
-connected ──首次节点失败──▶ failing ──连续N个节点丢失──▶ degraded ──再连续N个节点丢失──▶ auto-disabled
-   ▲                          │                              │                              │
-   └────────── 任一次成功（节点尝试/catch-up重试/手动run）──────┘                              │
-                                                               └──── 只有 --on 或手动 run 成功 ──┘
-```
+![health-ladder](../../media/images/health-ladder.png)
 
 - **Connected** — normal operation. Slots fire on time, chains renew on schedule.
 - **Failing** — one node failed. Catch-up retries: 5 attempts within 30 minutes, spaced 5 min apart. Any success resets the ladder.
@@ -46,7 +41,7 @@ awewarm supports both CLI logins and API key subscriptions — five transports, 
 
 **Codex** — detected from `~/.codex/auth.json`. Window duration is unknown, starts in fixed mode. Warm-up: `codex exec -m <model> "Reply with exactly: ok"`.
 
-**Subscription plans** — any OpenAI Chat / Responses / Anthropic-compatible endpoint with a base URL + API key. Protocols: `openai-chat`, `openai-responses`, `anthropic-messages`. The key is stored in `secrets.json` (0600) so the background scheduler can read it. The `plan.url` field is stored in the connection config. Claude Code account, Codex account, GLM token plan, DeepSeek token plan — all managed from the same config, all running on the same scheduler.
+**Subscription plans** — any OpenAI Chat / Responses / Anthropic-compatible endpoint with a base URL + API key. Protocols: `openai-chat`, `openai-responses`, `anthropic-messages`. The key is stored in `secrets.json` (0600) so the background scheduler can read it. The `plan.url` field is stored in the connection config. Claude Code account, Codex account, GLM token plan, Doubao token plan — all managed from the same config, all running on the same scheduler.
 
 ## The Architecture: Tick, Not Daemon
 
@@ -70,11 +65,11 @@ On macOS, launchd wakes the machine from sleep at slot times (no sudo). On Windo
 
 ## Why It Matters
 
-The first wave of subscription tools assumed you would manage your own schedule. The second wave assumes an agent operator. The agent sets the times, installs the scheduler, and monitors the health ladder. You never think about it until `status` shows something unexpected.
+Every subscription is getting worse. Token plans shrink limits while raising costs. The math is simple: if you pay for a 5-hour window and only use 3 hours of it, you are leaving 40% of your money on the table. A cold start at 3 PM when you already opened a window at 9 AM is not just inconvenient — it is a direct loss of paid quota.
 
-Three design decisions set awewarm apart. The health ladder is **graduated, not binary** — one failure is a flicker, three is a pattern, six is a fact. Any success resets the ladder. The tick architecture has **no daemon** — stateless, transparent, JSON state on disk. The transport layer is **unified** — five transports (`claude-cli`, `codex-cli`, `openai-chat`, `openai-responses`, `anthropic-messages`), one config format.
+awewarm is a yield optimizer for your subscription. It ensures every window you pay for is fully available when you need it. No cold starts. No partial windows. No wasted quota. The marginal cost of one warm-up request per window is negligible. The marginal gain of a full 5-hour window versus a 90-minute fragment is the entire subscription.
 
-The future of agent tooling is not "tools that work well with agents." It is "tools that the agent itself can install, configure, and operate on your behalf."
+Three design decisions make it durable. The health ladder is **graduated, not binary** — one failure is a flicker, three is a pattern, six is a fact. Any success resets the ladder. The tick architecture has **no daemon** — stateless, transparent, JSON state on disk. The transport layer is **unified** — five transports, one config format. The agent installs it, the scheduler runs it, and your subscription works at full capacity.
 
 ## Try It
 
