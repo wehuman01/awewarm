@@ -9,8 +9,8 @@ from awewarm import config as cfg
 from awewarm import install
 
 
-def ok_run(returncode=0, stderr=""):
-    return mock.Mock(returncode=returncode, stdout="", stderr=stderr)
+def ok_run(returncode=0, stderr="", stdout=""):
+    return mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 # os.getuid does not exist on Windows; the darwin-mocked tests still reach it.
@@ -144,13 +144,14 @@ class WindowsInstallTests(IsolatedTestCase):
     def test_install_creates_minute_task(self, run, which):
         name = install.install_scheduler()
         self.assertEqual(name, install.LABEL)
-        argv = run.call_args[0][0]
-        self.assertEqual(argv[0], "schtasks")
+        argvs = [call.args[0] for call in run.call_args_list]
+        create = next(argv for argv in argvs if "/Create" in argv)
+        self.assertEqual(create[0], "schtasks")
         for flag in ("/Create", "/SC", "MINUTE", "/TN"):
-            self.assertIn(flag, argv)
-        self.assertEqual(argv[argv.index("/TN") + 1], install.LABEL)
+            self.assertIn(flag, create)
+        self.assertEqual(create[create.index("/TN") + 1], install.LABEL)
         # /TR embeds the exe in quotes so paths with spaces survive
-        self.assertEqual(argv[argv.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" tick')
+        self.assertEqual(create[create.index("/TR") + 1], '"C:\\Users\\x\\Scripts\\awewarm.exe" tick')
         self.assertTrue(install.scheduler_installed())
 
     @mock.patch("awewarm.install.sys.platform", "win32")
@@ -165,6 +166,98 @@ class WindowsInstallTests(IsolatedTestCase):
     def test_install_without_entry_point_dies(self, which):
         with self.assertRaises(SystemExit):
             install.install_scheduler()
+
+
+class WindowsWakeTests(IsolatedTestCase):
+    def _fixed_config(self, times=("06:35",), wake=True):
+        config = cfg.empty_config()
+        config["connections"]["c1"] = CalendarEntriesTests._conn(list(times), wake=wake)
+        return config
+
+    def test_build_wake_ps1_registers_one_task_per_slot(self):
+        entries = install.calendar_entries(self._fixed_config(("06:35", "11:40")))
+        script = install.build_wake_ps1("C:\\Program Files\\awewarm.exe", entries)
+        self.assertIn("New-ScheduledTaskSettingsSet -WakeToRun", script)
+        self.assertIn("'06:35', '11:40'", script)
+        self.assertIn("Register-ScheduledTask", script)
+        self.assertIn(install.WAKE_TASK_PREFIX, script)
+        self.assertIn("'C:\\Program Files\\awewarm.exe'", script)
+
+    @mock.patch("awewarm.install._schtasks")
+    def test_wake_task_times_parses_csv(self, schtasks):
+        schtasks.return_value = ok_run(
+            stdout='"\\com.awewarm.scheduler.wake-0635","06:35:00","Ready"\n'
+                   '"\\Other Task","01:00:00","Running"\n'
+        )
+        self.assertEqual(install.wake_task_times(), {"0635"})
+
+    @mock.patch("awewarm.install._schtasks")
+    def test_wake_task_times_none_when_query_fails(self, schtasks):
+        schtasks.side_effect = OSError("no schtasks")
+        self.assertIsNone(install.wake_task_times())
+
+    @mock.patch("awewarm.install._schtasks")
+    def test_sync_noop_when_in_sync(self, schtasks):
+        schtasks.return_value = ok_run(stdout='"\\com.awewarm.scheduler.wake-0635","x","y"\n')
+        with mock.patch("awewarm.install._run_powershell") as powershell:
+            self.assertFalse(install.sync_windows_wake(self._fixed_config(("06:35",))))
+            powershell.assert_not_called()
+
+    @mock.patch("awewarm.install._schtasks")
+    @mock.patch("awewarm.install.resolve_exe", return_value="C:\\awewarm.exe")
+    def test_sync_registers_missing_tasks(self, exe, schtasks):
+        schtasks.return_value = ok_run(stdout="")  # none installed yet
+        with mock.patch("awewarm.install._run_powershell", return_value=ok_run()) as powershell:
+            self.assertTrue(install.sync_windows_wake(self._fixed_config(("06:35",))))
+            script = powershell.call_args[0][0]
+            self.assertIn("'06:35'", script)
+
+    @mock.patch("awewarm.install._schtasks")
+    def test_sync_deletes_stray_tasks(self, schtasks):
+        schtasks.return_value = ok_run(stdout='"\\com.awewarm.scheduler.wake-2200","x","y"\n')
+        with mock.patch("awewarm.install._run_powershell") as powershell:
+            # wake opted out → desired is empty, the stray must go
+            self.assertTrue(install.sync_windows_wake(self._fixed_config(("06:35",), wake=False)))
+            powershell.assert_not_called()
+        argv = schtasks.call_args[0][0]
+        self.assertIn("/Delete", argv)
+        self.assertIn("com.awewarm.scheduler.wake-2200", argv)
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch(
+        "awewarm.install._schtasks",
+        return_value=ok_run(stdout='"\\com.awewarm.scheduler.wake-0635","x","y"\n'),
+    )
+    def test_uninstall_removes_wake_tasks(self, schtasks):
+        self.assertTrue(install.uninstall_scheduler())
+        deletes = [call.args[0] for call in schtasks.call_args_list]
+        wake_delete = install.WAKE_TASK_PREFIX + "0635"
+        self.assertTrue(any("/Delete" in argv and wake_delete in argv for argv in deletes))
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install._schtasks")
+    def test_self_heal_syncs_wake_drift(self, schtasks):
+        schtasks.side_effect = [
+            ok_run(stdout="awewarm.exe tick"),  # tick task query
+            ok_run(stdout='"\\com.awewarm.scheduler.wake-2200","x","y"\n'),  # wake query
+        ]
+        with mock.patch("awewarm.install.sync_windows_wake") as sync:
+            install._maybe_self_heal_job(self._fixed_config(("06:35",)))
+            sync.assert_called_once()
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install._schtasks", return_value=ok_run())
+    def test_refresh_wake_win32_syncs(self, schtasks):
+        with mock.patch("awewarm.install.sync_windows_wake", return_value=True) as sync:
+            self.assertTrue(install.refresh_wake(self._fixed_config()))
+            sync.assert_called_once()
+
+    @mock.patch("awewarm.install.sys.platform", "win32")
+    @mock.patch("awewarm.install._schtasks", return_value=ok_run(returncode=1))
+    def test_refresh_wake_noop_without_tick_task(self, schtasks):
+        with mock.patch("awewarm.install.sync_windows_wake") as sync:
+            self.assertFalse(install.refresh_wake(self._fixed_config()))
+            sync.assert_not_called()
 
 
 class WindowsUninstallTests(IsolatedTestCase):
@@ -183,9 +276,9 @@ class WindowsUninstallTests(IsolatedTestCase):
     @mock.patch("awewarm.install.subprocess.run", return_value=ok_run())
     def test_uninstall_deletes_task(self, run):
         self.assertTrue(install.uninstall_scheduler())
-        argv = run.call_args[0][0]
-        self.assertIn("/Delete", argv)
-        self.assertIn(install.LABEL, argv)
+        argvs = [call.args[0] for call in run.call_args_list]
+        delete = next(argv for argv in argvs if "/Delete" in argv)
+        self.assertIn(install.LABEL, delete)
 
 
 class LinuxUnitTests(IsolatedTestCase):

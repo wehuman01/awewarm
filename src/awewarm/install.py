@@ -20,6 +20,8 @@ service unit as Environment= lines. SSH-only accounts may need
 `loginctl enable-linger $USER` before the user manager runs without a
 session; `awewarm scheduler install` says so when systemctl cannot reach the bus.
 """
+import csv
+import io
 import os
 import plistlib
 import re
@@ -31,6 +33,7 @@ from pathlib import Path
 from .config import SLOT_RE, die, load_config, load_state, save_state, state_path
 
 LABEL = "com.awewarm.scheduler"
+WAKE_TASK_PREFIX = f"{LABEL}.wake-"
 TICK_SECONDS = 60
 
 # macOS-only: legacy pmset repeat events registered by awewarm < 0.4 are
@@ -112,7 +115,7 @@ def uninstall_scheduler():
     if sys.platform == "darwin":
         return _uninstall_launchd()
     if sys.platform == "win32":
-        return _schtasks(["/Delete", "/F", "/TN", LABEL]).returncode == 0
+        return _uninstall_windows()
     if sys.platform.startswith("linux"):
         return _uninstall_linux()
     die("scheduler uninstall supports macOS, Windows, and Linux (systemd)")
@@ -133,11 +136,11 @@ def scheduler_installed():
 
 def _maybe_self_heal_job(config=None):
     """Rewrite the installed scheduler job if its command line is outdated or,
-    on macOS, its calendar wake entries no longer match the config.
+    on macOS/Windows, its wake entries no longer match the config.
 
     Called at the top of every scheduler tick. Cheap (one file read or one
     `schtasks /Query`). No-op in the common case where the job already
-    invokes `awewarm tick` and the calendar entries are current.
+    invokes `awewarm tick` and the wake entries are current.
 
     Covers users who upgraded via `pip install --upgrade awewarm` directly,
     bypassing `awewarm update` — the next tick detects the old job, rewrites
@@ -165,9 +168,14 @@ def _maybe_self_heal_job(config=None):
                 return
             if result.returncode != 0:
                 return
-            if "tick" in (result.stdout or ""):
+            if "tick" not in (result.stdout or ""):
+                install_scheduler()
                 return
-            install_scheduler()
+            installed = wake_task_times()
+            if installed is not None and installed != _wake_time_keys(
+                calendar_entries(config or load_config())
+            ):
+                sync_windows_wake(config or load_config())
             return
         if sys.platform.startswith("linux"):
             svc = service_path()
@@ -228,12 +236,15 @@ def _uninstall_launchd():
 
 
 def calendar_entries(config):
-    """launchd StartCalendarInterval entries: one per fixed slot that opted into
-    wake. Calendar triggers wake the Mac from sleep (dark wake) and run the tick
-    at the exact slot time — every slot is covered, unlike pmset repeat, which
-    holds a single event. Entries fire every day regardless of the slot's day
-    rule: the tick itself decides whether today is an active day, so a weekend
-    wake for a weekday-only slot is a harmless no-op.
+    """Fixed-slot wake schedule, shared by platform wake mechanisms.
+
+    launchd consumes them as StartCalendarInterval entries; Windows registers
+    one WakeToRun task per entry (see build_wake_ps1). Calendar triggers wake
+    the machine from sleep and run the tick at the exact slot time — every
+    slot is covered, unlike pmset repeat, which held a single event. Entries
+    fire every day regardless of the slot's day rule: the tick itself decides
+    whether today is an active day, so a weekend wake for a weekday-only slot
+    is a harmless no-op.
     """
     entries = {}
     for conn in (config.get("connections") or {}).values():
@@ -254,27 +265,35 @@ def calendar_entries(config):
 
 
 def refresh_wake(config):
-    """Rewrite the installed launchd agent when its calendar wake entries no
-    longer match the config (fixed times/days/wake opt-in changed).
+    """Rewrite the installed wake schedule when it no longer matches the
+    config (fixed times/days/wake opt-in changed).
 
     Called from config-editing commands; the tick's self-heal covers the same
-    drift for edits that bypass the CLI. Returns True when the plist was
-    rewritten. No-op on other platforms or when nothing is installed.
+    drift for edits that bypass the CLI. Returns True when something was
+    rewritten. No-op on platforms without wake support or when nothing is
+    installed.
     """
-    if sys.platform != "darwin":
-        return False
-    plist = plist_path()
-    if not plist.exists():
-        return False
-    try:
-        with open(plist, "rb") as handle:
-            data = plistlib.load(handle)
-    except (OSError, plistlib.InvalidFileException, ValueError):
-        return False
-    if (data.get("StartCalendarInterval") or []) == calendar_entries(config):
-        return False
-    _install_launchd()
-    return True
+    if sys.platform == "darwin":
+        plist = plist_path()
+        if not plist.exists():
+            return False
+        try:
+            with open(plist, "rb") as handle:
+                data = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            return False
+        if (data.get("StartCalendarInterval") or []) == calendar_entries(config):
+            return False
+        _install_launchd()
+        return True
+    if sys.platform == "win32":
+        try:
+            if _schtasks(["/Query", "/TN", LABEL]).returncode != 0:
+                return False
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return sync_windows_wake(config)
+    return False
 
 
 def _sudo_pmset(args, interactive=True):
@@ -384,7 +403,91 @@ def _install_windows():
             "fix: resolve the schtasks error, or create the task manually:\n"
             f'  schtasks /Create /SC MINUTE /TN {LABEL} /TR "{exe} tick"'
         )
+    sync_windows_wake(load_config())
     return LABEL
+
+
+def _uninstall_windows():
+    ok = _schtasks(["/Delete", "/F", "/TN", LABEL]).returncode == 0
+    for key in sorted(wake_task_times() or ()):
+        _schtasks(["/Delete", "/F", "/TN", WAKE_TASK_PREFIX + key])
+    return ok
+
+
+def _powershell():
+    return (
+        shutil.which("powershell")
+        or shutil.which("powershell.exe")
+        or "powershell.exe"
+    )
+
+
+def _run_powershell(script):
+    return subprocess.run(
+        [_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def _wake_time_keys(entries):
+    return {f"{entry['Hour']:02d}{entry['Minute']:02d}" for entry in entries}
+
+
+def build_wake_ps1(exe, entries):
+    """PowerShell that registers one daily WakeToRun task per fixed slot.
+
+    The Windows twin of the launchd StartCalendarInterval entries: wake only
+    at slot times, never on the per-minute tick (a waking tick would keep
+    the machine from ever staying asleep). schtasks.exe cannot set
+    WakeToRun, hence PowerShell's Register-ScheduledTask.
+    """
+    times = ", ".join(f"'{entry['Hour']:02d}:{entry['Minute']:02d}'" for entry in entries)
+    lines = [
+        f"$action = New-ScheduledTaskAction -Execute '{exe.replace(chr(39), chr(39) * 2)}' -Argument 'tick'",
+        "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable"
+        " -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+        f"foreach ($t in @({times})) {{",
+        "  $trigger = New-ScheduledTaskTrigger -Daily -At $t",
+        f"  Register-ScheduledTask -TaskName ('{WAKE_TASK_PREFIX}' + $t.Replace(':', ''))"
+        " -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null",
+        "}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def wake_task_times():
+    """Time keys of the installed Windows wake tasks; None when the query fails."""
+    try:
+        result = _schtasks(["/Query", "/FO", "/CSV", "/NH"])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return set()
+    found = set()
+    for row in csv.reader(io.StringIO(result.stdout or "")):
+        if row and row[0].lstrip("\\").startswith(WAKE_TASK_PREFIX):
+            found.add(row[0].lstrip("\\")[len(WAKE_TASK_PREFIX):])
+    return found
+
+
+def sync_windows_wake(config):
+    """Align installed wake tasks with the config's fixed slots; True on change."""
+    entries = calendar_entries(config)
+    desired = _wake_time_keys(entries)
+    installed = wake_task_times()
+    if installed is None or installed == desired:
+        return False
+    if desired:
+        result = _run_powershell(build_wake_ps1(resolve_exe(), entries))
+        if result.returncode != 0:
+            die(
+                "PowerShell failed to register the wake tasks\n"
+                f"{(result.stderr or result.stdout or '').strip()}\n"
+                "fix: resolve the PowerShell error, then re-run: awewarm scheduler install"
+            )
+    for extra in sorted(installed - desired):
+        _schtasks(["/Delete", "/F", "/TN", WAKE_TASK_PREFIX + extra])
+    return True
 
 
 def build_service(exe):

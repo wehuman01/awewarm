@@ -222,6 +222,15 @@ def _prompt_fixed_settings(window_minutes=None):
     return fixed_at, "weekday" if days_choice == "1" else "every-day"
 
 
+def _prompt_wake_when_asleep():
+    """Offer wake-from-sleep for fixed slots where the OS supports it (None elsewhere)."""
+    if sys.platform == "darwin":
+        return click.confirm("Wake the Mac at these times even when it's asleep?", default=True)
+    if sys.platform == "win32":
+        return click.confirm("Wake the PC at these times even when it's asleep?", default=True)
+    return None  # Linux: nothing can wake a suspended machine
+
+
 def _maybe_expand_day_grid(entered_time, window_minutes):
     """Offer the full-day slot grid; a single entered time rarely covers a day.
 
@@ -277,7 +286,7 @@ def _interval_block():
     return {"graceSeconds": DEFAULT_GRACE_SECONDS, "jitterSeconds": DEFAULT_JITTER_SECONDS}
 
 
-def _account_connection(conn_id, finding, mode, fixed_at, days):
+def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep):
     provider = finding["provider"]
     window = dict(finding["builtinWindow"])
     auth_status = "valid" if finding["authFound"] else "unknown"
@@ -302,11 +311,12 @@ def _account_connection(conn_id, finding, mode, fixed_at, days):
             "mode": mode,
             "fixed": _fixed_block(fixed_at, days),
             "interval": _interval_block(),
+            "wakeWhenAsleep": wake_when_asleep,
         },
     }
 
 
-def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model, mode, window, fixed_at, days):
+def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model, mode, window, fixed_at, days, wake_when_asleep):
     return {
         "label": label,
         "kind": "subscription",
@@ -324,6 +334,7 @@ def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_
             "mode": mode,
             "fixed": _fixed_block(fixed_at, days),
             "interval": _interval_block(),
+            "wakeWhenAsleep": wake_when_asleep,
         },
     }
 
@@ -363,12 +374,14 @@ def _add_account_flow(config, state, finding, confirm_first=True):
     )
     mode_choice = _choice_prompt(mode_label, ["1", "2"] if verified else ["1"], "1")
     mode = "interval" if mode_choice == "2" else "fixed"
+    wake = None
     if mode == "fixed":
         fixed_at, days = _prompt_fixed_settings(finding["builtinWindow"].get("durationMinutes"))
+        wake = _prompt_wake_when_asleep()
     else:
         fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     conn_id = unique_connection_id(config, finding["label"])
-    conn = _account_connection(conn_id, finding, mode, fixed_at, days)
+    conn = _account_connection(conn_id, finding, mode, fixed_at, days, bool(wake))
     click.echo(f"\nTesting {finding['label']} warm-up (one minimal request)...")
     test = transport.send_activation(conn)
     if test["ok"]:
@@ -409,7 +422,7 @@ def _add_plan_flow():
 
     draft = _plan_connection(
         "draft", label, base_url, None, base_url, transport_kind, model,
-        "fixed", _unknown_window(), DEFAULT_FIXED_AT, "weekday",
+        "fixed", _unknown_window(), DEFAULT_FIXED_AT, "weekday", True,
     )
     click.echo("\nTesting endpoint...")
     result = transport.send_activation(draft, api_key)
@@ -430,6 +443,7 @@ def _add_plan_flow():
     window = _unknown_window()
     mode = "fixed"
     reset_at = None
+    wake = None
     fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     config = load_config()
     conn_id = unique_connection_id(config, label)
@@ -485,12 +499,13 @@ def _add_plan_flow():
         }
         click.echo(f"✓ Window recorded as {window_minutes} minutes — interval renewal unlocked")
         fixed_at, days = _prompt_fixed_settings(window_minutes)
+        wake = _prompt_wake_when_asleep()
 
     api_key_ref = keystore.store_api_key(conn_id, api_key)
     click.echo(f"✓ API key stored in {keystore.secrets_path()} (chmod 600)")
     config["connections"][conn_id] = _plan_connection(
         conn_id, label, base_url, api_key_ref, base_url, transport_kind, model,
-        mode, window, fixed_at, days,
+        mode, window, fixed_at, days, bool(wake),
     )
     save_config(config)
     if reset_at is not None:
@@ -649,12 +664,14 @@ def _show_settings(conn_id, conn):
     fixed = conn["schedule"].get("fixed") or {}
     window = conn["window"]
     duration = f"{window['durationMinutes']} minutes, {window['status']}" if window.get("durationMinutes") else "unknown"
+    wake = conn["schedule"].get("wakeWhenAsleep", True)
     click.echo(f"Settings for {conn_id}:")
     click.echo(f"  enabled: {'true' if conn.get('enabled', True) else 'false'}")
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
     click.echo(f"  window: {duration}")
-    click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed")
+    click.echo(f"  wake when asleep: {'true' if wake else 'false'} (macOS/Windows only; Linux cannot wake)")
+    click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed --no-wake")
 
 
 def _status_block(conn_id, conn, state, now, detailed):
@@ -817,7 +834,7 @@ Offers detected local accounts plus a manual subscription endpoint."""
     _config_add()
 
 
-def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key):
+def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     slots = []
@@ -826,7 +843,7 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
             slots = _slots_proc(times)
         except ValueError as exc:
             die(str(exc))
-    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key)):
+    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake)):
         _show_settings(conn_id, conn)
         return
     if api_key is not None:
@@ -851,6 +868,8 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         conn["schedule"]["mode"] = mode
     if enabled is not None:
         conn["enabled"] = enabled
+    if wake is not None:
+        conn["schedule"]["wakeWhenAsleep"] = wake
     if anchor_hhmm is not None:
         window = conn["window"]
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
@@ -915,7 +934,14 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         click.echo(f"Interval renewal is unlocked — switch modes with: awewarm config set {conn_id} --mode interval")
     if api_key is not None:
         click.echo(f"✓ API key for {conn_id} stored in {keystore.secrets_path()}")
-    if any(value is not None for value in (times, days, mode, enabled)):
+    if wake is not None:
+        if wake:
+            click.echo(f"✓ {conn_id} may wake a sleeping machine at its fixed slots")
+            if sys.platform not in ("darwin", "win32"):
+                click.echo("  note: this platform cannot wake a suspended machine — the flag has no effect here")
+        else:
+            click.echo(f"✓ {conn_id} will not wake a sleeping machine (missed slots catch up on next wake)")
+    if any(value is not None for value in (times, days, mode, enabled, wake)):
         _refresh_wake_after_edit()
 
 
@@ -929,11 +955,12 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
 @click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer interval activation until this time (today, or tomorrow if passed).")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
-def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key):
+@click.option("--wake/--no-wake", "wake", default=None, help="Let fixed slots wake a sleeping machine (macOS/Windows).")
+def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
-    _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key)
+    _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake)
 
 
 def _config_remove(connection):
@@ -1084,14 +1111,16 @@ Use --force to skip the prompt (for scripting).
 
 
 def _refresh_wake_after_edit():
-    """Keep the installed calendar wake in sync after schedule edits.
+    """Keep the installed wake schedule in sync after schedule edits.
 
-    Rewrites the launchd calendar entries when they drifted.
+    Rewrites the launchd calendar entries / Windows wake tasks when they
+    drifted.
     """
-    if sys.platform != "darwin" or not install.scheduler_installed():
+    if sys.platform not in ("darwin", "win32") or not install.scheduler_installed():
         return
     if install.refresh_wake(load_config()):
-        click.echo("✓ Calendar wake updated (launchd)")
+        where = "launchd" if sys.platform == "darwin" else "Task Scheduler"
+        click.echo(f"✓ Wake schedule updated ({where})")
 
 
 def _legacy_pmset_cleanup():
@@ -1117,11 +1146,17 @@ def _legacy_pmset_cleanup():
 def _scheduler_install():
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
+    entries = install.calendar_entries(load_config())
     if sys.platform == "darwin":
-        entries = install.calendar_entries(load_config())
         if entries:
             times = ", ".join(f"{e['Hour']:02d}:{e['Minute']:02d}" for e in entries)
             click.echo(f"  Calendar wake at {times} — fires with the lid closed, no sudo")
+    elif sys.platform == "win32":
+        if entries:
+            times = ", ".join(f"{e['Hour']:02d}:{e['Minute']:02d}" for e in entries)
+            click.echo(f"  Wake tasks at {times} — fire with the lid closed (Task Scheduler)")
+    elif sys.platform.startswith("linux"):
+        click.echo("  note: Linux cannot wake a suspended machine — missed slots catch up on the next wake")
     click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
     _legacy_pmset_cleanup()
 
@@ -1221,7 +1256,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
     if user_confirm:
         if not duration or duration <= 0:
             die("--user-confirm needs --duration <minutes> (the window length you verified)")
-        _config_set(connection, None, None, None, None, None, None, duration, None)
+        _config_set(connection, None, None, None, None, None, None, duration, None, None)
         return
     if confirm:
         _activate_now(connection, reset_due=True)
@@ -1250,7 +1285,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
 def legacy_enable(connection, mode):
     """Legacy alias: config set <id> --on [--mode M]."""
     _moved(f"enable {connection}", f"config set {connection} --on")
-    _config_set(connection, None, None, mode, True, None, None, None, None)
+    _config_set(connection, None, None, mode, True, None, None, None, None, None)
 
 
 @cli.command("anchor", hidden=True)
@@ -1259,7 +1294,7 @@ def legacy_enable(connection, mode):
 def legacy_anchor(connection, reset_hhmm):
     """Legacy alias: config set <id> --anchor HH:MM."""
     _moved(f"anchor {connection}", f"config set {connection} --anchor {reset_hhmm}")
-    _config_set(connection, None, None, None, None, reset_hhmm, None, None, None)
+    _config_set(connection, None, None, None, None, reset_hhmm, None, None, None, None)
 
 
 @cli.command("disable", hidden=True)
@@ -1267,7 +1302,7 @@ def legacy_anchor(connection, reset_hhmm):
 def legacy_disable(connection):
     """Legacy alias: config set <id> --off."""
     _moved(f"disable {connection}", f"config set {connection} --off")
-    _config_set(connection, None, None, None, False, None, None, None, None)
+    _config_set(connection, None, None, None, False, None, None, None, None, None)
 
 
 @cli.command("times", hidden=True)
@@ -1276,7 +1311,7 @@ def legacy_disable(connection):
 def legacy_times(connection, times):
     """Legacy alias: config set <id> --times HH:MM...."""
     _moved(f"times {connection}", f"config set {connection} --times HH:MM...")
-    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None, None)
+    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None, None, None)
 
 
 @cli.command("remove", hidden=True)

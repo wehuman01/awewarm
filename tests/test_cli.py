@@ -156,6 +156,7 @@ class ConfigAddPlanTests(IsolatedTestCase):
             "",  # reset anchor -> defaults to the entered time
             "",  # grid accept -> full-day grid from 06:35
             "",  # days -> default every-day (grid accepted)
+            "",  # wake when asleep -> default yes (macOS prompt)
         ]
     ) + "\n"
 
@@ -186,7 +187,7 @@ class ConfigAddPlanTests(IsolatedTestCase):
     def test_add_plan_accepts_multiple_fixed_times(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         multi = self.INPUT.replace(
-            "glm-4.7\n\n\n\n\n\n\n", "glm-4.7\n\n\n16:45, 06:35, 11:40\n\n"
+            "glm-4.7\n\n\n\n\n\n\n\n", "glm-4.7\n\n\n16:45, 06:35, 11:40\n\n\n"
         )
         result = invoke(["config", "add"], input=multi)
         self.assertEqual(result.exit_code, 0, output_of(result))
@@ -222,7 +223,7 @@ class ConfigAddMenuTests(IsolatedTestCase):
     def test_menu_endpoint_choice_runs_plan_flow(self, send, discover_accounts):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding()]
-        endpoint_input = "\n".join(["2", "GLM", "1", "http://x/v4", "k", "glm-4.7", "", "", "", "", "", ""]) + "\n"
+        endpoint_input = "\n".join(["2", "GLM", "1", "http://x/v4", "k", "glm-4.7", "", "", "", "", "", "", ""]) + "\n"
         result = invoke(["config", "add"], input=endpoint_input)
         self.assertEqual(result.exit_code, 0, output_of(result))
         (conn_id, conn), = cfg.load_config()["connections"].items()
@@ -235,7 +236,7 @@ class ConfigAddMenuTests(IsolatedTestCase):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding()]
         write_config(account_connection(mode="fixed"))  # label "Claude Code"
-        result = invoke(["config", "add"], input="2\nGLM\n1\nhttp://x/v4\nk\nglm-4.7\n\n\n\n\n\n\n")
+        result = invoke(["config", "add"], input="2\nGLM\n1\nhttp://x/v4\nk\nglm-4.7\n\n\n\n\n\n\n\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("already managed", result.output)
 
@@ -244,10 +245,75 @@ class ConfigAddMenuTests(IsolatedTestCase):
     def test_unauthenticated_account_gets_login_hint(self, send, discover_accounts):
         send.return_value = {"ok": True, "detail": "ok"}
         discover_accounts.return_value = [claude_finding(authFound=False)]
-        result = invoke(["config", "add"], input="GLM\n1\nhttp://x/v4\nk\nm\n\n\n\n\n\n\n")
+        result = invoke(["config", "add"], input="GLM\n1\nhttp://x/v4\nk\nm\n\n\n\n\n\n\n\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("claude auth login", result.output)
         self.assertIn("adding a subscription endpoint", result.output)
+
+
+class WakePromptTests(IsolatedTestCase):
+    @mock.patch("awewarm.cli.sys.platform", "darwin")
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
+    @mock.patch("awewarm.transport.send_activation")
+    def test_plan_fixed_wake_confirm_default_yes(self, send, _discover):
+        send.return_value = {"ok": True, "detail": "ok"}
+        # mode 1 / window / times / reset / grid declined / days / wake default
+        result = invoke(["config", "add"], input=(
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\n\n"
+        ))
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["glm"]
+        self.assertTrue(conn["schedule"]["wakeWhenAsleep"])
+
+    @mock.patch("awewarm.cli.sys.platform", "darwin")
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
+    @mock.patch("awewarm.transport.send_activation")
+    def test_plan_fixed_wake_declined_records_false(self, send, _discover):
+        send.return_value = {"ok": True, "detail": "ok"}
+        result = invoke(["config", "add"], input=(
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\nn\n"
+        ))
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["glm"]
+        self.assertFalse(conn["schedule"]["wakeWhenAsleep"])
+
+    @mock.patch("awewarm.cli.sys.platform", "linux")
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
+    @mock.patch("awewarm.transport.send_activation")
+    def test_linux_skips_wake_prompt_and_records_false(self, send, _discover):
+        send.return_value = {"ok": True, "detail": "ok"}
+        # no wake input line at all — Linux must not ask
+        result = invoke(["config", "add"], input=(
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\n"
+        ))
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertNotIn("asleep?", result.output)
+        conn = cfg.load_config()["connections"]["glm"]
+        self.assertFalse(conn["schedule"]["wakeWhenAsleep"])
+
+    def test_config_set_wake_flag_round_trip(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main", "--no-wake"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertFalse(conn["schedule"]["wakeWhenAsleep"])
+        result = invoke(["config", "set", "claude-code-main", "--wake"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertTrue(conn["schedule"]["wakeWhenAsleep"])
+
+    @mock.patch("awewarm.cli.sys.platform", "linux")
+    def test_config_set_wake_notes_no_effect_on_linux(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main", "--wake"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("cannot wake", result.output)
+
+    def test_settings_show_wake_line(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("wake when asleep:", result.output)
 
 
 class RunTests(IsolatedTestCase):
@@ -373,8 +439,8 @@ class AccountAddTestTests(IsolatedTestCase):
     def test_account_test_failure_decline_aborts(self, send, discover_accounts):
         send.return_value = {"ok": False, "detail": "claude exited 1"}
         discover_accounts.return_value = [claude_finding()]
-        # menu 1 / mode / times / reset / grid (accept) / days / save anyway? no
-        result = invoke(["config", "add"], input="1\n\n\n\n\n\nn\n")
+        # menu 1 / mode / times / reset / grid (accept) / days / wake / save anyway? no
+        result = invoke(["config", "add"], input="1\n\n\n\n\n\n\nn\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("Activation test failed", result.output)
         self.assertIn("aborted", output_of(result))
@@ -386,8 +452,8 @@ class AccountAddTestTests(IsolatedTestCase):
     def test_account_test_failure_accept_saves(self, send, discover_accounts):
         send.return_value = {"ok": False, "detail": "claude exited 1"}
         discover_accounts.return_value = [claude_finding()]
-        # menu 1 / mode / times / reset / grid (accept) / days / save anyway? yes / window open? no
-        result = invoke(["config", "add"], input="1\n\n\n\n\n\ny\n\n")
+        # menu 1 / mode / times / reset / grid (accept) / days / wake / save anyway? yes / window open? no
+        result = invoke(["config", "add"], input="1\n\n\n\n\n\n\ny\n\n")
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("Activation test failed", result.output)
         conn = cfg.load_config()["connections"]["claude-code"]
@@ -484,7 +550,7 @@ class ApiKeySetTests(IsolatedTestCase):
                 mock.patch("awewarm.discover.discover_accounts", return_value=[]):
             result = invoke(["config", "add"], input=(
                 "GLM Plan\n1\nhttps://open.bigmodel.cn/api/coding/paas/v4\n"
-                "sk-pasted-key\nglm-4.7\n1\n\n06:00\n\nn\n1\n"
+                "sk-pasted-key\nglm-4.7\n1\n\n06:00\n\nn\n1\n\n"
             ))
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm-plan"]
@@ -993,7 +1059,7 @@ class DayGridTests(IsolatedTestCase):
         # name/protocol/url/key/model / mode 1 / window 300 / times 01:14 /
         # reset skipped (entered time anchors) / grid accept / days default
         result = invoke(["config", "add"], input=(
-            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n300\n01:14\n\n\n\n"
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n300\n01:14\n\n\n\n\n"
         ))
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm"]
@@ -1011,7 +1077,7 @@ class DayGridTests(IsolatedTestCase):
         send.return_value = {"ok": True, "detail": "ok"}
         # window left empty -> default 300; grid declined keeps the entered time
         result = invoke(["config", "add"], input=(
-            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\n"
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\n\n"
         ))
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm"]
