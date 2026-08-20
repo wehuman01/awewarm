@@ -14,14 +14,18 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Verify tag matches pyproject version
+      - name: Verify tag matches package version
         run: |
-          import sys, tomllib
+          import re, sys
           from pathlib import Path
           tag = "${{ github.ref_name }}"
-          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          text = Path("src/awewarm/__init__.py").read_text()
+          match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+          if not match:
+              sys.exit("__version__ not found in src/awewarm/__init__.py")
+          version = match.group(1)
           if tag != f"v{version}":
-              sys.exit(f"tag {tag} does not match pyproject version {version}")
+              sys.exit(f"tag {tag} does not match package version {version}")
         shell: python
       - run: pip install -e .
       - run: python -m unittest discover -s tests
