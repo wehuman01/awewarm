@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from . import __version__, discover, install, keystore, schedule, transport
+from . import __version__, discover, install, keystore, remote, schedule, transport
 from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
     DEFAULT_CATCHUP_ATTEMPTS,
@@ -556,6 +556,8 @@ def _tick():
         conn = config["connections"][conn_id]
         if not conn.get("enabled", True):
             continue
+        if conn.get("location") == "remote":
+            continue  # an awewarm serve process owns its schedule now
         errors = connection_errors(conn, conn_id)
         if errors:
             log_event(f"skipping {conn_id}: {errors[0]}")
@@ -575,13 +577,14 @@ def _tick():
                 continue
             reason = action["reason"]
             slot_note = f", slot {action['slot']}" if action.get("slot") else ""
-            node = _node_for(action, now)
+            node = schedule.node_for(action, now)
             result = _execute_activation(conn, conn_id, cs, now, reason, action.get("slot"), node=node)
             mark = "✓" if result["ok"] else "✗"
             suffix = f" — {result['detail']}" if result["detail"] else ""
             click.echo(f"{mark} activated {conn_id} ({reason}{slot_note}){suffix}")
             activated.append(result["ok"])
         schedule.prune_state(cs, now)
+    _maybe_sync_remote(config, state)
     save_state(state)
     if activated or skipped:
         click.echo(f"{sum(activated)} activated, {len(activated) - sum(activated)} failed, {skipped} slots skipped")
@@ -690,30 +693,146 @@ def _ensure_catchup(conn):
     return conn.setdefault("catchup", {})
 
 
-def _node_for(action, now):
-    """Scheduled node an activate action belongs to; manual fires pass None."""
-    reason = action.get("reason")
-    if reason == "fixed":
-        return {
-            "key": f"{action['slotAt'].strftime('%Y-%m-%d')} {action['slot']}",
-            "dueAt": action["slotAt"],
-            "slot": action["slot"],
-        }
-    if reason == "interval":
-        due = action.get("dueAt") or now
-        return {"key": f"interval {schedule.iso(due)}", "dueAt": due}
-    if reason == "first-anchor":
-        return {"key": "first-anchor", "dueAt": None}
-    return None
+# --- remote delegation: the local machine stays the owner of every secret ---
 
 
-def _show_settings(conn_id, conn):
+REMOTE_SYNC_EVERY = timedelta(minutes=30)
+
+
+def _push_timezone(config):
+    """IANA name of this machine's zone — fixed slots are wall-clock times."""
+    name = timezone_name(config)
+    if name:
+        return name
+    tz = datetime.now().astimezone().tzinfo
+    return getattr(tz, "key", "UTC")
+
+
+def _require_api_key(conn, conn_id):
+    api_key = _resolve_api_key(conn)
+    if api_key is None:
+        raise remote.RemoteError(
+            f"{conn_id}: no API key stored locally\n"
+            f"  fix: awewarm config set {conn_id} --api-key <key>"
+        )
+    return api_key
+
+
+def _sync_remote(config, state, force_ids=()):
+    """Bring the server's copy back in line with local truth.
+
+    Re-pushes edited or missing connections (their schedule changed, so the
+    server state resets), and re-sends keys the server lost to a restart
+    (its state on disk stays — only the RAM keyring was wiped). Returns
+    (pushed, rekeyed) connection ids.
+    """
+    url = remote.remote_url(config)
+    token = remote.load_token()
+    view = remote.ensure_session(config)
+    have = view.get("connections") or {}
+    pending = state.get("pendingPush") or {}
+    tz = _push_timezone(config)
+    pushed, rekeyed, keys = [], [], {}
+    for conn_id, conn in sorted(config["connections"].items()):
+        if conn.get("location") != "remote":
+            continue
+        server = have.get(conn_id)
+        if conn_id in force_ids or conn_id in pending or server is None:
+            remote.push_connection(url, token, conn_id, conn, _require_api_key(conn, conn_id), tz)
+            pending.pop(conn_id, None)
+            pushed.append(conn_id)
+        elif server.get("keyMissing"):
+            keys[conn_id] = _require_api_key(conn, conn_id)
+            rekeyed.append(conn_id)
+    if keys:
+        remote.push_keys(url, token, keys)
+    if state.get("pendingPush") != pending:
+        state["pendingPush"] = pending
+    return pushed, rekeyed
+
+
+def _maybe_sync_remote(config, state):
+    """Heal the server's RAM secrets while this machine is online, throttled.
+
+    The server holds its token and API keys in memory only; after it restarts
+    this is what re-claims and re-keys it. Runs from the local tick at most
+    twice an hour; a failed attempt just waits for the next window.
+    """
+    if not any(c.get("location") == "remote" for c in config["connections"].values()):
+        return
+    if not remote.remote_url(config):
+        return
+    now = datetime.now().astimezone()
+    last = schedule.parse_ts(state.get("lastRemoteSyncAt"))
+    if last is not None and now - last < REMOTE_SYNC_EVERY:
+        return
+    state["lastRemoteSyncAt"] = schedule.iso(now)
+    try:
+        _sync_remote(config, state)
+    except remote.RemoteError as exc:
+        log_event(f"remote sync skipped: {exc}")
+
+
+def _delegate_remote(config, conn_id, conn):
+    """Hand one connection to the remote server (`config set <id> --remote`).
+
+    The flag only lands after the server accepted the push — otherwise neither
+    side would tick the connection.
+    """
+    if conn.get("location") == "remote":
+        return
+    if conn.get("kind") != "subscription":
+        die(
+            f"{conn_id} is a local CLI account — its login lives on this machine\n"
+            "  and cannot run on a server; only subscription connections can be remote"
+        )
+    if not remote.remote_url(config):
+        die("no remote server connected\nfix: awewarm remote connect <url>")
+    api_key = _resolve_api_key(conn)
+    if api_key is None:
+        die(f"{conn_id} has no stored API key\nfix: awewarm config set {conn_id} --api-key <key>")
+    try:
+        remote.ensure_session(config)
+        remote.push_connection(
+            remote.remote_url(config), remote.load_token(), conn_id, conn, api_key,
+            _push_timezone(config),
+        )
+    except remote.RemoteError as exc:
+        die(f"could not hand {conn_id} to the remote server — it stays local:\n{exc}")
+    conn["location"] = "remote"
+    click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")
+
+
+def _takeback_remote(config, state, conn_id, conn):
+    """Resume local scheduling (`config set <id> --local`), pulling server truth."""
+    if conn.get("location") != "remote":
+        return
+    url = remote.remote_url(config)
+    try:
+        view = remote.ensure_session(config)
+        server_state = (view.get("connections") or {}).get(conn_id, {}).get("state")
+        remote.delete_connection(url, remote.load_token(), conn_id)
+    except remote.RemoteError as exc:
+        die(f"could not take {conn_id} back — it stays delegated:\n{exc}")
+    if server_state:
+        local = conn_state(state, conn_id)
+        local.clear()
+        local.update(server_state)
+    conn.pop("location", None)
+    (state.get("pendingPush") or {}).pop(conn_id, None)
+    click.echo(f"✓ {conn_id} back on local scheduling (server state pulled)")
+
+
+def _show_settings(config, conn_id, conn):
     fixed = conn["schedule"].get("fixed") or {}
     window = conn["window"]
     duration = f"{window['durationMinutes']} minutes, {window['status']}" if window.get("durationMinutes") else "unknown"
     wake = conn["schedule"].get("wakeWhenAsleep", True)
+    location = conn.get("location", "local")
+    where = f" ({remote.remote_url(config)})" if location == "remote" else ""
     click.echo(f"Settings for {conn_id}:")
     click.echo(f"  enabled: {'true' if conn.get('enabled', True) else 'false'}")
+    click.echo(f"  location: {location}{where}")
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
     click.echo(f"  window: {duration}")
@@ -908,7 +1027,7 @@ Offers detected local accounts plus a manual subscription endpoint."""
 
 
 def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-                catchup_minutes=None, catchup_attempts=None, degrade_after_nodes=None):
+                catchup_minutes=None, catchup_attempts=None, degrade_after_nodes=None, location=None):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     slots = []
@@ -919,10 +1038,16 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
             die(str(exc))
     if all(value is None for value in (
         times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-        catchup_minutes, catchup_attempts, degrade_after_nodes,
+        catchup_minutes, catchup_attempts, degrade_after_nodes, location,
     )):
-        _show_settings(conn_id, conn)
+        _show_settings(config, conn_id, conn)
         return
+    if conn.get("location") == "remote" and anchor_hhmm is not None:
+        die(f"{conn_id} is delegated — its state lives on the server\n"
+            f"  fix: take it back first: awewarm config set {conn_id} --local")
+    if conn.get("location") == "remote" and start_hhmm is not None:
+        die(f"{conn_id} is delegated — its state lives on the server\n"
+            f"  fix: take it back first: awewarm config set {conn_id} --local")
     if api_key is not None:
         if not api_key.strip() or "\n" in api_key:
             die("--api-key must be a single non-empty line")
@@ -1008,6 +1133,12 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
             "durationMinutes": window_minutes,
             "evidence": "user-confirmed",
         }
+
+    if location is not None:
+        if location:
+            _delegate_remote(config, conn_id, conn)
+        else:
+            _takeback_remote(config, state, conn_id, conn)
 
     save_config(config)
     if state_changed:
