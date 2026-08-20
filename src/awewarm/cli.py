@@ -627,7 +627,7 @@ def _fire_all():
             click.echo(f"skipping {conn_id}: {errors[0]}")
             continue
         cs = conn_state(state, conn_id)
-        result = _execute_activation(conn, conn_id, cs, now, "manual")
+        result = _execute_activation(conn, conn_id, cs, now, "manual", reset_due=False)
         mark = "✓" if result["ok"] else "✗"
         suffix = f" — {result['detail']}" if result["detail"] else ""
         click.echo(f"{mark} activated {conn_id}{suffix}")
@@ -696,6 +696,10 @@ def _status_block(conn_id, conn, state, now, detailed):
             click.echo(f"  Fixed times: {times_line}")
     last = schedule.parse_ts(cs.get("lastActivationAt"))
     click.echo(f"  Last activation: {_fmt_moment(last, now)}")
+    if cs.get("lastResult") == "failure":
+        attempted = schedule.parse_ts(cs.get("lastAttemptAt"))
+        detail = cs.get("lastError") or "unknown error"
+        click.echo(f"  Last result: failure ({_fmt_moment(attempted, now)}) — {detail}")
     if not enabled:
         click.echo("  Next due: none (disabled)")
         return

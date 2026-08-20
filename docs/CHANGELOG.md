@@ -18,7 +18,7 @@ The launchd `StartCalendarInterval` entries cover every fixed slot at its exact 
 
 ## v0.3.6
 
-`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, retunes `status` to show the active schedule line, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
+`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, retunes `status` to show the active schedule line and the last activation failure, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
 
 ### Full-day slot grid cap removed
 
@@ -31,6 +31,10 @@ Adding a plan and choosing fixed mode now asks for the window duration first (de
 ### Status shows the active schedule
 
 `awewarm status` now prints the schedule line that actually drives the connection. Fixed mode shows `Times: 06:19, 11:24, 16:29, 21:34 (every-day)` — the window said nothing about when fixed mode fires. Interval mode keeps `Window: 300 minutes, user-confirmed`, since the window is its renewal clock. The detailed view (`status <id>`) still shows the other one, with evidence. Disabled connections print `Next due: none (disabled)` instead of a moment the tick would never fire.
+
+### Status shows the last failure
+
+`status` used to print only the last successful activation, so a connection failing every retry still read as healthy. When the most recent attempt failed, the block now adds `Last result: failure (<time>) — <error>` right under `Last activation` — in both the summary and the detailed view.
 
 ### Tick self-heal can no longer abort the tick
 

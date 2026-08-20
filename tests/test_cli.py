@@ -557,6 +557,20 @@ class StatusTests(IsolatedTestCase):
         self.assertIn("Times: 06:35 (weekday)", result.output)
         self.assertNotIn("Window:", result.output)
         self.assertIn("Scheduler: not installed", result.output)
+        self.assertNotIn("Last result:", result.output)
+
+    def test_status_shows_last_failure_detail(self):
+        write_config(account_connection(mode="fixed"))
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["lastResult"] = "failure"
+        cs["lastError"] = "HTTP 401 unauthorized"
+        cs["lastAttemptAt"] = "2026-08-19T06:40:00+08:00"
+        cfg.save_state(state)
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Last result: failure (2026-08-19 06:40)", result.output)
+        self.assertIn("— HTTP 401 unauthorized", result.output)
 
     def test_status_fixed_detail_keeps_window(self):
         write_config(account_connection(mode="fixed"))
