@@ -18,7 +18,31 @@ The launchd `StartCalendarInterval` entries cover every fixed slot at its exact 
 
 ## v0.3.6
 
-`v0.3.6` replaces the attempt-count failure pause with a node-based health ladder shared by both modes (`connected → failing → degraded → auto-disabled`), unifies and makes catch-up configurable, shows the last activation failure in `status`, removes the grid generator's 8-slot cap so short-window fixed grids span the full day, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, brings Windows wake-from-sleep to parity with macOS and prompts for it at setup, retunes `status` to show the active schedule line, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
+`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, retunes `status` to show the active schedule line, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
+
+### Full-day slot grid cap removed
+
+Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so windows under ~3 h were silently cut off mid-day (a 120-min plan got 16.6 h of coverage, not 24); the cap is gone and short-window grids now span the full day.
+
+### Status shows the active schedule
+
+`awewarm status` now prints the schedule line that actually drives the connection. Fixed mode shows `Times: 06:19, 11:24, 16:29, 21:34 (every-day)` — the window said nothing about when fixed mode fires. Interval mode keeps `Window: 300 minutes, user-confirmed`, since the window is its renewal clock. The detailed view (`status <id>`) still shows the other one, with evidence. Disabled connections print `Next due: none (disabled)` instead of a moment the tick would never fire.
+
+### Tick self-heal can no longer abort the tick
+
+The tick's opening self-heal pass (rewrites a stale scheduler job) called paths that `die()` on failure — e.g. `awewarm` missing from launchd's sparse PATH, or a failed `launchctl bootstrap`. `die()` raises `SystemExit`, which the pass's error filter didn't catch, so a failed heal aborted the whole tick and skipped that minute's due activations. `SystemExit` is now caught alongside the I/O errors, restoring the intended behavior: the old job keeps running, the tick proceeds, and the next tick retries the heal.
+
+### Interval start gate (`--start`)
+
+`config set <id> --start HH:MM` defers interval activation: no request fires before that moment — not the first anchor of a fresh connection, not a renewal whose due has passed, and not a stale `nextDueAt` left over from mode switches. The time resolves to the next occurrence (today when still ahead, otherwise tomorrow), the first tick past it opens the chain, and the gate clears on the first success. `--anchor` clears it too, since anchoring seeds the whole chain explicitly. `--start` requires interval mode (the effective mode after any `--mode` flag in the same call), matching `--anchor`'s strictness; `status` shows the deferred moment as the next due.
+
+### Dynamic versioning
+
+`pyproject.toml` now uses `setuptools` dynamic versioning (`version = {attr = "awewarm.__version__"}`) instead of a static `version` string, and `__version__` is exposed from `awewarm.__init__`.
+
+## v0.3.7
+
+`v0.3.7` replaces the attempt-count failure pause with a node-based health ladder shared by both modes (`connected → failing → degraded → auto-disabled`), unifies and makes catch-up configurable, shows the last activation failure in `status`, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, brings Windows wake-from-sleep to parity with macOS and prompts for it at setup, and moves tuning knobs to a layered top-level `settings` block.
 
 ### Failure handling rebuilt as a health ladder
 
@@ -28,39 +52,19 @@ Both modes now share one ladder. A failed node — a fixed slot or an interval r
 
 config.json gains a top-level `settings` object holding the catch-up/degrade knobs (`catchupMinutes`, `catchupAttempts`, `degradeAfterNodes`), always written with its effective values so the file documents the defaults at a glance. `awewarm config settings` shows or changes them. A connection can override any knob in its own `settings` — set with the existing `config set <id> --catchup-*` / `--degrade-after-nodes` flags — and anything it leaves out falls back to the top level, the same layering the schedule fields use. Overrides persist only while they differ from the global block, so retuning a global value absorbs a matching override. Knob keys written flat on a connection by earlier v0.3.6 builds migrate into that connection's `settings` on first load.
 
-### Full-day slot grid cap removed
-
-Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so windows under ~3 h were silently cut off mid-day (a 120-min plan got 16.6 h of coverage, not 24); the cap is gone and short-window grids now span the full day.
-
 ### Setup asks for the window in fixed mode
 
 Adding a plan and choosing fixed mode now asks for the window duration first (default 300 — most coding plans use 5-hour windows). The answer drives the full-day grid spacing, gets the grid offered right away instead of a single time, and is recorded as a user-confirmed window that unlocks interval mode. Local accounts keep using their builtin window knowledge — the question only appears where nothing else knows the duration.
 
-### Status shows the active schedule
-
-`awewarm status` now prints the schedule line that actually drives the connection. Fixed mode shows `Times: 06:19, 11:24, 16:29, 21:34 (every-day)` — the window said nothing about when fixed mode fires. Interval mode keeps `Window: 300 minutes, user-confirmed`, since the window is its renewal clock. The detailed view (`status <id>`) still shows the other one, with evidence. Disabled connections print `Next due: none (disabled)` instead of a moment the tick would never fire.
-
 ### Status shows the last failure
 
 `status` used to print only the last successful activation, so a connection failing every retry still read as healthy. When the most recent attempt failed, the block now adds `Last result: failure (<time>) — <error>` right under `Last activation` — in both the summary and the detailed view.
-
-### Tick self-heal can no longer abort the tick
-
-The tick's opening self-heal pass (rewrites a stale scheduler job) called paths that `die()` on failure — e.g. `awewarm` missing from launchd's sparse PATH, or a failed `launchctl bootstrap`. `die()` raises `SystemExit`, which the pass's error filter didn't catch, so a failed heal aborted the whole tick and skipped that minute's due activations. `SystemExit` is now caught alongside the I/O errors, restoring the intended behavior: the old job keeps running, the tick proceeds, and the next tick retries the heal.
 
 ### Wake-from-sleep: Windows parity, prompted at setup
 
 `wakeWhenAsleep` now does something on Windows too. `scheduler install` registers one extra Task Scheduler task per fixed slot — a daily trigger at the slot time with *Wake to run* enabled, running `awewarm tick` — the same shape as the macOS launchd calendar entries (`schtasks.exe` cannot set the flag, so registration goes through PowerShell's `Register-ScheduledTask`). The per-minute tick itself never wakes the machine; only slot times do. Uninstall removes the tasks, config edits refresh them, and the tick's self-heal repairs drift, all mirroring the launchd lifecycle.
 
 The add flows now ask whether fixed slots may wake a sleeping machine on macOS and Windows (default yes); `config set <id> --wake/--no-wake` changes it later, `config set` with no flags shows it, and a wake-affecting edit refreshes the installed entries/tasks immediately. Linux cannot wake a suspended machine at all: the setup flow never asks, new connections record `wakeWhenAsleep: false`, `--wake` there prints a no-effect note, and `scheduler install` says missed slots catch up after the next wake.
-
-### Interval start gate (`--start`)
-
-`config set <id> --start HH:MM` defers interval activation: no request fires before that moment — not the first anchor of a fresh connection, not a renewal whose due has passed, and not a stale `nextDueAt` left over from mode switches. The time resolves to the next occurrence (today when still ahead, otherwise tomorrow), the first tick past it opens the chain, and the gate clears on the first success. `--anchor` clears it too, since anchoring seeds the whole chain explicitly. `--start` requires interval mode (the effective mode after any `--mode` flag in the same call), matching `--anchor`'s strictness; `status` shows the deferred moment as the next due.
-
-### Dynamic versioning
-
-`pyproject.toml` now uses `setuptools` dynamic versioning (`version = {attr = "awewarm.__version__"}`) instead of a static `version` string, and `__version__` is exposed from `awewarm.__init__`.
 
 ## v0.3.1
 
