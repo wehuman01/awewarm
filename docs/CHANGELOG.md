@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.4.1
+
 `remote connect` now asks for confirmation before pairing over plain `http://` with a non-local host — the pairing token and any delegated API keys would otherwise cross the network unencrypted. Loopback, private-range, and `.local` addresses do not prompt; https never does. The README's remote-server section also documents the claim model explicitly: an unclaimed server trusts the first token that reaches it, so keep the URL private or pin one ahead of time with `serve --token`.
 
 The delegation server caps each activation request at 15 seconds (the local CLI keeps its 60). The server's tick and `run` hold its lock while sending, so a dead endpoint could previously queue every API call behind retries for minutes; a short per-request timeout bounds that. Delegated connections are always HTTP subscriptions, so the tighter cap costs nothing in practice.
