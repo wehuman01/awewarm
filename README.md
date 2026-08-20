@@ -123,6 +123,26 @@ A manual `run <id>` never shifts the renewal chain — the next due moment stays
 
 **Example** — an always-on machine you want warm around the clock, nights and weekends included: no wake machinery needed, renewal just keeps rolling.
 
+### Quick Templates
+
+Common scheduling patterns to get started:
+
+```bash
+# Standard workday (morning + afternoon)
+awewarm config set <id> --times 06:00,11:05,16:10
+
+# With evening overtime
+awewarm config set <id> --times 06:00,11:05,16:10,21:15
+
+# Weekday only
+awewarm config set <id> --times 08:00,13:05 --days weekday
+
+# Interval (verified 5h window)
+awewarm config set <id> --mode interval --window 300 --anchor 11:05
+```
+
+All fixed-time slots above are 5 h 5 min apart — the subscription window (5 h) plus a 5 min buffer for scheduling imprecision. Each slot fires once and opens a fresh window. With four slots (`06:00, 11:05, 16:10, 21:15`) you get coverage across the whole day: morning, afternoon, evening, and late night for overtime. Three slots (`06:00, 11:05, 16:10`) cover a standard workday. `--days weekday` limits fires to weekdays. Two-slot chains work well for half-day or intermittent use.
+
 ### When requests fail — the health ladder
 
 Both modes share one ladder: `connected → failing → degraded → auto-disabled`.

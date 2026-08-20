@@ -82,6 +82,26 @@ Times are HH:MM (comma- or space-separated), sorted and de-duplicated on save. S
 
 **Respect explicit irregularity (confirm first)**: if the user clearly intends custom spacing (e.g., "05:50, 10:55, 16:00, 21:05"), show the final list to the user, wait for confirmation, then pass the times through as-is — do not re-space them.
 
+### Quick Templates
+
+Common scheduling patterns as starting points.
+
+```bash
+# Standard workday (morning + afternoon)
+awewarm config set <id> --times 06:00,11:05,16:10
+
+# With evening overtime
+awewarm config set <id> --times 06:00,11:05,16:10,21:15
+
+# Weekday only
+awewarm config set <id> --times 08:00,13:05 --days weekday
+
+# Interval (verified 5h window)
+awewarm config set <id> --mode interval --window 300 --anchor 11:05
+```
+
+Slots are 5 h 5 min apart — the subscription window (5 h) plus a 5 min buffer. Each slot fires once and opens a fresh window. With `06:00,11:05,16:10,21:15` you get morning, afternoon, evening, and late-night coverage; three slots (`06:00,11:05,16:10`) cover a standard workday. `--days weekday` limits fires to weekdays. Two-slot chains are fine for half-day or intermittent use.
+
 ### Switch mode / pause / resume
 
 ```bash

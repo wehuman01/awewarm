@@ -29,7 +29,7 @@
 awewarm 管理两类连接：
 
 - **账号** —— 本机的 `claude` / `codex` CLI 登录。awewarm 复用它们的登录态，发送一条最小的无头请求（`Reply with exactly: ok`），不保存任何凭据。
-- **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + API key）。API key 存入 `~/.config/awewarm/secrets.json`（权限 600），也可以用环境变量引用、不落盘。
+- **订阅套餐** —— 任何 OpenAI Chat / OpenAI Responses / Anthropic 兼容的 endpoint（base URL + API key）。API key 存入 `~/.config/awewarm/secrets.json`（权限 600），供后台调度器随时读取。
 
 调度分两种模式：`fixed` / `interval`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
 
@@ -121,15 +121,51 @@ awewarm config set my-plan --mode interval # 3. 滚动续期
 
 手动 `run <id>` 不会移动续期链 —— 下次到期时刻保持原计划不变；加 `--reset-due` 才从本次请求重新起算。
 
-**案例** —— 一台常开的机器，希望夜里和周末也持续保温。连续失败 3 次后续期会自动暂停（status 显示 `degraded`），下次成功即恢复。
+**案例** —— 一台常开的机器，希望夜里和周末也持续保温。
 
-### 睡眠与唤醒
+### 快速模板
 
-- **macOS**：`scheduler install` 会在 launchd agent 里为每个 fixed 时间点写一条 `StartCalendarInterval` 日历条目 —— 合盖、深睡都能被准时唤醒并执行 tick，无需 sudo。改时间/模式立即同步，首个 tick 还会自动修复漂移。
-- **Windows**：与 macOS 同构 —— 每个时间点注册一个带「唤醒计算机以运行任务」的日触发任务（通过 PowerShell `Register-ScheduledTask`，`schtasks.exe` 设不了该标志）。每分钟的 tick 任务本身**不**带唤醒 —— 否则机器永远睡不着；只有时间点会唤醒。
-- **Linux**：systemd 无法唤醒挂起的机器 —— 添加流程不询问，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
+常用调度模式速查：
 
-macOS/Windows 的添加流程都会询问「是否允许在睡眠时唤醒以执行这些时间点」（默认允许）；之后用 `awewarm config set <id> --wake/--no-wake` 切换。连接级 `wakeWhenAsleep: false` 表示该连接的时间点不注册唤醒。
+```bash
+# 标准工作日（上午 + 下午）
+awewarm config set <id> --times 06:00,11:05,16:10
+
+# 含晚间加班
+awewarm config set <id> --times 06:00,11:05,16:10,21:15
+
+# 仅工作日
+awewarm config set <id> --times 08:00,13:05 --days weekday
+
+# 滚动续期（已验证的 5 小时窗口）
+awewarm config set <id> --mode interval --window 300 --anchor 11:05
+```
+
+以上所有固定时间点均间隔 5 小时 5 分钟 —— 等于订阅窗口（5 小时）加 5 分钟调度缓冲。四个时间点（`06:00, 11:05, 16:10, 21:15`）覆盖全天：上午、下午、晚间和深夜加班。三个时间点（`06:00, 11:05, 16:10`）覆盖标准工作日。`--days weekday` 限制只在工作日触发。两个时间点的链适合半天或间歇性使用。
+
+### 请求失败时 —— 健康阶梯
+
+两种模式共用同一条阶梯：`connected → failing → degraded → auto-disabled`。
+
+- 失败的节点（fixed 的时间点，或 interval 的续期时刻）进入 **failing**，获得补跑重试 —— 默认 30 分钟内 5 次尝试，间隔约 5 分钟（默认值通过 `awewarm config settings` 调整；单个连接用 `--catchup-attempts` / `--catchup-minutes`）。
+- 连续丢失 3 个节点（默认 3，通过 `awewarm config settings --degrade-after-nodes` 或单个连接的 `--degrade-after-nodes` 调整）将连接降为 **degraded**：每个节点只发一次，不再补跑；interval 每窗口探测一次，fixed 每个时间点只发一次。
+- degraded 状态下再丢失同样次数，连接完全停止：**auto-disabled**，静默直到你用 `awewarm config set <id> --on` 恢复，或一次成功的 `run <id>` 重新激活。
+- 任何成功 —— 节点尝试、补跑重试、手动 run —— 都会重置整条阶梯。手动尝试不计入节点，机器睡眠错过的时间点（零次尝试）不算丢失节点。
+- `status` 显示当前层级和详情（`Health: failing — 1/3 nodes lost, catch-up attempt 2/5`），并在最近一次激活下方打印最后一次失败的完整错误信息。
+
+### Sleeping Macs — calendar wake (macOS)
+
+`scheduler install` 会在 launchd agent 里为每个 fixed 时间点写一条 `StartCalendarInterval` 日历条目。launchd 能把 Mac 从睡眠中唤醒 —— 合盖、深睡都能命中并准时执行 tick，无需 sudo，且每个时间点都受保护。条目每天都会触发，不受时间点的日期规则限制：tick 自身会判断今天是否该执行，因此周末触发一个仅工作日的条目是无害的空操作。修改时间或模式后条目立即更新，修改后的第一个 tick 会自动修复漂移。
+
+每个连接可以设置 `schedule.wakeWhenAsleep: false` 选择退出（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 45 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
+
+### Sleeping PCs — wake tasks (Windows)
+
+macOS 设计的镜像版本：`scheduler install` 为每个 fixed 时间点注册一个额外的 Task Scheduler 任务 —— 在时间点触发日任务并启用 *Wake to run*，执行 `awewarm tick`。每分钟的 tick 任务本身不会唤醒机器（否则机器永远无法入睡）；只有时间点会唤醒。`schtasks.exe` 无法设置 *Wake to run*，因此这些任务通过 PowerShell 的 `Register-ScheduledTask` 注册。添加流程会询问 fixed 时间点是否允许唤醒机器（默认允许，与 macOS 相同），`awewarm config set <id> --no-wake` 可以让单个连接退出唤醒，install / uninstall / refresh / self-heal 都会保持任务集与配置同步。
+
+### Always-on servers (Linux)
+
+不需要唤醒机制，机器从不睡眠 —— `awewarm scheduler install` 直接设置 systemd user timer（每分钟 tick；`Persistent=true` 在开机时补跑错过的 tick）。把 `config.json` 和 `secrets.json` 复制过去（或重新运行 `init`），注意 CLI 连接需要在服务器上也安装对应 CLI。`loginctl enable-linger $USER` 在无桌面/SSH 账号上是必需的。Linux 本质上无法唤醒挂起的机器：添加流程不会询问唤醒偏好，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
 
 ## 配置
 
@@ -205,6 +241,11 @@ export AWEWARM_NO_UPDATE_CHECK=1
 
 - ⭐ 给仓库点 Star —— 让更多人看到它。
 - ☕ [Ko-fi](https://ko-fi.com/mugpeng) —— 请我喝杯咖啡。
+- 💬 微信支付 —— 扫描下方二维码。
+
+<p align="center">
+  <img src="assets/images/wechat-pay.jpg" alt="WeChat Pay" width="240">
+</p>
 
 ## 开发
 
