@@ -41,6 +41,7 @@ START_RULES = (
 )
 SCHEDULE_MODES = ("fixed", "interval")
 DAY_RULES = ("weekday", "every-day")
+LOCATIONS = ("local", "remote")
 AUTH_STATUSES = ("valid", "missing", "expired", "unknown")
 
 DEFAULT_PROMPT = "Reply with exactly: ok"
@@ -195,6 +196,7 @@ def load_config(path=None):
         "version": CONFIG_VERSION,
         "global": data.get("global") or {},
         "settings": settings,
+        "remote": data.get("remote") or {},
         "connections": {
             conn_id: _expand_conn(conn_id, conn, settings)
             for conn_id, conn in data["connections"].items()
@@ -287,6 +289,8 @@ def _expand_conn(conn_id, flat, global_settings):
         "label": flat.get("label") or conn_id,
         "kind": kind,
         "enabled": flat.get("enabled", True),
+        # where this connection ticks: here (default) or on the remote server
+        "location": flat.get("location") or "local",
         "auth": auth,
         "transport": transport,
         "window": window,
@@ -356,6 +360,8 @@ def _compact_conn(conn, global_settings):
             flat[run_key] = value
     if conn.get("enabled") is False:
         flat["enabled"] = False
+    if conn.get("location") == "remote":
+        flat["location"] = "remote"
     return flat
 
 
@@ -364,6 +370,7 @@ def _compact_config(config):
     return {
         "version": CONFIG_VERSION,
         **({"global": config["global"]} if config.get("global") else {}),
+        **({"remote": config["remote"]} if config.get("remote") else {}),
         "settings": settings,
         "connections": {
             conn_id: _compact_conn(conn, settings)
@@ -372,11 +379,28 @@ def _compact_config(config):
     }
 
 
+def remote_errors(remote):
+    """Problems with the top-level remote-server block; empty means valid."""
+    if not remote:
+        return []
+    errors = []
+    url = remote.get("url")
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        errors.append("remote: url must be the http(s) address of an `awewarm serve` process")
+    token_ref = remote.get("tokenRef")
+    if not isinstance(token_ref, str) or not token_ref.startswith("file:"):
+        errors.append("remote: tokenRef must be a file: secret reference")
+    return errors
+
+
 def save_config(config, path=None):
     for conn_id, conn in config["connections"].items():
         errors = connection_errors(conn, conn_id)
         if errors:
             die(f"refusing to save invalid connection {conn_id}:\n  " + "\n  ".join(errors))
+    errors = remote_errors(config.get("remote"))
+    if errors:
+        die("refusing to save invalid remote block:\n  " + "\n  ".join(errors))
     _write_json(path or config_path(), _compact_config(config))
 
 
@@ -406,6 +430,14 @@ def connection_errors(conn, conn_id="<connection>"):
     kind = conn.get("kind")
     if kind not in (KIND_ACCOUNT, KIND_SUBSCRIPTION):
         errors.append(f"{conn_id}: kind must be '{KIND_ACCOUNT}' or '{KIND_SUBSCRIPTION}'")
+
+    location = conn.get("location", "local")
+    if location not in LOCATIONS:
+        errors.append(f"{conn_id}: location must be 'local' or 'remote'")
+    elif location == "remote" and kind == KIND_ACCOUNT:
+        errors.append(
+            f"{conn_id}: account connections cannot be remote — their CLI login lives on this machine"
+        )
 
     transport = conn.get("transport")
     if not isinstance(transport, dict) or transport.get("kind") not in TRANSPORTS:

@@ -90,6 +90,27 @@ def iso(moment):
     return moment.isoformat()
 
 
+def node_for(action, now):
+    """Scheduled node an activate action belongs to; manual fires pass None.
+
+    Shared by the local tick and `awewarm serve` so both count catch-up and
+    ladder nodes identically.
+    """
+    reason = action.get("reason")
+    if reason == "fixed":
+        return {
+            "key": f"{action['slotAt'].strftime('%Y-%m-%d')} {action['slot']}",
+            "dueAt": action["slotAt"],
+            "slot": action["slot"],
+        }
+    if reason == "interval":
+        due = action.get("dueAt") or now
+        return {"key": f"interval {iso(due)}", "dueAt": due}
+    if reason == "first-anchor":
+        return {"key": "first-anchor", "dueAt": None}
+    return None
+
+
 def slot_datetime(day, hhmm, tz):
     """Local datetime for a HH:MM slot on a date. Never raises on DST edges."""
     match = SLOT_RE.match(hhmm)

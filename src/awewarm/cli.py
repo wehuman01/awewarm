@@ -1181,6 +1181,11 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
                 click.echo("  note: this platform cannot wake a suspended machine — the flag has no effect here")
         else:
             click.echo(f"✓ {conn_id} will not wake a sleeping machine (missed slots catch up on next wake)")
+    if conn.get("location") == "remote" and location is not True and any(value is not None for value in (
+        times, days, mode, enabled, window_minutes, api_key,
+        catchup_minutes, catchup_attempts, degrade_after_nodes,
+    )):
+        _push_edits_to_remote(config, state, conn_id)
     if any(value is not None for value in (times, days, mode, enabled, wake)):
         _refresh_wake_after_edit()
 

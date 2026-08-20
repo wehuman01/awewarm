@@ -78,6 +78,10 @@ awewarm config set claude-code --times 06:35,11:40,16:45
 
 Times are HH:MM (comma- or space-separated), sorted and de-duplicated on save. Slots 5 h + 5 min apart chain windows across a workday. `--days weekday|every-day` changes the day rule.
 
+**Keep the chain (confirm first)**: when the user changes one slot (e.g., "把第一个时间改成 05:50"), tell the user the planned recalculation, wait for confirmation, then treat the user-supplied time as the anchor and recalculate the rest at 5 h + 5 min intervals from that anchor. Do not silently change the slot count unless the user asks.
+
+**Respect explicit irregularity (confirm first)**: if the user clearly intends custom spacing (e.g., "05:50, 10:55, 16:00, 21:05"), show the final list to the user, wait for confirmation, then pass the times through as-is — do not re-space them.
+
 ### Switch mode / pause / resume
 
 ```bash
@@ -87,6 +91,14 @@ awewarm config set claude-code --on      # resume
 ```
 
 If a mode switch reports the window is not verified, guide the verify workflow first.
+
+**Preserve anchor on fixed → interval (confirm first)**: when switching from fixed to interval, check `awewarm status <id>` first, derive `--anchor` from the existing schedule's next-due or last-activation time, show the planned anchor to the user, wait for confirmation, then switch and set anchor in the same command:
+
+```bash
+awewarm config set claude-code --mode interval --anchor HH:MM
+```
+
+This avoids a gap or duplicate fire caused by losing the existing schedule's position in time.
 
 ### Verify a plan's window (3 steps, user-paced)
 
