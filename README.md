@@ -24,7 +24,7 @@
   </p>
 </div>
 
-> Connect once, then never think about 5-hour resets again: awewarm detects what it can do and only then keeps the next window open.
+> Real case: you start work at 9:00 and normally get only one 5-hour quota for the morning. With awewarm warming at 05:30, the window refreshes again at 10:30 — twice the morning quota, without you touching anything.
 
 awewarm manages two kinds of connections:
 
