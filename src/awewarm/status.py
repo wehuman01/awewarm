@@ -117,10 +117,14 @@ def _show_status(connection, as_json):
     from . import cli
     config = load_config()
     if connection:
+        # An explicit ask always shows the connection, hidden or not.
         cli._find_connection(config, connection)
         conns = {connection: config["connections"][connection]}
     else:
-        conns = config["connections"]
+        conns = {
+            cid: conn for cid, conn in config["connections"].items()
+            if not conn.get("hide")
+        }
     state = load_state()
     remote_view, remote_note = (None, None)
     if remote.remote_url(config) and any(c.get("location") == "remote" for c in conns.values()):
@@ -138,7 +142,13 @@ def _show_status(connection, as_json):
         click.echo(json.dumps(transport.redact(view), indent=2))
         return
     if not conns:
-        click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
+        if config["connections"]:
+            click.echo(
+                "No visible connections — all are hidden from status.\n"
+                "unhide with: awewarm config set <id> --show"
+            )
+        else:
+            click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
         return
     now = cli._now(config)
     for conn_id in sorted(conns):

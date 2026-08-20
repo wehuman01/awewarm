@@ -262,7 +262,7 @@ awewarm status                                    # 合并视图：本地 + 委�
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
 
 ## 命令
 
@@ -270,7 +270,7 @@ awewarm status                                    # 合并视图：本地 + 委�
 awewarm init                          # 交互式引导：扫描账号、选择调度、安装后台调度器
 awewarm discover                      # 纯读扫描本机 CLI 与登录态
 awewarm config add                    # 添加连接：本机账号或订阅 endpoint
-awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--anchor、--start、--window
+awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--hide/--show、--anchor、--start、--window
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径

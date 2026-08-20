@@ -739,6 +739,64 @@ class LifecycleTests(IsolatedTestCase):
         delete_api_key.assert_called_once_with("glm-coding-plan", "${AWEWARM_API_KEY_GLM_CODING_PLAN}")
 
 
+class HideTests(IsolatedTestCase):
+    def _write_two(self):
+        data = cfg.empty_config()
+        conn = account_connection(mode="fixed")
+        conn["hide"] = True
+        data["connections"]["claude-code-main"] = conn
+        data["connections"]["glm-coding-plan"] = plan_connection(mode="fixed")
+        cfg.save_config(data)
+
+    def test_status_listing_omits_hidden(self):
+        self._write_two()
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("claude-code-main", result.output)
+        self.assertIn("glm-coding-plan", result.output)
+
+    def test_status_single_ask_still_shows_hidden(self):
+        self._write_two()
+        result = invoke(["status", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("claude-code-main", result.output)
+
+    def test_status_json_listing_omits_hidden(self):
+        self._write_two()
+        result = invoke(["status", "--json"])
+        self.assertEqual(result.exit_code, 0)
+        view = json.loads(result.output)
+        self.assertNotIn("claude-code-main", view["config"]["connections"])
+        self.assertIn("glm-coding-plan", view["config"]["connections"])
+
+    def test_hide_and_show_flags_round_trip(self):
+        write_config(account_connection(mode="fixed"))
+        hidden = invoke(["config", "set", "claude-code-main", "--hide"])
+        self.assertEqual(hidden.exit_code, 0, output_of(hidden))
+        self.assertIn("hidden from status", hidden.output)
+        self.assertTrue(cfg.load_config()["connections"]["claude-code-main"]["hide"])
+        self.assertIn('"hide": true', cfg.config_path().read_text())
+        shown = invoke(["config", "set", "claude-code-main", "--show"])
+        self.assertEqual(shown.exit_code, 0, output_of(shown))
+        self.assertFalse(cfg.load_config()["connections"]["claude-code-main"]["hide"])
+
+    def test_settings_show_hidden_state(self):
+        write_config(account_connection(mode="fixed"))
+        invoke(["config", "set", "claude-code-main", "--hide"])
+        result = invoke(["config", "set", "claude-code-main"])
+        self.assertIn("hidden from status: true", result.output)
+
+    def test_all_hidden_listing_says_so(self):
+        data = cfg.empty_config()
+        conn = account_connection(mode="fixed")
+        conn["hide"] = True
+        data["connections"]["claude-code-main"] = conn
+        cfg.save_config(data)
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--show", result.output)
+
+
 class ApiKeySetTests(IsolatedTestCase):
     def setUp(self):
         super().setUp()

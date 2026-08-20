@@ -262,7 +262,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it. Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
 
 ## Commands
 
@@ -270,7 +270,7 @@ A connection with `url` + `apiKey` is a subscription; one with `cli` is a local 
 awewarm init                          # interactive onboarding: scan accounts, pick schedules, install scheduler
 awewarm discover                      # read-only scan of local CLIs and logins
 awewarm config add                    # add a connection: a detected account or a subscription endpoint
-awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --anchor, --start, --window
+awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --hide/--show, --anchor, --start, --window
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations

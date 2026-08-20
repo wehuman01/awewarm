@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+`config set` gains `--hide/--show`: a hidden connection disappears from `awewarm status` listings (text and `--json`) while its schedule keeps firing — hiding is display-only, unlike `--off` which stops the warm-ups. Asking for it by id (`status <id>`) still shows it, and `config set <id>` with no flags prints its hidden state.
+
 ## v0.4.1
 
 `remote connect` now asks for confirmation before pairing over plain `http://` with a non-local host — the pairing token and any delegated API keys would otherwise cross the network unencrypted. Loopback, private-range, and `.local` addresses do not prompt; https never does. The README's remote-server section also documents the claim model explicitly: an unclaimed server trusts the first token that reaches it, so keep the URL private or pin one ahead of time with `serve --token`.

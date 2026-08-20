@@ -440,6 +440,7 @@ def _show_settings(config, conn_id, conn):
     where = f" ({remote.remote_url(config)})" if location == "remote" else ""
     click.echo(f"Settings for {conn_id}:")
     click.echo(f"  enabled: {'true' if conn.get('enabled', True) else 'false'}")
+    click.echo(f"  hidden from status: {'true' if conn.get('hide') else 'false'}")
     click.echo(f"  location: {location}{where}")
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
@@ -532,7 +533,7 @@ class _SetOptions:
     """
 
     FIELDS = (
-        "times", "days", "mode", "enabled", "anchor_hhmm", "start_hhmm",
+        "times", "days", "mode", "enabled", "hide", "anchor_hhmm", "start_hhmm",
         "window_minutes", "api_key", "wake", "catchup_minutes",
         "catchup_attempts", "degrade_after_nodes", "location",
     )
@@ -594,6 +595,10 @@ def _config_set(connection, opts):
             schedule.migrate_state(conn_state(state, conn_id))
             schedule.reset_ladder(conn_state(state, conn_id))
             state_changed = True
+    if opts.hide is not None:
+        # Display-only: hidden connections keep their schedule and keep warming;
+        # status listings omit them, asking by id still shows them.
+        conn["hide"] = opts.hide
     if opts.wake is not None:
         conn["schedule"]["wakeWhenAsleep"] = opts.wake
     if opts.catchup_minutes is not None or opts.catchup_attempts is not None:
@@ -672,6 +677,10 @@ def _config_set(connection, opts):
         click.echo(f"✓ {conn_id} enabled (mode: {conn['schedule']['mode']}, failure counters reset)")
     if opts.enabled is False:
         click.echo(f"✓ {conn_id} disabled — resume with: awewarm config set {conn_id} --on")
+    if opts.hide is True:
+        click.echo(f"✓ {conn_id} hidden from status (warm-ups continue) — unhide with: awewarm config set {conn_id} --show")
+    if opts.hide is False:
+        click.echo(f"✓ {conn_id} visible in status again")
     if opts.catchup_minutes is not None or opts.catchup_attempts is not None:
         block = conn.get("catchup") or {}
         click.echo(
@@ -734,6 +743,7 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--days", type=click.Choice(["weekday", "every-day"]), default=None, help="Which days the fixed times fire.")
 @click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
 @click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection (--on also resets failure counters).")
+@click.option("--hide/--show", "hide", default=None, help="Hide this connection from status listings (its warm-ups continue).")
 @click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
 @click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer interval activation until this time (today, or tomorrow if passed).")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
@@ -743,13 +753,13 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node — overrides the global default (5).")
 @click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled — overrides the global default (3).")
 @click.option("--remote/--local", "location", default=None, help="Delegate this connection to the remote server (--remote) or resume local scheduling (--local).")
-def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
+def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
                catchup_minutes, catchup_attempts, degrade_after_nodes, location):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
     _config_set(connection, _SetOptions(
-        times=times, days=days, mode=mode, enabled=enabled, anchor_hhmm=anchor_hhmm,
+        times=times, days=days, mode=mode, enabled=enabled, hide=hide, anchor_hhmm=anchor_hhmm,
         start_hhmm=start_hhmm, window_minutes=window_minutes, api_key=api_key, wake=wake,
         catchup_minutes=catchup_minutes, catchup_attempts=catchup_attempts,
         degrade_after_nodes=degrade_after_nodes, location=location,

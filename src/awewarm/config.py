@@ -322,6 +322,8 @@ def _expand_conn(conn_id, flat, global_settings):
         "label": flat.get("label") or conn_id,
         "kind": kind,
         "enabled": flat.get("enabled", True),
+        # display-only: hidden connections keep warming, status just omits them
+        "hide": bool(flat.get("hide", False)),
         # where this connection ticks: here (default) or on the remote server
         "location": flat.get("location") or "local",
         "auth": auth,
@@ -393,6 +395,8 @@ def _compact_conn(conn, global_settings):
             flat[run_key] = value
     if conn.get("enabled") is False:
         flat["enabled"] = False
+    if conn.get("hide"):
+        flat["hide"] = True
     if conn.get("location") == "remote":
         flat["location"] = "remote"
     return flat
@@ -463,6 +467,9 @@ def connection_errors(conn, conn_id="<connection>"):
     kind = conn.get("kind")
     if kind not in (KIND_ACCOUNT, KIND_SUBSCRIPTION):
         errors.append(f"{conn_id}: kind must be '{KIND_ACCOUNT}' or '{KIND_SUBSCRIPTION}'")
+
+    if not isinstance(conn.get("hide", False), bool):
+        errors.append(f"{conn_id}: hide must be a boolean")
 
     location = conn.get("location", "local")
     if location not in LOCATIONS:

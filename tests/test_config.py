@@ -60,6 +60,15 @@ class RoundtripTests(IsolatedTestCase):
         self.assertEqual(window["status"], "user-confirmed")
         self.assertEqual(window["durationMinutes"], 240)
 
+    def test_hide_flag_roundtrips(self):
+        data = config.empty_config()
+        conn = account_connection()
+        conn["hide"] = True
+        data["connections"]["claude-code"] = conn
+        config.save_config(data)
+        self.assertIn('"hide": true', config.config_path().read_text())
+        self.assertTrue(config.load_config()["connections"]["claude-code"]["hide"])
+
     def test_save_writes_indented_json_with_trailing_newline(self):
         data = config.empty_config()
         data["connections"]["claude-code-main"] = account_connection(mode="fixed")
@@ -125,6 +134,12 @@ class ValidationTests(unittest.TestCase):
         conn = account_connection()
         conn["transport"]["cliCommand"] = None
         self.assertTrue(config.connection_errors(conn, "acct"))
+
+    def test_hide_must_be_boolean(self):
+        conn = account_connection()
+        conn["hide"] = "yes"
+        errors = config.connection_errors(conn, "acct")
+        self.assertTrue(any("hide" in e for e in errors))
 
     def test_user_confirmed_duration_unlocks_interval(self):
         conn = plan_connection(mode="interval", window_status="user-confirmed", duration=300)
