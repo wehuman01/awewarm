@@ -2,7 +2,7 @@
 
 ## v0.3.5
 
-`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, defers interval's first fire with `--start`, retunes `status` to show the active schedule, hardens the tick's self-heal, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
+`v0.3.5` removes the legacy `hybrid` scheduling mode, adds a full-day fixed-slot grid at setup, and removes the macOS pmset wake fallback in favor of pure launchd calendar entries.
 
 ### hybrid mode removed — fixed and interval only
 
@@ -10,11 +10,19 @@ Three scheduling modes collapsed to two. The combination mode was the source of 
 
 ### Full-day slot grid offered at setup
 
-`config add` / `init` now know that one fixed time rarely covers a day. When the window duration is known (verified built-in accounts, or a plan whose window you just recorded), the fixed-times prompt asks for the plan's daily quota reset time and offers a full-day grid — one slot per window, spaced window + 5 min apart, anchored on the reset time so drift stays minimal (e.g. reset 01:14 + 300-min window → 01:14, 06:19, 11:24, 16:29, 21:34). Accepting the grid defaults days to every-day; declining keeps the single entered time with the usual weekday default. Windows under 2 h offer no grid (interval mode fits those better). Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so windows under ~3 h were silently cut off mid-day (a 120-min plan got 16.6 h of coverage, not 24); the cap is gone and short-window grids now span the full day.
+`config add` / `init` now know that one fixed time rarely covers a day. When the window duration is known (verified built-in accounts, or a plan whose window you just recorded), the fixed-times prompt asks for the plan's daily quota reset time and offers a full-day grid — one slot per window, spaced window + 5 min apart, anchored on the reset time so drift stays minimal (e.g. reset 01:14 + 300-min window → 01:14, 06:19, 11:24, 16:29, 21:34). Accepting the grid defaults days to every-day; declining keeps the single entered time with the usual weekday default. Windows under 2 h offer no grid (interval mode fits those better).
 
 ### pmset wake removal (macOS)
 
 The launchd `StartCalendarInterval` entries cover every fixed slot at its exact time with no sudo; the pmset `wakeorpoweron` fallback covered only the earliest slot, needed sudo, and duplicated schedule state. It is removed. `awewarm update`, `scheduler install`, and `scheduler uninstall` cancel a pmset repeat left behind by earlier versions — only if it is still the one awewarm set, and a failed cancel (no sudo password) is retried by the next of those commands. If the state record was already lost, cancel manually: `sudo pmset repeat cancel` (safe when awewarm's is the only repeating event). Calendar entries now fire every day regardless of the slot's day rule; the tick applies the day rule, so a weekend wake for a weekday-only slot is a no-op. `schedule.wakeLeadMinutes` and `scheduler install --wake/--no-wake` are gone. A fully shut-down Mac no longer auto-boots; the first tick after power-on still catches up slots inside the catch-up window.
+
+## v0.3.6
+
+`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, retunes `status` to show the active schedule line, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
+
+### Full-day slot grid cap removed
+
+Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so windows under ~3 h were silently cut off mid-day (a 120-min plan got 16.6 h of coverage, not 24); the cap is gone and short-window grids now span the full day.
 
 ### Status shows the active schedule
 
@@ -27,6 +35,10 @@ The tick's opening self-heal pass (rewrites a stale scheduler job) called paths 
 ### Interval start gate (`--start`)
 
 `config set <id> --start HH:MM` defers interval activation: no request fires before that moment — not the first anchor of a fresh connection, not a renewal whose due has passed, and not a stale `nextDueAt` left over from mode switches. The time resolves to the next occurrence (today when still ahead, otherwise tomorrow), the first tick past it opens the chain, and the gate clears on the first success. `--anchor` clears it too, since anchoring seeds the whole chain explicitly. `--start` requires interval mode (the effective mode after any `--mode` flag in the same call), matching `--anchor`'s strictness; `status` shows the deferred moment as the next due.
+
+### Dynamic versioning
+
+`pyproject.toml` now uses `setuptools` dynamic versioning (`version = {attr = "awewarm.__version__"}`) instead of a static `version` string, and `__version__` is exposed from `awewarm.__init__`.
 
 ## v0.3.1
 
