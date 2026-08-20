@@ -1,5 +1,4 @@
 import os
-import sys
 import unittest
 from unittest import mock
 
@@ -34,8 +33,9 @@ class SecretsFileTests(IsolatedTestCase):
 
     def test_secrets_file_created_with_0600(self):
         keystore.store_api_key("glm", "k" * 32)
-        if sys.platform == "win32":
-            # NTFS has no POSIX mode bits; chmod is advisory only
+        if os.name == "nt":
+            # NTFS has no POSIX mode bits; chmod is advisory only.
+            # Checked via os.name because tests may spoof sys.platform.
             self.assertTrue(os.path.exists(keystore.secrets_path()))
             return
         self.assertEqual(os.stat(keystore.secrets_path()).st_mode & 0o777, 0o600)
