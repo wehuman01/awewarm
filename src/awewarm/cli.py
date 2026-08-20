@@ -616,10 +616,27 @@ def _activate_now(target, reset_due=False):
     """Fire one connection immediately, outside its schedule.
 
     The schedule itself is untouched unless reset_due is set — a manual fire
-    must not push the renewal cadence out by a full window.
+    must not push the renewal cadence out by a full window. Delegated
+    connections fire on the remote server, which owns their state.
     """
     config = load_config()
     conn_id, conn = _find_connection(config, target)
+    if conn.get("location") == "remote":
+        try:
+            result = remote.run_connection(
+                remote.remote_url(config), remote.load_token(), conn_id, reset_due=reset_due
+            )
+        except remote.RemoteError as exc:
+            die(f"remote activation failed:\n{exc}")
+        if result.get("ok"):
+            due_at = schedule.parse_ts(result.get("nextDue"))
+            now = _now(config)
+            note = f" — next due {_fmt_moment(due_at, now)}" if due_at else ""
+            detail = f": {result['detail']}" if result.get("detail") else ""
+            click.echo(f"✓ {conn_id} activated on the remote server{detail}{note}")
+        else:
+            die(f"activation failed: {result.get('detail')}")
+        return
     state = load_state()
     cs = conn_state(state, conn_id)
     now = _now(config)
@@ -663,6 +680,19 @@ def _fire_all():
         if errors:
             log_event(f"skipping {conn_id}: {errors[0]}")
             click.echo(f"skipping {conn_id}: {errors[0]}")
+            continue
+        if conn.get("location") == "remote":
+            try:
+                result = remote.run_connection(remote.remote_url(config), remote.load_token(), conn_id)
+            except remote.RemoteError as exc:
+                log_event(f"{conn_id} remote run failed: {exc}")
+                click.echo(f"✗ activated {conn_id} — remote server unreachable")
+                continue
+            mark = "✓" if result["ok"] else "✗"
+            suffix = f" — {result['detail']}" if result.get("detail") else ""
+            click.echo(f"{mark} activated {conn_id} (on the server){suffix}")
+            if result["ok"]:
+                ok += 1
             continue
         cs = conn_state(state, conn_id)
         schedule.migrate_state(cs)
@@ -846,7 +876,7 @@ def _show_settings(config, conn_id, conn):
     click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed --no-wake")
 
 
-def _status_block(conn_id, conn, state, now, detailed):
+def _status_block(conn_id, conn, state, now, detailed, where=None):
     enabled = conn.get("enabled", True)
     errors = connection_errors(conn, conn_id)
     cs = conn_state(state, conn_id)
@@ -863,7 +893,7 @@ def _status_block(conn_id, conn, state, now, detailed):
         word = "failing"
     else:
         word = "connected"
-    click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}")
+    click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}" + (f" · {where}" if where else ""))
     if errors:
         click.echo(f"  Problem: {errors[0]}")
         return
@@ -1139,6 +1169,7 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
             _delegate_remote(config, conn_id, conn)
         else:
             _takeback_remote(config, state, conn_id, conn)
+            state_changed = True
 
     save_config(config)
     if state_changed:
@@ -1190,6 +1221,25 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         _refresh_wake_after_edit()
 
 
+def _push_edits_to_remote(config, state, conn_id):
+    """After editing a delegated connection, bring the server's copy along.
+
+    Unreachable server: the edit stays local and marked pending; the server
+    keeps running its old schedule meanwhile — never a guess, never both
+    sides ticking.
+    """
+    try:
+        _sync_remote(config, state, force_ids={conn_id})
+        click.echo("✓ Pushed to the remote server")
+    except remote.RemoteError as exc:
+        state.setdefault("pendingPush", {})[conn_id] = schedule.iso(datetime.now().astimezone())
+        save_state(state)
+        click.echo(
+            "⚠ Saved locally, but the remote server is unreachable — it keeps the old schedule\n"
+            f"  {exc}\n  rerun when online: awewarm remote push"
+        )
+
+
 @config.command("set")
 @click.argument("connection")
 @click.option("--times", "times", default=None, metavar="HH:MM,...", help="Fixed activation times, comma- or space-separated, e.g. 06:35,11:40.")
@@ -1204,13 +1254,14 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
 @click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node — overrides the global default (30).")
 @click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node — overrides the global default (5).")
 @click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled — overrides the global default (3).")
+@click.option("--remote/--local", "location", default=None, help="Delegate this connection to the remote server (--remote) or resume local scheduling (--local).")
 def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-               catchup_minutes, catchup_attempts, degrade_after_nodes):
+               catchup_minutes, catchup_attempts, degrade_after_nodes, location):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
     _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-                catchup_minutes, catchup_attempts, degrade_after_nodes)
+                catchup_minutes, catchup_attempts, degrade_after_nodes, location)
 
 
 def _config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes):
@@ -1266,6 +1317,17 @@ def _config_remove(connection):
     if not click.confirm(f"Remove '{conn.get('label', conn_id)}' and its stored API key?", default=False):
         click.echo("aborted — nothing removed")
         return
+    if conn.get("location") == "remote":
+        try:
+            remote.ensure_session(config)
+            remote.delete_connection(remote.remote_url(config), remote.load_token(), conn_id)
+        except remote.RemoteError as exc:
+            die(
+                f"{conn_id} is delegated and the remote server could not be reached —\n"
+                "removing only the local copy would leave it ticking there unmanaged.\n"
+                f"{exc}\n"
+                f"fix: retry when online, or take it back first: awewarm config set {conn_id} --local"
+            )
     del config["connections"][conn_id]
     save_config(config)
     state = load_state()
@@ -1325,6 +1387,25 @@ def config_edit_command():
         click.echo("✓ config is valid")
 
 
+def _fetch_remote_view(config, state):
+    """Server truth for delegated connections, cached for offline display.
+
+    Returns (view or None, note or None); the note explains stale or missing
+    data. Never fatal — status works offline off the last successful sync.
+    """
+    try:
+        view = remote.ensure_session(config)
+        state["remoteCache"] = {"fetchedAt": schedule.iso(datetime.now().astimezone()), "server": view}
+        return view, None
+    except remote.RemoteError as exc:
+        cache = state.get("remoteCache") or {}
+        if cache.get("server"):
+            fetched = schedule.parse_ts(cache.get("fetchedAt"))
+            when = _fmt_moment(fetched, datetime.now().astimezone()) if fetched else "an unknown time"
+            return cache["server"], f"server unreachable, showing the last sync from {when}"
+        return None, f"server unreachable ({exc})"
+
+
 def _show_status(connection, as_json):
     config = load_config()
     if connection:
@@ -1333,11 +1414,18 @@ def _show_status(connection, as_json):
     else:
         conns = config["connections"]
     state = load_state()
+    remote_view, remote_note = (None, None)
+    if remote.remote_url(config) and any(c.get("location") == "remote" for c in conns.values()):
+        cached_before = state.get("remoteCache")
+        remote_view, remote_note = _fetch_remote_view(config, state)
+        if state.get("remoteCache") != cached_before:
+            save_state(state)  # persist the sync cache for offline status runs
     if as_json:
         view = {
             "config": {"version": config["version"], "connections": conns},
             "state": {"connections": {k: state["connections"].get(k) for k in conns}},
             "scheduler": {"installed": install.scheduler_installed()},
+            "remote": {"url": remote.remote_url(config), "server": remote_view, "note": remote_note},
         }
         click.echo(json.dumps(transport.redact(view), indent=2))
         return
@@ -1346,8 +1434,30 @@ def _show_status(connection, as_json):
         return
     now = _now(config)
     for conn_id in sorted(conns):
-        _status_block(conn_id, conns[conn_id], state, now, detailed=bool(connection))
-    click.echo(f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}")
+        conn = conns[conn_id]
+        if conn.get("location") == "remote" and remote_view:
+            entry = (remote_view.get("connections") or {}).get(conn_id)
+            if entry:
+                server_state = {"connections": {conn_id: entry.get("state") or {}}}
+                _status_block(
+                    conn_id, entry.get("config") or conn, server_state, now,
+                    detailed=bool(connection), where=remote.remote_url(config),
+                )
+                if entry.get("keyMissing"):
+                    click.echo("  ⚠ the server lost its key (restarted?) — rerun: awewarm remote push")
+                continue
+        _status_block(conn_id, conn, state, now, detailed=bool(connection))
+    footer = f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}"
+    if remote.remote_url(config):
+        delegated = sum(1 for c in config["connections"].values() if c.get("location") == "remote")
+        cached = state.get("remoteCache") or {}
+        synced = _fmt_moment(schedule.parse_ts(cached.get("fetchedAt")), now) if cached.get("fetchedAt") else None
+        footer += f"\nRemote: {remote.remote_url(config)} ({delegated} delegated"
+        footer += f", last sync {synced}" if synced else ""
+        footer += ")"
+        if remote_note:
+            footer += f" — {remote_note}"
+    click.echo(footer)
 
 
 @cli.command("status")
@@ -1483,6 +1593,162 @@ def scheduler_install():
 def scheduler_uninstall():
     """Remove the background scheduler agent."""
     _scheduler_uninstall()
+
+
+@cli.group("remote")
+def remote_group():
+    """Manage the always-on server that ticks delegated connections.
+
+    The server runs `awewarm serve` on any 24/7 machine; this machine owns
+    every secret and pushes keys over the wire (the server keeps them in RAM
+    only). Delegate per connection with: awewarm config set <id> --remote."""
+
+
+def _remote_connect(url, token_opt):
+    url = (url or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        die("server URL must start with http:// or https://")
+    try:
+        health = remote.healthz(url)
+    except remote.RemoteError as exc:
+        die(str(exc))
+    if not health.get("ok"):
+        die(f"{url} answered, but is not an awewarm server")
+    token = token_opt or remote.load_token() or remote.generate_token()
+    try:
+        remote.claim(url, token)
+    except remote.RemoteError as exc:
+        die(str(exc))
+    remote.store_token(token)
+    config = load_config()
+    config["remote"] = {"url": url, "tokenRef": f"file:{remote.TOKEN_SECRET_ID}"}
+    save_config(config)
+    click.echo(f"✓ Connected to awewarm {health.get('version')} at {url}")
+    click.echo("  Delegate a connection with: awewarm config set <id> --remote")
+
+
+@remote_group.command("connect")
+@click.argument("url")
+@click.option("--token", "token_opt", default=None, help="Use this token when the server runs `serve --token`.")
+def remote_connect_command(url, token_opt):
+    """Pair with an `awewarm serve` process (URL + token stored locally)."""
+    _remote_connect(url, token_opt)
+
+
+def _remote_status():
+    config = load_config()
+    if not remote.remote_url(config):
+        die("no remote server connected\nfix: awewarm remote connect <url>")
+    try:
+        view = remote.ensure_session(config)
+    except remote.RemoteError as exc:
+        die(str(exc))
+    now = datetime.now().astimezone()
+    started = schedule.parse_ts(view.get("startedAt"))
+    ticked = schedule.parse_ts(view.get("lastTickAt"))
+    click.echo(f"awewarm server {view.get('version')} — up since {_fmt_moment(started, now)}")
+    click.echo(f"  last tick: {_fmt_moment(ticked, now)}")
+    conns = view.get("connections") or {}
+    if not conns:
+        click.echo("  no delegated connections — delegate one with: awewarm config set <id> --remote")
+        return
+    for conn_id, entry in conns.items():
+        conn = entry.get("config") or {}
+        cs = entry.get("state") or {}
+        mode = (conn.get("schedule") or {}).get("mode", "fixed")
+        tz_name = conn.get("timezone")
+        try:
+            conn_now = datetime.now(ZoneInfo(tz_name)) if tz_name else now
+        except Exception:
+            conn_now = now
+        due_at, _ = schedule.next_due(conn, cs, conn_now)
+        note = " — key missing, rerun: awewarm remote push" if entry.get("keyMissing") else ""
+        click.echo(f"  {conn_id}: {mode}, next due {_fmt_moment(due_at, conn_now)}{note}")
+
+
+@remote_group.command("status")
+def remote_status_command():
+    """Show the server's view: uptime, last tick, delegated connections."""
+    _remote_status()
+
+
+def _remote_push(connection):
+    config = load_config()
+    if not remote.remote_url(config):
+        die("no remote server connected\nfix: awewarm remote connect <url>")
+    state = load_state()
+    force = ()
+    if connection:
+        conn_id, conn = _find_connection(config, connection)
+        if conn.get("location") != "remote":
+            die(f"{conn_id} is not delegated\nfix: awewarm config set {conn_id} --remote")
+        force = {conn_id}
+    if not any(c.get("location") == "remote" for c in config["connections"].values()):
+        click.echo("No delegated connections — delegate one with: awewarm config set <id> --remote")
+        return
+    try:
+        pushed, rekeyed = _sync_remote(config, state, force_ids=force)
+    except remote.RemoteError as exc:
+        die(str(exc))
+    save_state(state)
+    if pushed:
+        click.echo(f"✓ Pushed {', '.join(pushed)} (schedule restarted on the server)")
+    if rekeyed:
+        click.echo(f"✓ Re-keyed {', '.join(rekeyed)} (keys live in server RAM only)")
+    if not pushed and not rekeyed:
+        click.echo("✓ Server already in sync")
+
+
+@remote_group.command("push")
+@click.argument("connection", required=False)
+def remote_push_command(connection):
+    """Re-sync delegated connections to the server (config + keys)."""
+    _remote_push(connection)
+
+
+def _remote_disconnect():
+    config = load_config()
+    delegated = sorted(cid for cid, c in config["connections"].items() if c.get("location") == "remote")
+    if delegated:
+        die(
+            "still delegated: " + ", ".join(delegated) + "\n"
+            "take them back first: awewarm config set <id> --local"
+        )
+    if not config.get("remote"):
+        click.echo("No remote server connected")
+        return
+    config.pop("remote", None)
+    save_config(config)
+    remote.delete_token()
+    click.echo("✓ Remote server forgotten (it keeps nothing secret — its keyring was RAM-only)")
+
+
+@remote_group.command("disconnect")
+def remote_disconnect_command():
+    """Forget the server (refuses while connections are delegated)."""
+    _remote_disconnect()
+
+
+@cli.command("serve")
+@click.option("--data-dir", default="~/.awewarm-server", show_default=True, help="Directory for server config/state/log (never secrets).")
+@click.option("--bind", default="127.0.0.1", show_default=True, help="Address to listen on.")
+@click.option("--port", default=8790, show_default=True, type=int, help="Port to listen on (0 picks a free one).")
+@click.option("--token", "fixed_token", default=None, help="Require exactly this token instead of the first-connect claim.")
+@click.option("--tick-seconds", default=60, show_default=True, type=int, help="Seconds between scheduling passes.")
+def serve_command(data_dir, bind, port, fixed_token, tick_seconds):
+    """Run the always-on server that ticks delegated connections.
+
+\b
+  awewarm serve                    # token claimed by the first remote connect
+  awewarm serve --token awt_...    # fixed token (RAM only)
+  awewarm serve --data-dir /data   # keep config/state/log in one place
+
+Expose it safely with a cloudflared tunnel (README → Remote server).
+Nothing secret is ever written to disk: API keys live in server RAM and are
+re-pushed by the local machine after a restart.
+    """
+    from . import server
+    server.run(data_dir, bind=bind, port=port, fixed_token=fixed_token, tick_seconds=tick_seconds)
 
 
 def _self_update(check_only):

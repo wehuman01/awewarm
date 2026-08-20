@@ -302,3 +302,57 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
         self.assertFalse(on_disk["enabled"])
+
+
+class LocationTests(IsolatedTestCase):
+    def _write_conn(self, conn):
+        conf = config.empty_config()
+        conf["connections"]["glm"] = conn
+        config.save_config(conf)
+        return conf
+
+    def test_location_defaults_to_local(self):
+        self._write_conn(plan_connection())
+        self.assertEqual(config.load_config()["connections"]["glm"]["location"], "local")
+        on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
+        self.assertNotIn("location", on_disk)  # local is the unwritten default
+
+    def test_remote_location_roundtrips_through_flat_format(self):
+        conn = plan_connection()
+        conn["location"] = "remote"
+        self._write_conn(conn)
+        self.assertEqual(config.load_config()["connections"]["glm"]["location"], "remote")
+        on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
+        self.assertEqual(on_disk["location"], "remote")
+
+    def test_remote_location_rejects_cli_accounts(self):
+        conn = account_connection()
+        conn["location"] = "remote"
+        self.assertIn("cannot be remote", config.connection_errors(conn, "claude")[0])
+
+    def test_unknown_location_is_rejected(self):
+        conn = plan_connection()
+        conn["location"] = "the-moon"
+        self.assertIn("location", config.connection_errors(conn, "glm")[0])
+
+
+class RemoteBlockTests(IsolatedTestCase):
+    def test_remote_block_roundtrips(self):
+        conf = config.empty_config()
+        conf["remote"] = {"url": "https://warm.example.com", "tokenRef": "file:remote-token"}
+        conf["connections"]["glm"] = plan_connection()
+        config.save_config(conf)
+        self.assertEqual(
+            config.load_config()["remote"],
+            {"url": "https://warm.example.com", "tokenRef": "file:remote-token"},
+        )
+        self.assertEqual(json.loads(Path(config.config_path()).read_text())["remote"]["url"],
+                         "https://warm.example.com")
+
+    def test_invalid_remote_block_refuses_to_save(self):
+        conf = config.empty_config()
+        conf["remote"] = {"url": "warm.example.com", "tokenRef": "file:remote-token"}
+        conf["connections"]["glm"] = plan_connection()
+        with self.assertRaises(SystemExit):
+            config.save_config(conf)
+        self.assertEqual(config.remote_errors(conf["remote"])[0], config.remote_errors({"url": "warm.example.com", "tokenRef": "file:remote-token"})[0])

@@ -250,6 +250,8 @@ def calendar_entries(config):
     for conn in (config.get("connections") or {}).values():
         if not conn.get("enabled", True):
             continue
+        if conn.get("location") == "remote":
+            continue  # an awewarm serve process ticks these — no local wake needed
         schedule = conn.get("schedule") or {}
         if schedule.get("mode") != "fixed":
             continue

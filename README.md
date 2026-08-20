@@ -147,6 +147,15 @@ All fixed-time slots above are 5 h 5 min apart — the subscription window (5 h)
 
 Both modes share one ladder: `connected → failing → degraded → auto-disabled`.
 
+```
+
+connected ──first failure──▶ failing ──N consecutive lost──▶ degraded ──N more lost──▶ auto-disabled
+   ▲                          │                              │                              │
+   └──────── any success (node/catch-up/manual run) ──────┘                              │
+                                                                                             │
+                                                                          └────── --on / run ──┘
+```
+
 - A failed node (a fixed slot, or an interval renewal moment) enters **failing** and gets catch-up retries — by default 5 attempts within 30 minutes, spaced ~5 minutes apart (defaults via `awewarm config settings`; one connection via `--catchup-attempts` / `--catchup-minutes`).
 - 3 consecutive lost nodes (default 3, via `awewarm config settings --degrade-after-nodes` or a per-connection `--degrade-after-nodes`) drop the connection to **degraded**: single shot per node, no more catch-up. interval probes once per window; fixed fires each slot exactly once.
 - The same count again while degraded stops it entirely: **auto-disabled**, silent until you resume with `awewarm config set <id> --on` (or a manual `run <id>` that succeeds).
@@ -166,6 +175,53 @@ The macOS design, mirrored: `scheduler install` registers one extra Task Schedul
 ### Always-on servers (Linux)
 
 No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` and `secrets.json` over (or re-run `init`), and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts. Linux simply cannot wake a suspended machine: the setup flow never asks, connections default to `wakeWhenAsleep: false`, and missed slots catch up within their catch-up windows once the machine wakes.
+
+## Remote Server — delegation to a 24/7 box
+
+A sleeping laptop only wakes for fixed slots; an interval chain drifts while it is closed. For around-the-clock warmth, delegate subscription connections to an `awewarm serve` process on any always-on machine (VPS, NAS, Raspberry Pi). CLI-account connections cannot be delegated — their login lives on your machine and keeps ticking locally.
+
+The server holds **no secrets on disk**. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
+
+**Set up the server (once):**
+
+```bash
+ssh my-server
+pip3 install awewarm
+awewarm serve --data-dir ~/awewarm-server    # listens on 127.0.0.1:8790
+```
+
+Keep it running with a systemd user unit (`~/.config/systemd/user/awewarm.service`):
+
+```ini
+[Unit]
+Description=awewarm serve
+After=network-online.target
+
+[Service]
+ExecStart=awewarm serve --data-dir %h/awewarm-server
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+`systemctl --user enable --now awewarm` (with `loginctl enable-linger $USER` on headless boxes). Expose it through a cloudflared tunnel — free TLS, no open inbound ports, your origin IP stays hidden:
+
+```bash
+cloudflared tunnel create awewarm
+cloudflared tunnel route dns awewarm warm.example.com
+cloudflared tunnel run --url http://127.0.0.1:8790 awewarm
+```
+
+**Delegate from the laptop:**
+
+```bash
+awewarm remote connect https://warm.example.com   # token generated + stored locally, server claimed
+awewarm config set glm --remote                   # the server takes over this connection
+awewarm status                                    # merged view: local + delegated truth
+```
+
+`--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back, and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` forgets the server and refuses while anything is still delegated. Fixed times run in the delegating machine's timezone (it travels with the push); wake-from-sleep does not apply on a server that never sleeps.
 
 ## Config
 
@@ -193,13 +249,18 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
       "windowMinutes": 300,
       "mode": "fixed",
       "times": ["06:00"],
-      "days": "every-day"
+      "days": "every-day",
+      "location": "remote"
     }
+  },
+  "remote": {
+    "url": "https://warm.example.com",
+    "tokenRef": "file:remote-token"
   }
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
 
 ## Commands
 
@@ -215,6 +276,11 @@ awewarm status [<id>] [--json]        # summary; one connection in detail; redac
 awewarm run                           # fire every enabled connection now, ignoring the schedule
 awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
 awewarm scheduler install / uninstall # background scheduler (launchd / Task Scheduler / systemd)
+awewarm serve                          # run the always-on server that ticks delegated connections
+awewarm remote connect <url>           # pair with a server (token generated + stored locally)
+awewarm remote status                  # server view: uptime, last tick, delegated connections
+awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)
+awewarm remote disconnect              # forget the server (refuses while delegations exist)
 awewarm update [--check]              # upgrade to the latest PyPI release
 ```
 

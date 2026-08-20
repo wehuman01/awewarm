@@ -350,20 +350,21 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.warm.claim(self._body().get("token")))
             self._authed()
             parts = [urllib.parse.unquote(part) for part in path.split("/") if part]
-            if parts[:2] == ["v1", "state"] and len(parts) == 3:
+            if parts[:2] == ["v1", "state"] and len(parts) == 2:
                 if method != "GET":
                     raise ApiError(405, "GET only")
                 return self._send(200, self.warm.view())
-            if parts[:2] == ["v1", "keys"] and len(parts) == 3:
+            if parts[:2] == ["v1", "keys"] and len(parts) == 2:
                 if method != "PUT":
                     raise ApiError(405, "PUT only")
                 return self._send(200, self.warm.put_keys(self._body()))
-            if parts[:2] == ["v1", "connections"] and len(parts) == 4:
-                _, _, conn_id, verb = parts
+            if parts[:2] == ["v1", "connections"] and len(parts) in (3, 4):
+                conn_id = parts[2]
+                verb = parts[3] if len(parts) == 4 else None
                 if verb == "run" and method == "POST":
                     body = self._body()
                     return self._send(200, self.warm.run_now(conn_id, bool(body.get("resetDue"))))
-                if verb and verb != "run":
+                if verb is not None:
                     raise ApiError(404, f"no such endpoint: {path}")
                 if method == "PUT":
                     return self._send(200, self.warm.put_connection(conn_id, self._body()))

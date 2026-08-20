@@ -147,6 +147,15 @@ awewarm config set <id> --mode interval --window 300 --anchor 11:05
 
 两种模式共用同一条阶梯：`connected → failing → degraded → auto-disabled`。
 
+```
+
+connected ──节点首次失败──▶ failing ──连续 N 个节点丢失──▶ degraded ──再连续 N 个节点丢失──▶ auto-disabled
+   ▲                          │                              │                              │
+   └──────── 任意成功（节点/catch-up/手动 run）──────────────┘                              │
+                                                                                             │
+                                                                          └────── --on / run ──┘
+```
+
 - 失败的节点（fixed 的时间点，或 interval 的续期时刻）进入 **failing**，获得补跑重试 —— 默认 30 分钟内 5 次尝试，间隔约 5 分钟（默认值通过 `awewarm config settings` 调整；单个连接用 `--catchup-attempts` / `--catchup-minutes`）。
 - 连续丢失 3 个节点（默认 3，通过 `awewarm config settings --degrade-after-nodes` 或单个连接的 `--degrade-after-nodes` 调整）将连接降为 **degraded**：每个节点只发一次，不再补跑；interval 每窗口探测一次，fixed 每个时间点只发一次。
 - degraded 状态下再丢失同样次数，连接完全停止：**auto-disabled**，静默直到你用 `awewarm config set <id> --on` 恢复，或一次成功的 `run <id>` 重新激活。
@@ -166,6 +175,53 @@ macOS 设计的镜像版本：`scheduler install` 为每个 fixed 时间点注�
 ### Always-on servers (Linux)
 
 不需要唤醒机制，机器从不睡眠 —— `awewarm scheduler install` 直接设置 systemd user timer（每分钟 tick；`Persistent=true` 在开机时补跑错过的 tick）。把 `config.json` 和 `secrets.json` 复制过去（或重新运行 `init`），注意 CLI 连接需要在服务器上也安装对应 CLI。`loginctl enable-linger $USER` 在无桌面/SSH 账号上是必需的。Linux 本质上无法唤醒挂起的机器：添加流程不会询问唤醒偏好，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
+
+## 远程服务器 —— 委托给一台 24/7 在线的机器
+
+合盖的笔记本只为 fixed 时间点醒来；interval 续期链在合盖期间会漂移。要全天候保温，把订阅连接委托给任意常开机器（VPS、NAS、树莓派）上的 `awewarm serve` 进程。CLI 账号连接无法委托 —— 登录态在你本机上，继续由本地调度。
+
+服务器**磁盘上不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
+
+**搭建服务器（一次性）：**
+
+```bash
+ssh my-server
+pip3 install awewarm
+awewarm serve --data-dir ~/awewarm-server    # 监听 127.0.0.1:8790
+```
+
+用 systemd user unit 常驻（`~/.config/systemd/user/awewarm.service`）：
+
+```ini
+[Unit]
+Description=awewarm serve
+After=network-online.target
+
+[Service]
+ExecStart=awewarm serve --data-dir %h/awewarm-server
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+`systemctl --user enable --now awewarm`（无桌面/SSH 环境先 `loginctl enable-linger $USER`）。用 cloudflared 隧道暴露 —— 免费 TLS、不开入站端口、隐藏源站 IP：
+
+```bash
+cloudflared tunnel create awewarm
+cloudflared tunnel route dns awewarm warm.example.com
+cloudflared tunnel run --url http://127.0.0.1:8790 awewarm
+```
+
+**从笔记本委托：**
+
+```bash
+awewarm remote connect https://warm.example.com   # 本地生成并保存 token，认领服务器
+awewarm config set glm --remote                   # 服务器接管这条连接
+awewarm status                                    # 合并视图：本地 + 委托真值
+```
+
+`--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器，仍有委托连接时拒绝执行。fixed 时间按委托方机器的时区运行（时区随推送传递）；从不睡觉的服务器谈不上 wake。
 
 ## 配置
 
@@ -193,13 +249,18 @@ macOS 设计的镜像版本：`scheduler install` 为每个 fixed 时间点注�
       "windowMinutes": 300,
       "mode": "fixed",
       "times": ["06:00"],
-      "days": "every-day"
+      "days": "every-day",
+      "location": "remote"
     }
+  },
+  "remote": {
+    "url": "https://warm.example.com",
+    "tokenRef": "file:remote-token"
   }
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
 
 ## 命令
 
@@ -215,6 +276,11 @@ awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读�
 awewarm run                           # 立即触发所有启用的连接（无视调度计划）
 awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动原计划，--reset-due 才重算下次到期）
 awewarm scheduler install / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）
+awewarm serve                          # 运行常驻服务器，调度已委托的连接
+awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
+awewarm remote status                  # 服务器视角：运行时长、上次 tick、委托连接
+awewarm remote push [<id>]             # 向服务器重新同步委托连接（配置 + 密钥）
+awewarm remote disconnect              # 忘掉服务器（仍有委托连接时拒绝）
 awewarm update [--check]              # 升级到最新 PyPI 版本
 ```
 

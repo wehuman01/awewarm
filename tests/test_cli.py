@@ -1,13 +1,18 @@
 import json
+import os
+import tempfile
+import threading
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 from helpers import IsolatedTestCase, account_connection, plan_connection
 
 import awewarm
-from awewarm import config as cfg, keystore, schedule
+from awewarm import config as cfg, keystore, remote, schedule, server
 from awewarm.cli import cli, main
 
 RUNNER = CliRunner()
@@ -64,14 +69,14 @@ def claude_finding(**overrides):
 
 
 class SurfaceTests(IsolatedTestCase):
-    def test_help_shows_exactly_seven_commands(self):
+    def test_help_shows_exactly_nine_commands(self):
         result = invoke(["--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Usage: awewarm [OPTIONS] COMMAND [ARGS]...", result.output)
         self.assertIn("-v, --version", result.output)
         self.assertEqual(
             command_names(result.output),
-            ["config", "discover", "init", "run", "scheduler", "status", "update"],
+            ["config", "discover", "init", "remote", "run", "scheduler", "serve", "status", "update"],
         )
 
     def test_legacy_command_names_are_hidden(self):
@@ -1305,3 +1310,139 @@ class DayGridTests(IsolatedTestCase):
         conn = cfg.load_config()["connections"]["glm"]
         self.assertEqual(conn["schedule"]["mode"], "interval")
         self.assertEqual(conn["window"]["durationMinutes"], 300)
+
+
+class RemoteDelegationTests(IsolatedTestCase):
+    """Delegation end to end against a real in-process awewarm serve."""
+
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.server_dir = Path(tmp.name) / "server"
+        self.start_server()
+
+    def start_server(self):
+        self.warm, self.httpd = server.make_server(self.server_dir, "127.0.0.1", 0)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.shutdown)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.token = remote.generate_token()
+        remote.claim(self.url, self.token)
+        remote.store_token(self.token)
+
+    def paired_config(self, conn, conn_id="glm"):
+        data = cfg.empty_config()
+        data["remote"] = {"url": self.url, "tokenRef": "file:remote-token"}
+        conn = json.loads(json.dumps(conn))
+        conn["auth"]["apiKeyRef"] = keystore.store_api_key(conn_id, "sk-test")
+        data["connections"][conn_id] = conn
+        cfg.save_config(data)
+        return data
+
+    def delegate(self, conn=None, conn_id="glm"):
+        self.paired_config(conn or plan_connection(fixed_at=("23:58",)), conn_id=conn_id)
+        result = invoke(["config", "set", conn_id, "--remote"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        return result
+
+    def server_view(self):
+        return remote.fetch_state(self.url, self.token)
+
+    def test_config_set_remote_delegates(self):
+        result = self.delegate()
+        self.assertIn("delegated", output_of(result))
+        entry = self.server_view()["connections"]["glm"]
+        self.assertTrue(entry["config"]["timezone"])  # IANA name traveled with the push
+        self.assertFalse(entry["keyMissing"])
+        on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
+        self.assertEqual(on_disk["connections"]["glm"]["location"], "remote")
+
+    def test_config_set_remote_rejects_cli_accounts(self):
+        self.paired_config(account_connection(), conn_id="claude")
+        result = invoke(["config", "set", "claude", "--remote"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("cannot", output_of(result))
+        self.assertEqual(self.server_view()["connections"], {})
+
+    def test_config_set_remote_requires_a_paired_server(self):
+        write_config(plan_connection())
+        result = invoke(["config", "set", "claude-code-main", "--remote"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("no remote server connected", output_of(result))
+
+    def test_config_set_local_pulls_server_state(self):
+        self.delegate()
+        self.warm.state["connections"]["glm"]["lastActivationAt"] = "2026-08-20T10:00:00+08:00"
+        self.warm._save(self.warm.state_path, self.warm.state)
+        result = invoke(["config", "set", "glm", "--local"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("back on local scheduling", output_of(result))
+        self.assertEqual(self.server_view()["connections"], {})
+        local = cfg.load_state()["connections"]["glm"]
+        self.assertEqual(local["lastActivationAt"], "2026-08-20T10:00:00+08:00")
+        on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
+        self.assertNotIn("location", on_disk["connections"]["glm"])
+
+    def test_tick_skips_remote_and_rekeys_after_server_restart(self):
+        self.delegate(plan_connection(fixed_at=("03:00",), days="every-day"))
+        self.warm.claimed_token = None  # a restart wiped the RAM keyring+token
+        self.warm.keys.clear()
+        moment = datetime(2026, 8, 20, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with mock.patch("awewarm.cli._now") as now, mock.patch("awewarm.transport.send_activation") as send:
+            now.return_value = moment
+            result = invoke(["tick"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        send.assert_not_called()  # the server owns glm; the local tick never fires it
+        self.assertEqual(self.warm.keys.get("glm"), "sk-test")  # re-keyed on contact
+        self.assertIn("glm", self.warm.config["connections"])
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_run_forwards_to_the_server(self, send):
+        self.delegate()
+        result = invoke(["run", "glm", "--force"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("on the remote server", output_of(result))
+        send.assert_called_once()
+        self.assertEqual(self.warm.state["connections"]["glm"]["history"][-1]["kind"], "manual")
+
+    def test_status_merges_server_truth(self):
+        self.delegate()
+        self.warm.state["connections"]["glm"]["lastActivationAt"] = "2026-08-20T10:00:00+08:00"
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn(f"· {self.url}", output_of(result))
+        self.assertIn(f"Remote: {self.url} (1 delegated", output_of(result))
+
+    def test_status_offline_falls_back_to_last_sync(self):
+        self.delegate()
+        self.assertEqual(invoke(["status"]).exit_code, 0)
+        self.httpd.shutdown()
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("server unreachable, showing the last sync", output_of(result))
+
+    def test_remote_disconnect_refuses_while_delegated(self):
+        self.delegate()
+        result = invoke(["remote", "disconnect"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("still delegated", output_of(result))
+
+    def test_edits_to_delegated_connection_push_through(self):
+        self.delegate()
+        result = invoke(["config", "set", "glm", "--times", "07:00"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Pushed to the remote server", output_of(result))
+        server_times = self.server_view()["connections"]["glm"]["config"]["schedule"]["fixed"]["at"]
+        self.assertEqual(server_times, ["07:00"])
+
+    def test_edits_while_offline_stay_local_and_pending(self):
+        self.delegate()
+        self.httpd.shutdown()
+        result = invoke(["config", "set", "glm", "--times", "07:07"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("unreachable", output_of(result))
+        state = cfg.load_state()
+        self.assertIn("glm", state.get("pendingPush") or {})
+        on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
+        self.assertEqual(on_disk["connections"]["glm"]["times"], ["07:07"])
