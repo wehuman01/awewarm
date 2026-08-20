@@ -247,8 +247,21 @@ def _optional_slot_proc(value):
     if not value:
         return None
     if not SLOT_RE.match(value):
-        raise click.BadParameter("use HH:MM, e.g. 13:27")
+        raise click.BadParameter("use HH:MM, e.g. 01:14")
     return value
+
+
+def _optional_positive_int_proc(value):
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = int(text)
+    except ValueError:
+        raise click.BadParameter("enter minutes as a whole number, or leave empty")
+    if number <= 0:
+        raise click.BadParameter("enter a number greater than 0, or leave empty")
+    return number
 
 
 def _fixed_block(fixed_at, days):
@@ -460,7 +473,19 @@ def _add_plan_flow():
         if click.confirm("Is this plan's window already open right now?", default=False):
             reset_at = _prompt_window_reset(config)
     else:
-        fixed_at, days = _prompt_fixed_settings()
+        window_minutes = click.prompt(
+            "Window duration in minutes (optional — unlocks the full-day slot grid)",
+            default="", show_default=False, value_proc=_optional_positive_int_proc,
+        )
+        if window_minutes:
+            window = {
+                "status": "user-confirmed",
+                "startRule": "unknown",
+                "durationMinutes": window_minutes,
+                "evidence": "user-confirmed",
+            }
+            click.echo(f"✓ Window recorded as {window_minutes} minutes — interval renewal unlocked")
+        fixed_at, days = _prompt_fixed_settings(window_minutes)
 
     api_key_ref = keystore.store_api_key(conn_id, api_key)
     click.echo(f"✓ API key stored in {keystore.secrets_path()} (chmod 600)")

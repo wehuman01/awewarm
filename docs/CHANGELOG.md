@@ -18,11 +18,15 @@ The launchd `StartCalendarInterval` entries cover every fixed slot at its exact 
 
 ## v0.3.6
 
-`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, retunes `status` to show the active schedule line, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
+`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, retunes `status` to show the active schedule line, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
 
 ### Full-day slot grid cap removed
 
 Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so windows under ~3 h were silently cut off mid-day (a 120-min plan got 16.6 h of coverage, not 24); the cap is gone and short-window grids now span the full day.
+
+### Setup asks for the window in fixed mode
+
+Adding a plan and choosing fixed mode now asks for the window duration first (optional, empty to skip). A plan whose window you already know gets the full-day grid offered right away instead of a single time, and the answer is recorded as a user-confirmed window that unlocks interval mode. Local accounts keep using their builtin window knowledge — the question only appears where nothing else knows the duration.
 
 ### Status shows the active schedule
 
