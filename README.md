@@ -127,8 +127,8 @@ A manual `run <id>` never shifts the renewal chain — the next due moment stays
 
 Both modes share one ladder: `connected → failing → degraded → auto-disabled`.
 
-- A failed node (a fixed slot, or an interval renewal moment) enters **failing** and gets catch-up retries — by default 5 attempts within 30 minutes, spaced ~5 minutes apart (`--catchup-attempts` / `--catchup-minutes`).
-- 3 consecutive lost nodes (configurable via `--degrade-after-nodes`) drop the connection to **degraded**: single shot per node, no more catch-up. interval probes once per window; fixed fires each slot exactly once.
+- A failed node (a fixed slot, or an interval renewal moment) enters **failing** and gets catch-up retries — by default 5 attempts within 30 minutes, spaced ~5 minutes apart (defaults via `awewarm config settings`; one connection via `--catchup-attempts` / `--catchup-minutes`).
+- 3 consecutive lost nodes (default 3, via `awewarm config settings --degrade-after-nodes` or a per-connection `--degrade-after-nodes`) drop the connection to **degraded**: single shot per node, no more catch-up. interval probes once per window; fixed fires each slot exactly once.
 - The same count again while degraded stops it entirely: **auto-disabled**, silent until you resume with `awewarm config set <id> --on` (or a manual `run <id>` that succeeds).
 - Any success — node attempt, catch-up retry, manual run — resets the whole ladder. Manual attempts never count as nodes, and a slot the machine slept through (zero attempts) is not a lost node.
 - `status` shows the rung plus details (`Health: failing — 1/3 nodes lost, catch-up attempt 2/5`), and prints the last failure with its error right under the last activation.
