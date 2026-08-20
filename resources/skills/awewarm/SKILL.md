@@ -20,7 +20,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Category | Commands |
 |---|---|
 | Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm update --check` |
-| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
+| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 

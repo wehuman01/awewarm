@@ -18,7 +18,7 @@ The launchd `StartCalendarInterval` entries cover every fixed slot at its exact 
 
 ## v0.3.6
 
-`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, retunes `status` to show the active schedule line and the last activation failure, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
+`v0.3.6` removes the grid generator's 8-slot cap so short-window fixed grids span the full day, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, brings Windows wake-from-sleep to parity with macOS and prompts for it at setup, retunes `status` to show the active schedule line and the last activation failure, hardens the tick's self-heal so a failed heal can no longer abort the whole tick, adds `config set --start HH:MM` to defer interval activation, and switches `__version__` to dynamic versioning via setuptools.
 
 ### Full-day slot grid cap removed
 
@@ -39,6 +39,12 @@ Adding a plan and choosing fixed mode now asks for the window duration first (de
 ### Tick self-heal can no longer abort the tick
 
 The tick's opening self-heal pass (rewrites a stale scheduler job) called paths that `die()` on failure — e.g. `awewarm` missing from launchd's sparse PATH, or a failed `launchctl bootstrap`. `die()` raises `SystemExit`, which the pass's error filter didn't catch, so a failed heal aborted the whole tick and skipped that minute's due activations. `SystemExit` is now caught alongside the I/O errors, restoring the intended behavior: the old job keeps running, the tick proceeds, and the next tick retries the heal.
+
+### Wake-from-sleep: Windows parity, prompted at setup
+
+`wakeWhenAsleep` now does something on Windows too. `scheduler install` registers one extra Task Scheduler task per fixed slot — a daily trigger at the slot time with *Wake to run* enabled, running `awewarm tick` — the same shape as the macOS launchd calendar entries (`schtasks.exe` cannot set the flag, so registration goes through PowerShell's `Register-ScheduledTask`). The per-minute tick itself never wakes the machine; only slot times do. Uninstall removes the tasks, config edits refresh them, and the tick's self-heal repairs drift, all mirroring the launchd lifecycle.
+
+The add flows now ask whether fixed slots may wake a sleeping machine on macOS and Windows (default yes); `config set <id> --wake/--no-wake` changes it later, `config set` with no flags shows it, and a wake-affecting edit refreshes the installed entries/tasks immediately. Linux cannot wake a suspended machine at all: the setup flow never asks, new connections record `wakeWhenAsleep: false`, `--wake` there prints a no-effect note, and `scheduler install` says missed slots catch up after the next wake.
 
 ### Interval start gate (`--start`)
 

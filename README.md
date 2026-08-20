@@ -127,11 +127,15 @@ A manual `run <id>` never shifts the renewal chain — the next due moment stays
 
 `scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the launchd agent. launchd wakes the Mac from sleep — lid closed and deep sleep included — and runs the tick at the exact slot time. No sudo, and *every* slot is protected. Entries fire every day regardless of the slot's day rule: the tick itself decides whether today is an active day, so a weekend wake for a weekday-only slot is a harmless no-op. Editing times/mode updates the entries immediately; the first tick after any edit heals drift automatically.
 
-Per connection, `schedule.wakeWhenAsleep: false` opts out. Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
+Per connection, `schedule.wakeWhenAsleep: false` opts out (asked during setup; change later with `awewarm config set <id> --no-wake`). Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
+
+### Sleeping PCs — wake tasks (Windows)
+
+The macOS design, mirrored: `scheduler install` registers one extra Task Scheduler task per fixed slot — a daily trigger at the slot time with *Wake to run* enabled, running `awewarm tick`. The per-minute tick task itself never wakes the machine (a waking tick would keep it from ever staying asleep); only slot times do. `schtasks.exe` cannot set *Wake to run*, so the tasks are registered through PowerShell's `Register-ScheduledTask`. The setup flow asks whether fixed slots may wake the machine (same prompt as macOS), `awewarm config set <id> --no-wake` opts a connection out, and install/uninstall/refresh/self-heal keep the task set in sync with the config.
 
 ### Always-on servers (Linux)
 
-No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` and `secrets.json` over (or re-run `init`), and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts.
+No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` and `secrets.json` over (or re-run `init`), and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts. Linux simply cannot wake a suspended machine: the setup flow never asks, connections default to `wakeWhenAsleep: false`, and missed slots catch up within their catch-up windows once the machine wakes.
 
 ## Config
 

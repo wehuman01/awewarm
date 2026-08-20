@@ -123,6 +123,14 @@ awewarm config set my-plan --mode interval # 3. 滚动续期
 
 **案例** —— 一台常开的机器，希望夜里和周末也持续保温。连续失败 3 次后续期会自动暂停（status 显示 `degraded`），下次成功即恢复。
 
+### 睡眠与唤醒
+
+- **macOS**：`scheduler install` 会在 launchd agent 里为每个 fixed 时间点写一条 `StartCalendarInterval` 日历条目 —— 合盖、深睡都能被准时唤醒并执行 tick，无需 sudo。改时间/模式立即同步，首个 tick 还会自动修复漂移。
+- **Windows**：与 macOS 同构 —— 每个时间点注册一个带「唤醒计算机以运行任务」的日触发任务（通过 PowerShell `Register-ScheduledTask`，`schtasks.exe` 设不了该标志）。每分钟的 tick 任务本身**不**带唤醒 —— 否则机器永远睡不着；只有时间点会唤醒。
+- **Linux**：systemd 无法唤醒挂起的机器 —— 添加流程不询问，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
+
+macOS/Windows 的添加流程都会询问「是否允许在睡眠时唤醒以执行这些时间点」（默认允许）；之后用 `awewarm config set <id> --wake/--no-wake` 切换。连接级 `wakeWhenAsleep: false` 表示该连接的时间点不注册唤醒。
+
 ## 配置
 
 用户不需要手改配置；`init` / `config add` 会生成 `~/.config/awewarm/config.json`（状态在 `~/.local/state/awewarm/state.json`）。结构示例：
