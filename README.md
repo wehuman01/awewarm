@@ -99,7 +99,7 @@ One request at each fixed local time (`weekday` or `every-day`); each hit opens 
 - If the machine was asleep at the slot time, the slot still fires late within the catch-up window (default 45 min); past that it is recorded as skipped.
 - A slot landing within 30 min of a previous success is skipped — never pay for two windows at once.
 - The only mode that works while window semantics are unknown, which is why unverified plans start here.
-- During setup, when the window duration is known, awewarm asks for the plan's daily quota reset time and offers a full-day grid anchored on it — one slot per window, spaced window + 5 min apart (e.g. reset 01:14 + a 5 h window → 01:14, 06:19, 11:24, 16:29, 21:34). Declining keeps just the time you entered. Plans added in fixed mode are asked for the window duration first (optional) — answering it gets the grid offered right away and records a user-confirmed window that unlocks interval mode.
+- During setup, when the window duration is known, awewarm asks for the plan's daily quota reset time and offers a full-day grid anchored on it — one slot per window, spaced window + 5 min apart (e.g. reset 01:14 + a 5 h window → 01:14, 06:19, 11:24, 16:29, 21:34). Declining keeps just the time you entered. Plans added in fixed mode are asked for the window duration first (default 300) — it spaces the grid and is recorded as a user-confirmed window that unlocks interval mode.
 
 ```bash
 awewarm config set claude-code --times 06:35,11:40,16:45   # 5 h + 5 min apart: windows chain across a workday

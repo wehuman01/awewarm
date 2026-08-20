@@ -26,7 +26,7 @@ Fixed after the v0.3.5 release: the grid generator capped out at 8 slots, so win
 
 ### Setup asks for the window in fixed mode
 
-Adding a plan and choosing fixed mode now asks for the window duration first (optional, empty to skip). A plan whose window you already know gets the full-day grid offered right away instead of a single time, and the answer is recorded as a user-confirmed window that unlocks interval mode. Local accounts keep using their builtin window knowledge — the question only appears where nothing else knows the duration.
+Adding a plan and choosing fixed mode now asks for the window duration first (default 300 — most coding plans use 5-hour windows). The answer drives the full-day grid spacing, gets the grid offered right away instead of a single time, and is recorded as a user-confirmed window that unlocks interval mode. Local accounts keep using their builtin window knowledge — the question only appears where nothing else knows the duration.
 
 ### Status shows the active schedule
 

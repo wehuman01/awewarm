@@ -474,17 +474,16 @@ def _add_plan_flow():
             reset_at = _prompt_window_reset(config)
     else:
         window_minutes = click.prompt(
-            "Window duration in minutes (optional — unlocks the full-day slot grid)",
-            default="", show_default=False, value_proc=_optional_positive_int_proc,
+            "Window duration in minutes (drives the full-day slot grid)",
+            default=300, value_proc=_optional_positive_int_proc,
         )
-        if window_minutes:
-            window = {
-                "status": "user-confirmed",
-                "startRule": "unknown",
-                "durationMinutes": window_minutes,
-                "evidence": "user-confirmed",
-            }
-            click.echo(f"✓ Window recorded as {window_minutes} minutes — interval renewal unlocked")
+        window = {
+            "status": "user-confirmed",
+            "startRule": "unknown",
+            "durationMinutes": window_minutes,
+            "evidence": "user-confirmed",
+        }
+        click.echo(f"✓ Window recorded as {window_minutes} minutes — interval renewal unlocked")
         fixed_at, days = _prompt_fixed_settings(window_minutes)
 
     api_key_ref = keystore.store_api_key(conn_id, api_key)
