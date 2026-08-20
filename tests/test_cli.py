@@ -81,7 +81,7 @@ class SurfaceTests(IsolatedTestCase):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
-        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "show"])
+        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
 
     def test_version_prints_bare_number(self):
@@ -474,6 +474,29 @@ class CatchupFlagTests(IsolatedTestCase):
         self.assertIn("catch-up: 3 attempts within 60 minutes", shown.output)
         self.assertIn("degrade after nodes: 5", shown.output)
 
+    def test_global_settings_command_sets_defaults(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "settings", "--catchup-minutes", "60", "--catchup-attempts", "2"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Catch-up defaults: 2 attempts within 60 minutes", result.output)
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["catchup"], {"attempts": 2, "withinMinutes": 60})
+        self.assertEqual(conn["degradeAfterNodes"], 3)
+        shown = invoke(["config", "settings"])
+        self.assertIn("catch-up: 2 attempts within 60 minutes", shown.output)
+        self.assertIn("degrade after nodes: 3", shown.output)
+
+    def test_connection_override_wins_over_global(self):
+        write_config(account_connection(mode="fixed"))
+        invoke(["config", "settings", "--catchup-minutes", "60"])
+        invoke(["config", "set", "claude-code-main", "--catchup-minutes", "15"])
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["catchup"]["withinMinutes"], 15)
+        self.assertEqual(conn["catchup"]["attempts"], 5)
+        file = json.loads(Path(cfg.config_path()).read_text())
+        self.assertEqual(file["settings"]["catchupMinutes"], 60)
+        self.assertEqual(file["connections"]["claude-code-main"]["settings"], {"catchupMinutes": 15})
+
     def test_out_of_range_rejected(self):
         write_config(account_connection(mode="fixed"))
         result = invoke(["config", "set", "claude-code-main", "--catchup-minutes", "3"])
@@ -482,6 +505,8 @@ class CatchupFlagTests(IsolatedTestCase):
         result = invoke(["config", "set", "claude-code-main", "--catchup-attempts", "0"])
         self.assertNotEqual(result.exit_code, 0)
         result = invoke(["config", "set", "claude-code-main", "--degrade-after-nodes", "11"])
+        self.assertNotEqual(result.exit_code, 0)
+        result = invoke(["config", "settings", "--catchup-minutes", "3"])
         self.assertNotEqual(result.exit_code, 0)
 
 

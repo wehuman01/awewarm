@@ -4,9 +4,15 @@ Everything on disk is JSON written by the tool itself; users interact through
 commands, never by hand-editing. Path env overrides (AWEWARM_CONFIG etc.) are
 also the primary test seam.
 
-On-disk format (v2) is flat — one level of connection fields. load_config
-expands it into the richer runtime shape the rest of the code reads;
-save_config compacts back. v1 files (nested) upgrade in place on first load.
+On-disk format (v2) is flat — one level of connection fields. Tuning knobs
+(catch-up, degrade) live in one top-level `settings` object, always written
+with its effective values; a connection can override individual knobs in its
+own `settings`, and anything it leaves out falls back to the top level — the
+same layering the schedule fields use. load_config expands everything into
+the richer runtime shape the rest of the code reads (each connection gets its
+resolved knobs); save_config compacts back. v1 files (nested) upgrade in place
+on first load, and knob keys written flat by earlier v2 builds migrate into
+the connection's `settings` the same way.
 """
 import json
 import os
@@ -75,7 +81,20 @@ def log_path():
 
 
 def empty_config():
-    return {"version": CONFIG_VERSION, "global": {}, "connections": {}}
+    return {"version": CONFIG_VERSION, "global": {}, "settings": {}, "connections": {}}
+
+
+def default_settings():
+    return {
+        "catchupAttempts": DEFAULT_CATCHUP_ATTEMPTS,
+        "catchupMinutes": DEFAULT_CATCHUP_MINUTES,
+        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
+    }
+
+
+def _resolve_settings(raw):
+    """Fill in code defaults for missing knobs so the block is always complete."""
+    return {**default_settings(), **(raw if isinstance(raw, dict) else {})}
 
 
 def empty_state():
@@ -149,7 +168,7 @@ def load_config(path=None):
     if version != CONFIG_VERSION:
         die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm update")
 
-    if _migrate_hybrid_flat(data):
+    if _migrate_hybrid_flat(data) or _migrate_settings_flat(data):
         _write_json(path or config_path(), data)
 
     global_cfg = data.get("global") or {}
@@ -171,11 +190,13 @@ def load_config(path=None):
             sched["wakeWhenAsleep"] = bool(conn.pop("wakeWhenAsleep"))
             _write_json(path or config_path(), data)
 
+    settings = _resolve_settings(data.get("settings"))
     return {
         "version": CONFIG_VERSION,
         "global": data.get("global") or {},
+        "settings": settings,
         "connections": {
-            conn_id: _expand_conn(conn_id, conn)
+            conn_id: _expand_conn(conn_id, conn, settings)
             for conn_id, conn in data["connections"].items()
         },
     }
@@ -191,6 +212,33 @@ def _migrate_hybrid_flat(data):
     return changed
 
 
+def _migrate_settings_flat(data):
+    """Knobs live in a top-level `settings` block with optional per-connection
+    overrides. Legacy flat per-connection keys lift into the connection's own
+    `settings` (they were per-connection values), and the top-level block is
+    materialized so it is always visible on disk."""
+    changed = False
+    defaults = default_settings()
+    for conn in data.get("connections", {}).values():
+        if not isinstance(conn, dict):
+            continue
+        legacy = {key: conn.pop(key) for key in ("catchupMinutes", "catchupAttempts", "degradeAfterNodes") if key in conn}
+        if not legacy:
+            continue
+        settings = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
+        for key, value in legacy.items():
+            if key not in settings and value != defaults.get(key):
+                settings[key] = value
+        if settings:
+            conn["settings"] = settings
+        changed = True
+    resolved = _resolve_settings(data.get("settings"))
+    if data.get("settings") != resolved:
+        data["settings"] = resolved
+        changed = True
+    return changed
+
+
 def _migrate_hybrid_nested(runtime):
     """v1 nested config: same migration on the runtime shape."""
     for conn in runtime.get("connections", {}).values():
@@ -199,8 +247,10 @@ def _migrate_hybrid_nested(runtime):
             sched["mode"] = "fixed"
 
 
-def _expand_conn(conn_id, flat):
-    """Flat v2 fields → the nested runtime shape the codebase reads."""
+def _expand_conn(conn_id, flat, global_settings):
+    """Flat v2 fields → the nested runtime shape the codebase reads.
+
+    Knobs resolve per-connection first, then the top-level `settings`."""
     subscription = bool(flat.get("url"))
     if subscription:
         kind, auth, transport = KIND_SUBSCRIPTION, (
@@ -219,6 +269,7 @@ def _expand_conn(conn_id, flat):
         if isinstance(duration, int) and duration > 0
         else {"status": "unknown", "startRule": "unknown", "durationMinutes": None, "evidence": "none"}
     )
+    settings = {**global_settings, **(flat.get("settings") or {})}
     schedule = {
         "mode": flat.get("mode") or "fixed",
         "fixed": {
@@ -244,17 +295,21 @@ def _expand_conn(conn_id, flat):
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
+        # the connection's own knob overrides (empty = pure inheritance);
+        # catchup/degradeAfterNodes below are the resolved values code reads
+        "settings": dict(flat.get("settings") or {}),
         "catchup": {
-            "attempts": flat.get("catchupAttempts", DEFAULT_CATCHUP_ATTEMPTS),
-            "withinMinutes": flat.get("catchupMinutes", DEFAULT_CATCHUP_MINUTES),
+            "attempts": settings.get("catchupAttempts", DEFAULT_CATCHUP_ATTEMPTS),
+            "withinMinutes": settings.get("catchupMinutes", DEFAULT_CATCHUP_MINUTES),
         },
-        "degradeAfterNodes": flat.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES),
+        "degradeAfterNodes": settings.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES),
         "schedule": schedule,
     }
 
 
-def _compact_conn(conn):
-    """Runtime shape → flat v2 fields. Tuning knobs fall back to code defaults."""
+def _compact_conn(conn, global_settings):
+    """Runtime shape → flat v2 fields. The connection's `settings` overrides
+    persist as-is, minus any that merely repeat the top-level block."""
     flat = {}
     if conn.get("label"):
         flat["label"] = conn["label"]
@@ -284,13 +339,12 @@ def _compact_conn(conn):
         value = fixed.get("skipIfActivatedWithinMinutes")
         if value is not None and value != DEFAULT_SKIP_IF_ACTIVATED_MINUTES:
             flat["skipIfActivatedMinutes"] = value
-    catchup = conn.get("catchup") or {}
-    if catchup.get("withinMinutes") is not None and catchup["withinMinutes"] != DEFAULT_CATCHUP_MINUTES:
-        flat["catchupMinutes"] = catchup["withinMinutes"]
-    if catchup.get("attempts") is not None and catchup["attempts"] != DEFAULT_CATCHUP_ATTEMPTS:
-        flat["catchupAttempts"] = catchup["attempts"]
-    if conn.get("degradeAfterNodes") is not None and conn["degradeAfterNodes"] != DEFAULT_DEGRADE_AFTER_NODES:
-        flat["degradeAfterNodes"] = conn["degradeAfterNodes"]
+    overrides = {
+        key: value for key, value in (conn.get("settings") or {}).items()
+        if key in ("catchupMinutes", "catchupAttempts", "degradeAfterNodes") and value != global_settings.get(key)
+    }
+    if overrides:
+        flat["settings"] = overrides
     flat.setdefault("schedule", {})["wakeWhenAsleep"] = bool(schedule.get("wakeWhenAsleep", True))
     interval = schedule.get("interval") or {}
     for run_key, default in (
@@ -306,11 +360,13 @@ def _compact_conn(conn):
 
 
 def _compact_config(config):
+    settings = _resolve_settings(config.get("settings"))
     return {
         "version": CONFIG_VERSION,
         **({"global": config["global"]} if config.get("global") else {}),
+        "settings": settings,
         "connections": {
-            conn_id: _compact_conn(conn)
+            conn_id: _compact_conn(conn, settings)
             for conn_id, conn in config["connections"].items()
         },
     }

@@ -955,18 +955,22 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         conn["schedule"]["wakeWhenAsleep"] = wake
     if catchup_minutes is not None or catchup_attempts is not None:
         block = _ensure_catchup(conn)
+        overrides = conn.setdefault("settings", {})
         if catchup_minutes is not None:
             if not 5 <= catchup_minutes <= 240:
                 die("--catchup-minutes must be between 5 and 240")
             block["withinMinutes"] = catchup_minutes
+            overrides["catchupMinutes"] = catchup_minutes
         if catchup_attempts is not None:
             if not 1 <= catchup_attempts <= 10:
                 die("--catchup-attempts must be between 1 and 10")
             block["attempts"] = catchup_attempts
+            overrides["catchupAttempts"] = catchup_attempts
     if degrade_after_nodes is not None:
         if not 1 <= degrade_after_nodes <= 10:
             die("--degrade-after-nodes must be between 1 and 10")
         conn["degradeAfterNodes"] = degrade_after_nodes
+        conn.setdefault("settings", {})["degradeAfterNodes"] = degrade_after_nodes
     if anchor_hhmm is not None:
         window = conn["window"]
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
@@ -1061,9 +1065,9 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
 @click.option("--wake/--no-wake", "wake", default=None, help="Let fixed slots wake a sleeping machine (macOS/Windows).")
-@click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node (default 30).")
-@click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node (default 5).")
-@click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled (default 3).")
+@click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node — overrides the global default (30).")
+@click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node — overrides the global default (5).")
+@click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled — overrides the global default (3).")
 def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
                catchup_minutes, catchup_attempts, degrade_after_nodes):
     """Show or change one connection's settings.
@@ -1071,6 +1075,53 @@ def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, 
     With no flags, prints the current settings."""
     _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
                 catchup_minutes, catchup_attempts, degrade_after_nodes)
+
+
+def _config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes):
+    config = load_config()
+    settings = config.setdefault("settings", {})
+    if all(value is None for value in (catchup_minutes, catchup_attempts, degrade_after_nodes)):
+        click.echo(
+            f"catch-up: {settings.get('catchupAttempts', DEFAULT_CATCHUP_ATTEMPTS)} attempts within "
+            f"{settings.get('catchupMinutes', DEFAULT_CATCHUP_MINUTES)} minutes"
+        )
+        click.echo(
+            f"degrade after nodes: {settings.get('degradeAfterNodes', DEFAULT_DEGRADE_AFTER_NODES)} "
+            "(lost nodes before degraded, and again before auto-disabled)"
+        )
+        click.echo("defaults for every connection — override one with: awewarm config set <id> --catchup-minutes 45")
+        return
+    if catchup_minutes is not None:
+        if not 5 <= catchup_minutes <= 240:
+            die("--catchup-minutes must be between 5 and 240")
+        settings["catchupMinutes"] = catchup_minutes
+    if catchup_attempts is not None:
+        if not 1 <= catchup_attempts <= 10:
+            die("--catchup-attempts must be between 1 and 10")
+        settings["catchupAttempts"] = catchup_attempts
+    if degrade_after_nodes is not None:
+        if not 1 <= degrade_after_nodes <= 10:
+            die("--degrade-after-nodes must be between 1 and 10")
+        settings["degradeAfterNodes"] = degrade_after_nodes
+    save_config(config)
+    if catchup_minutes is not None or catchup_attempts is not None:
+        click.echo(
+            f"✓ Catch-up defaults: {settings['catchupAttempts']} attempts within "
+            f"{settings['catchupMinutes']} minutes (connections without their own override)"
+        )
+    if degrade_after_nodes is not None:
+        click.echo(f"✓ Degrade after {settings['degradeAfterNodes']} consecutive lost nodes by default (both rungs)")
+
+
+@config.command("settings")
+@click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node (default 30).")
+@click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node (default 5).")
+@click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled (default 3).")
+def config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes):
+    """Show or change the tuning knobs every connection inherits.
+
+    With no flags, prints the current defaults."""
+    _config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes)
 
 
 def _config_remove(connection):

@@ -225,6 +225,7 @@ class V2FormatTests(IsolatedTestCase):
 
     def test_custom_tuning_knobs_survive_roundtrip(self):
         conn = self._v1_conn()
+        conn["settings"] = {"catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5}
         conn["catchup"] = {"attempts": 2, "withinMinutes": 1441}
         conn["degradeAfterNodes"] = 5
         conf = config.empty_config()
@@ -233,10 +234,65 @@ class V2FormatTests(IsolatedTestCase):
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 1441})
         self.assertEqual(loaded["degradeAfterNodes"], 5)
-        on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
-        self.assertEqual(on_disk["catchupAttempts"], 2)
-        self.assertEqual(on_disk["catchupMinutes"], 1441)
-        self.assertEqual(on_disk["degradeAfterNodes"], 5)
+        file = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(file["connections"]["glm"]["settings"], {"catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5})
+
+    def test_global_settings_inherited_by_connections(self):
+        conf = config.empty_config()
+        conf["settings"] = {"catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6}
+        conf["connections"]["glm"] = self._v1_conn()
+        config.save_config(conf)
+        file = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(file["settings"], {"catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6})
+        self.assertNotIn("settings", file["connections"]["glm"])
+        loaded = config.load_config()["connections"]["glm"]
+        self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 45})
+        self.assertEqual(loaded["degradeAfterNodes"], 6)
+
+    def test_connection_override_beats_global_settings(self):
+        conf = config.empty_config()
+        conf["settings"] = {"catchupMinutes": 45, "catchupAttempts": 2}
+        conn = self._v1_conn()
+        conn["settings"] = {"catchupMinutes": 60}
+        conn["catchup"] = {"attempts": 2, "withinMinutes": 60}
+        conf["connections"]["glm"] = conn
+        config.save_config(conf)
+        file = json.loads(Path(config.config_path()).read_text())
+        # only the knob that actually differs from the global block persists on the connection
+        self.assertEqual(file["connections"]["glm"]["settings"], {"catchupMinutes": 60})
+        loaded = config.load_config()["connections"]["glm"]
+        self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 60})
+
+    def test_flat_knobs_migrated_into_settings_on_load(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 2,
+            "connections": {"glm": {
+                "label": "glm", "url": "https://x.example/v4", "apiKey": "file:glm",
+                "mode": "fixed", "times": ["06:00"], "days": "every-day",
+                "catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4,
+            }},
+        }))
+        conn = config.load_config()["connections"]["glm"]
+        self.assertEqual(conn["catchup"], {"attempts": 2, "withinMinutes": 60})
+        self.assertEqual(conn["degradeAfterNodes"], 4)
+        # the file is rewritten so the migration sticks: per-connection values stay
+        # per-connection, and the top-level block is materialized with its defaults
+        file = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(file["settings"], config.default_settings())
+        self.assertEqual(file["connections"]["glm"]["settings"], {"catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4})
+        self.assertNotIn("catchupMinutes", file["connections"]["glm"])
+        self.assertNotIn("degradeAfterNodes", file["connections"]["glm"])
+
+    def test_settings_block_always_written(self):
+        conf = config.empty_config()
+        conf["connections"]["glm"] = self._v1_conn()
+        config.save_config(conf)
+        file = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(file["settings"], config.default_settings())
+        self.assertNotIn("settings", file["connections"]["glm"])
+        loaded = config.load_config()["connections"]["glm"]
+        self.assertEqual(loaded["catchup"], {"attempts": 5, "withinMinutes": 30})
+        self.assertEqual(loaded["degradeAfterNodes"], 3)
 
     def test_disabled_flag_roundtrips(self):
         conn = self._v1_conn()
