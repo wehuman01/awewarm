@@ -141,7 +141,7 @@ class V2FormatTests(IsolatedTestCase):
             "window": {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": 300, "evidence": "user-confirmed"},
             "activation": {"model": "GLM-5-Turbo", "prompt": "Reply with exactly: ok", "maxTokens": 4},
             "schedule": {"mode": "fixed",
-                         "fixed": {"at": ["06:00"], "days": "every-day", "catchUpWindowMinutes": 45, "skipIfActivatedWithinMinutes": 30},
+                         "fixed": {"at": ["06:00"], "days": "every-day", "skipIfActivatedWithinMinutes": 30},
                          "interval": {"graceSeconds": 75, "jitterSeconds": 30}},
         }
 
@@ -173,7 +173,8 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(conn["auth"]["apiKeyRef"], "$GLM_KEY")
         self.assertEqual(conn["window"]["durationMinutes"], 300)
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:00"])
-        self.assertEqual(conn["schedule"]["fixed"]["catchUpWindowMinutes"], 45)
+        self.assertEqual(conn["catchup"], {"attempts": 5, "withinMinutes": 30})
+        self.assertEqual(conn["degradeAfterNodes"], 3)
         self.assertEqual(config.connection_errors(conn, "glm"), [])
 
     def test_hybrid_flat_migrated_to_fixed_on_load(self):
@@ -224,12 +225,18 @@ class V2FormatTests(IsolatedTestCase):
 
     def test_custom_tuning_knobs_survive_roundtrip(self):
         conn = self._v1_conn()
-        conn["schedule"]["fixed"]["catchUpWindowMinutes"] = 1441
+        conn["catchup"] = {"attempts": 2, "withinMinutes": 1441}
+        conn["degradeAfterNodes"] = 5
         conf = config.empty_config()
         conf["connections"]["glm"] = conn
         config.save_config(conf)
         loaded = config.load_config()["connections"]["glm"]
-        self.assertEqual(loaded["schedule"]["fixed"]["catchUpWindowMinutes"], 1441)
+        self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 1441})
+        self.assertEqual(loaded["degradeAfterNodes"], 5)
+        on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
+        self.assertEqual(on_disk["catchupAttempts"], 2)
+        self.assertEqual(on_disk["catchupMinutes"], 1441)
+        self.assertEqual(on_disk["degradeAfterNodes"], 5)
 
     def test_disabled_flag_roundtrips(self):
         conn = self._v1_conn()

@@ -41,7 +41,9 @@ DEFAULT_PROMPT = "Reply with exactly: ok"
 DEFAULT_MAX_TOKENS = 4
 DEFAULT_GRACE_SECONDS = 75
 DEFAULT_JITTER_SECONDS = 30
-DEFAULT_CATCHUP_MINUTES = 45
+DEFAULT_CATCHUP_MINUTES = 30
+DEFAULT_CATCHUP_ATTEMPTS = 5
+DEFAULT_DEGRADE_AFTER_NODES = 3
 DEFAULT_SKIP_IF_ACTIVATED_MINUTES = 30
 DEFAULT_FIXED_AT = "06:35"
 DEFAULT_HISTORY_LIMIT = 20
@@ -86,10 +88,18 @@ def default_conn_state():
         "lastAttemptAt": None,
         "lastResult": None,
         "lastError": None,
-        "consecutiveFailures": 0,
-        "intervalDisabledAt": None,
         "nextDueAt": None,
         "deferUntil": None,
+        # Health ladder: failing → degraded → auto-disabled (see schedule.py)
+        "failedNodes": 0,
+        "nodeKey": None,
+        "nodeDueAt": None,
+        "nodeSlot": None,
+        "nodeAttempts": 0,
+        "degradedAt": None,
+        "nextProbeAt": None,
+        "degradedFailedNodes": 0,
+        "autoDisabledAt": None,
         "completedSlots": {},
         "skippedSlots": {},
         "history": [],
@@ -214,7 +224,6 @@ def _expand_conn(conn_id, flat):
         "fixed": {
             "at": list(flat.get("times") or [DEFAULT_FIXED_AT]),
             "days": flat.get("days") or "weekday",
-            "catchUpWindowMinutes": flat.get("catchUpMinutes", DEFAULT_CATCHUP_MINUTES),
             "skipIfActivatedWithinMinutes": flat.get("skipIfActivatedMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
         },
         "interval": {
@@ -235,6 +244,11 @@ def _expand_conn(conn_id, flat):
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
+        "catchup": {
+            "attempts": flat.get("catchupAttempts", DEFAULT_CATCHUP_ATTEMPTS),
+            "withinMinutes": flat.get("catchupMinutes", DEFAULT_CATCHUP_MINUTES),
+        },
+        "degradeAfterNodes": flat.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES),
         "schedule": schedule,
     }
 
@@ -267,13 +281,16 @@ def _compact_conn(conn):
         flat["times"] = list(fixed.get("at") or [DEFAULT_FIXED_AT])
         if fixed.get("days"):
             flat["days"] = fixed["days"]
-        for flat_key, run_key, default in (
-            ("catchUpMinutes", "catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES),
-            ("skipIfActivatedMinutes", "skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
-        ):
-            value = fixed.get(run_key)
-            if value is not None and value != default:
-                flat[flat_key] = value
+        value = fixed.get("skipIfActivatedWithinMinutes")
+        if value is not None and value != DEFAULT_SKIP_IF_ACTIVATED_MINUTES:
+            flat["skipIfActivatedMinutes"] = value
+    catchup = conn.get("catchup") or {}
+    if catchup.get("withinMinutes") is not None and catchup["withinMinutes"] != DEFAULT_CATCHUP_MINUTES:
+        flat["catchupMinutes"] = catchup["withinMinutes"]
+    if catchup.get("attempts") is not None and catchup["attempts"] != DEFAULT_CATCHUP_ATTEMPTS:
+        flat["catchupAttempts"] = catchup["attempts"]
+    if conn.get("degradeAfterNodes") is not None and conn["degradeAfterNodes"] != DEFAULT_DEGRADE_AFTER_NODES:
+        flat["degradeAfterNodes"] = conn["degradeAfterNodes"]
     flat.setdefault("schedule", {})["wakeWhenAsleep"] = bool(schedule.get("wakeWhenAsleep", True))
     interval = schedule.get("interval") or {}
     for run_key, default in (
@@ -378,12 +395,23 @@ def connection_errors(conn, conn_id="<connection>"):
                 errors.append(f"{conn_id}: schedule.fixed.at must be a non-empty list of HH:MM times")
             if fixed.get("days") not in DAY_RULES:
                 errors.append(f"{conn_id}: schedule.fixed.days must be 'weekday' or 'every-day'")
-            for key in ("catchUpWindowMinutes", "skipIfActivatedWithinMinutes"):
-                value = fixed.get(key)
-                if not isinstance(value, int) or value < 0:
-                    errors.append(f"{conn_id}: schedule.fixed.{key} must be an integer >= 0")
+            value = fixed.get("skipIfActivatedWithinMinutes")
+            if not isinstance(value, int) or value < 0:
+                errors.append(f"{conn_id}: schedule.fixed.skipIfActivatedWithinMinutes must be an integer >= 0")
             if not isinstance(schedule.get("wakeWhenAsleep", True), bool):
                 errors.append(f"{conn_id}: schedule.wakeWhenAsleep must be a boolean")
+    catchup = conn.get("catchup")
+    if catchup is not None:
+        if not isinstance(catchup, dict):
+            errors.append(f"{conn_id}: catchup must be an object with attempts/withinMinutes")
+        else:
+            for key in ("attempts", "withinMinutes"):
+                value = catchup.get(key)
+                if not isinstance(value, int) or value <= 0:
+                    errors.append(f"{conn_id}: catchup.{key} must be an integer > 0")
+    nodes = conn.get("degradeAfterNodes")
+    if nodes is not None and (not isinstance(nodes, int) or nodes <= 0):
+        errors.append(f"{conn_id}: degradeAfterNodes must be an integer > 0")
     interval = schedule.get("interval")
     if schedule["mode"] == "interval":
         if not isinstance(interval, dict):

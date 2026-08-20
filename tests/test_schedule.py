@@ -211,25 +211,192 @@ class ModeSeparationTests(unittest.TestCase):
 
 
 class FailurePolicyTests(unittest.TestCase):
-    def test_three_failures_degrade_and_success_rearms(self):
-        conn = account_connection(mode="interval", fixed_at=())
+    def interval_conn(self, **kwargs):
+        return account_connection(mode="interval", fixed_at=(), **kwargs)
+
+    def fixed_conn(self, **kwargs):
+        return account_connection(mode="fixed", **kwargs)
+
+    def interval_node(self, due):
+        return {"key": f"interval {schedule.iso(due)}", "dueAt": due}
+
+    def fixed_node(self, day, hhmm):
+        return {
+            "key": f"{day.strftime('%Y-%m-%d')} {hhmm}",
+            "dueAt": at(day, hhmm),
+            "slot": hhmm,
+        }
+
+    def lose_node(self, conn, conn_state, node, first_attempt_at, attempts=5):
+        kind = "fixed" if "slot" in node else "interval"
+        for i in range(attempts):
+            schedule.record_failure(
+                conn_state, conn, first_attempt_at + timedelta(minutes=5 * i),
+                kind, "boom", node=node,
+            )
+
+    def test_three_lost_interval_nodes_degrade(self):
+        conn = self.interval_conn()
         conn_state = default_conn_state()
         schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
-        for i in range(3):
-            schedule.record_failure(conn_state, at(WEDNESDAY, "12:07") + timedelta(minutes=i), "interval", "boom")
-        self.assertIsNotNone(conn_state["intervalDisabledAt"])
-        schedule.record_success(conn_state, conn, at(WEDNESDAY, "13:00"), "manual")
-        self.assertIsNone(conn_state["intervalDisabledAt"])
-        self.assertEqual(conn_state["consecutiveFailures"], 0)
+        for n in range(3):
+            due = at(WEDNESDAY, "12:05") + timedelta(hours=6 * n)
+            self.lose_node(conn, conn_state, self.interval_node(due), due)
+            if n < 2:
+                self.assertIsNone(conn_state["degradedAt"])
+        self.assertIsNotNone(conn_state["degradedAt"])
+        self.assertEqual(conn_state["failedNodes"], 3)
 
-    def test_two_failures_do_not_degrade(self):
+    def test_two_lost_nodes_do_not_degrade(self):
+        conn = self.interval_conn()
         conn_state = default_conn_state()
-        for i in range(2):
-            schedule.record_failure(conn_state, at(WEDNESDAY, "12:07") + timedelta(minutes=i), "interval", "boom")
-        self.assertIsNone(conn_state["intervalDisabledAt"])
+        for n in range(2):
+            due = at(WEDNESDAY, "12:05") + timedelta(hours=6 * n)
+            self.lose_node(conn, conn_state, self.interval_node(due), due)
+        self.assertIsNone(conn_state["degradedAt"])
+        self.assertEqual(conn_state["failedNodes"], 2)
+
+    def test_success_rearms_whole_ladder(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
+        for n in range(3):
+            due = at(WEDNESDAY, "12:05") + timedelta(hours=6 * n)
+            self.lose_node(conn, conn_state, self.interval_node(due), due)
+        conn_state["degradedFailedNodes"] = 2
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "20:00"), "manual")
+        self.assertIsNone(conn_state["degradedAt"])
+        self.assertEqual(conn_state["failedNodes"], 0)
+        self.assertEqual(conn_state["degradedFailedNodes"], 0)
+
+    def test_degraded_interval_waits_one_window_then_probes(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
+        degraded_at = at(WEDNESDAY, "18:29")
+        for n in range(3):
+            due = at(WEDNESDAY, "12:05") + timedelta(hours=2 * n)
+            self.lose_node(conn, conn_state, self.interval_node(due), due)
+        conn_state["degradedAt"] = schedule.iso(degraded_at)  # entered here
+        conn_state["nextProbeAt"] = None
+        still_frozen = degraded_at + timedelta(minutes=299)
+        self.assertEqual(schedule.plan_actions(conn, conn_state, still_frozen), [])
+        thawed = degraded_at + timedelta(minutes=301)
+        actions = schedule.plan_actions(conn, conn_state, thawed)
+        self.assertEqual([a["reason"] for a in actions], ["interval"])
+
+    def test_failed_degraded_probe_pushes_next_probe(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        conn_state["degradedAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
+        probe_at = at(WEDNESDAY, "13:00")
+        schedule.record_failure(
+            conn_state, conn, probe_at, "interval", "boom",
+            node=self.interval_node(probe_at),
+        )
+        self.assertEqual(conn_state["degradedFailedNodes"], 1)
+        self.assertEqual(
+            schedule.parse_ts(conn_state["nextProbeAt"]),
+            probe_at + timedelta(minutes=300),
+        )
+        self.assertEqual(schedule.plan_actions(conn, conn_state, probe_at + timedelta(minutes=10)), [])
+
+    def test_degraded_interval_three_failed_probes_auto_disable(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        conn_state["degradedAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
+        for n in range(3):
+            probe_at = at(WEDNESDAY, "13:00") + timedelta(hours=5 * n)
+            schedule.record_failure(
+                conn_state, conn, probe_at, "interval", "boom",
+                node=self.interval_node(probe_at),
+            )
+        self.assertIsNotNone(conn_state["autoDisabledAt"])
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(date(2026, 8, 20), "09:00")), [])
+
+    def test_fixed_node_lost_marks_slot_skipped(self):
+        conn = self.fixed_conn()
+        conn_state = default_conn_state()
+        self.lose_node(conn, conn_state, self.fixed_node(WEDNESDAY, "06:35"), at(WEDNESDAY, "06:35"))
+        self.assertEqual(conn_state["failedNodes"], 1)
+        self.assertIn("06:35", conn_state["skippedSlots"]["2026-08-19"])
+        # the lost slot never refires, even inside its catch-up window
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:50")), [])
+
+    def test_fixed_three_lost_nodes_degrade_then_single_shot(self):
+        conn = self.fixed_conn(fixed_at=("06:35", "11:40", "16:45", "21:50"), days="every-day")
+        conn_state = default_conn_state()
+        for hhmm in ("06:35", "11:40", "16:45"):
+            self.lose_node(conn, conn_state, self.fixed_node(WEDNESDAY, hhmm), at(WEDNESDAY, hhmm))
+        self.assertIsNotNone(conn_state["degradedAt"])
+        # degraded: the next slot fires exactly once
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "21:50"))
+        self.assertEqual([a["reason"] for a in actions], ["fixed"])
+        schedule.record_failure(
+            conn_state, conn, at(WEDNESDAY, "21:50"), "fixed", "boom",
+            node=self.fixed_node(WEDNESDAY, "21:50"),
+        )
+        self.assertEqual(conn_state["degradedFailedNodes"], 1)
+        self.assertIn("21:50", conn_state["skippedSlots"]["2026-08-19"])
+        # single shot: no catch-up retry inside the window
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "21:58")), [])
+
+    def test_interval_node_deadline_expires_into_node_lost(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
+        due = at(WEDNESDAY, "12:05")
+        node = self.interval_node(due)
+        schedule.record_failure(conn_state, conn, due, "interval", "boom", node=node)
+        schedule.record_failure(conn_state, conn, due + timedelta(minutes=5), "interval", "boom", node=node)
+        late_tick = due + timedelta(minutes=31)
+        self.assertEqual(
+            schedule.plan_actions(conn, conn_state, late_tick),
+            [{"type": "node-lost"}],
+        )
+        schedule.close_lost_node(conn_state, conn, late_tick, "catch-up window expired")
+        self.assertEqual(conn_state["failedNodes"], 1)
+        self.assertIsNone(conn_state["nodeKey"])
+
+    def test_fixed_slot_expired_without_attempts_is_not_a_lost_node(self):
+        conn = self.fixed_conn()
+        conn_state = default_conn_state()  # machine slept through the slot
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "07:10"))
+        self.assertEqual(actions, [{"type": "skip-slot", "slot": "06:35", "why": "past-catchup"}])
+        self.assertNotIn("lost", actions[0])  # tick skips the ladder move
+        self.assertEqual(conn_state["failedNodes"], 0)
+
+    def test_fixed_failed_slot_expires_with_lost_flag(self):
+        conn = self.fixed_conn()
+        conn_state = default_conn_state()
+        node = self.fixed_node(WEDNESDAY, "06:35")
+        schedule.record_failure(conn_state, conn, at(WEDNESDAY, "06:36"), "fixed", "boom", node=node)
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "07:10"))
+        self.assertEqual(actions[0]["type"], "skip-slot")
+        self.assertTrue(actions[0].get("lost"))
+
+    def test_manual_failure_never_counts(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        for i in range(6):
+            schedule.record_failure(conn_state, conn, at(WEDNESDAY, "12:07") + timedelta(minutes=i), "manual", "boom")
+        self.assertIsNone(conn_state["nodeKey"])
+        self.assertEqual(conn_state["failedNodes"], 0)
+        self.assertIsNone(conn_state["degradedAt"])
+
+    def test_legacy_state_migrates_on_plan(self):
+        conn = self.interval_conn()
+        conn_state = default_conn_state()
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
+        conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
+        conn_state["consecutiveFailures"] = 3
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "12:10")), [])
+        self.assertEqual(conn_state["degradedAt"], schedule.iso(at(WEDNESDAY, "08:00")))
+        self.assertNotIn("intervalDisabledAt", conn_state)
+        self.assertNotIn("consecutiveFailures", conn_state)
 
     def test_retry_throttle_after_failure(self):
-        conn = account_connection()
+        conn = self.fixed_conn()
         conn_state = default_conn_state()
         conn_state["lastResult"] = "failure"
         conn_state["lastAttemptAt"] = schedule.iso(at(WEDNESDAY, "06:40"))
@@ -237,40 +404,11 @@ class FailurePolicyTests(unittest.TestCase):
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:47"))
         self.assertEqual(actions[0]["type"], "activate")
 
-    def test_degraded_interval_probes_after_cooldown(self):
-        conn = account_connection(mode="interval", fixed_at=())
-        conn_state = default_conn_state()
-        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
-        for i in range(3):
-            schedule.record_failure(conn_state, at(WEDNESDAY, "12:07") + timedelta(minutes=i), "interval", "boom")
-        disabled_at = schedule.parse_ts(conn_state["intervalDisabledAt"])
-        # frozen inside the 300-min cooldown, free to probe one minute after it
-        frozen = disabled_at + timedelta(minutes=299)
-        self.assertEqual(schedule.plan_actions(conn, conn_state, frozen), [])
-        thawed = disabled_at + timedelta(minutes=301)
-        actions = schedule.plan_actions(conn, conn_state, thawed)
-        self.assertEqual([a["reason"] for a in actions], ["interval"])
-
-    def test_failed_probe_refreezes_for_another_cooldown(self):
-        conn = account_connection(mode="interval", fixed_at=())
-        conn_state = default_conn_state()
-        schedule.record_success(conn_state, conn, at(WEDNESDAY, "07:00"), "interval")
-        conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
-        conn_state["consecutiveFailures"] = 3  # already degraded; this is the probe
-        schedule.record_failure(conn_state, at(WEDNESDAY, "13:01"), "interval", "boom")
-        re_frozen = schedule.parse_ts(conn_state["intervalDisabledAt"])
-        self.assertEqual(re_frozen, at(WEDNESDAY, "13:01"))
-        self.assertEqual(
-            schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "13:10")), []
-        )
-        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "18:02"))
-        self.assertEqual([a["reason"] for a in actions], ["interval"])
-
     def test_history_capped(self):
-        conn = account_connection(mode="interval", fixed_at=())
+        conn = self.interval_conn()
         conn_state = default_conn_state()
         for i in range(30):
-            schedule.record_failure(conn_state, at(WEDNESDAY, "09:00") + timedelta(minutes=i), "interval", "x")
+            schedule.record_failure(conn_state, conn, at(WEDNESDAY, "09:00") + timedelta(minutes=i), "interval", "x")
         self.assertEqual(len(conn_state["history"]), 20)
 
 

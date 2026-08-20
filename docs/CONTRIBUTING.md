@@ -46,9 +46,15 @@ first.
 - **Hybrid anti-double-fire**: any success re-anchors interval; a fixed slot
   within `skipIfActivatedWithinMinutes` of a recent success is marked satisfied
   instead of firing.
-- **Failure policy**: 3 consecutive failures auto-pause interval
-  (`intervalDisabledAt`); any success re-arms it. Failed attempts retry at most
-  once per 5 minutes.
+- **Failure policy**: a health ladder shared by both modes — `connected →
+  failing → degraded → auto-disabled`. A failed node (slot or renewal moment)
+  gets catch-up retries (`catchup.attempts` within `catchup.withinMinutes`,
+  spaced by the 5-minute throttle); a lost node counts one rung.
+  `degradeAfterNodes` consecutive lost nodes (default 3) drop to degraded
+  (one shot per node, no catch-up); the same count again drops to
+  auto-disabled (fully silent until `--on`). Any success resets the whole
+  ladder; manual/verify fires never count as nodes; a slot the machine slept
+  through (zero attempts) is not a lost node.
 - **Security**: `discover` is read-only (no network, existence checks only);
   API keys live in `secrets.json` (0600, read-back verified on store; legacy
   `keychain:` refs migrate once via the `security` CLI); every display path

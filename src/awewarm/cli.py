@@ -18,7 +18,9 @@ import click
 from . import __version__, discover, install, keystore, schedule, transport
 from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
+    DEFAULT_CATCHUP_ATTEMPTS,
     DEFAULT_CATCHUP_MINUTES,
+    DEFAULT_DEGRADE_AFTER_NODES,
     DEFAULT_FIXED_AT,
     DEFAULT_GRACE_SECONDS,
     DEFAULT_JITTER_SECONDS,
@@ -112,14 +114,18 @@ def _resolve_api_key(conn):
     return keystore.load_api_key(ref)
 
 
-def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True):
-    """Send one real request and record the outcome in state."""
+def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True, node=None):
+    """Send one real request and record the outcome in state.
+
+    node ties the attempt to its scheduled node for ladder bookkeeping;
+    manual/verify fires omit it so they never count as nodes.
+    """
     schedule.record_attempt(cs, now)
     api_key = None
     if conn["kind"] == "subscription":
         api_key = _resolve_api_key(conn)
         if api_key is None:
-            schedule.record_failure(cs, now, kind, "API key unavailable (secrets file or env)")
+            schedule.record_failure(cs, conn, now, kind, "API key unavailable (secrets file or env)", node=node)
             log_event(f"{conn_id} activation ({kind}) failed: API key unavailable")
             return {"ok": False, "detail": "API key unavailable (secrets file or env)"}
     result = transport.send_activation(conn, api_key)
@@ -127,7 +133,7 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True)
         schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
         log_event(f"{conn_id} activation ({kind}) ok")
     else:
-        schedule.record_failure(cs, now, kind, result["detail"])
+        schedule.record_failure(cs, conn, now, kind, result["detail"], node=node)
         log_event(f"{conn_id} activation ({kind}) failed: {result['detail']}")
     return result
 
@@ -277,9 +283,12 @@ def _fixed_block(fixed_at, days):
     return {
         "at": list(fixed_at),
         "days": days,
-        "catchUpWindowMinutes": DEFAULT_CATCHUP_MINUTES,
         "skipIfActivatedWithinMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
     }
+
+
+def _catchup_block():
+    return {"attempts": DEFAULT_CATCHUP_ATTEMPTS, "withinMinutes": DEFAULT_CATCHUP_MINUTES}
 
 
 def _interval_block():
@@ -307,6 +316,8 @@ def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
+        "catchup": _catchup_block(),
+        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
         "schedule": {
             "mode": mode,
             "fixed": _fixed_block(fixed_at, days),
@@ -330,6 +341,8 @@ def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
+        "catchup": _catchup_block(),
+        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
         "schedule": {
             "mode": mode,
             "fixed": _fixed_block(fixed_at, days),
@@ -549,14 +562,21 @@ def _tick():
             click.echo(f"skipping {conn_id}: {errors[0]}")
             continue
         cs = conn_state(state, conn_id)
+        schedule.migrate_state(cs)
         for action in schedule.plan_actions(conn, cs, now):
             if action["type"] == "skip-slot":
                 schedule.record_skip(cs, now, action["slot"], action["why"])
                 skipped += 1
+                if action.get("lost"):
+                    schedule.close_lost_node(cs, conn, now, "catch-up window expired")
+                continue
+            if action["type"] == "node-lost":
+                schedule.close_lost_node(cs, conn, now, "catch-up window expired")
                 continue
             reason = action["reason"]
             slot_note = f", slot {action['slot']}" if action.get("slot") else ""
-            result = _execute_activation(conn, conn_id, cs, now, reason, action.get("slot"))
+            node = _node_for(action, now)
+            result = _execute_activation(conn, conn_id, cs, now, reason, action.get("slot"), node=node)
             mark = "✓" if result["ok"] else "✗"
             suffix = f" — {result['detail']}" if result["detail"] else ""
             click.echo(f"{mark} activated {conn_id} ({reason}{slot_note}){suffix}")
@@ -642,6 +662,13 @@ def _fire_all():
             click.echo(f"skipping {conn_id}: {errors[0]}")
             continue
         cs = conn_state(state, conn_id)
+        schedule.migrate_state(cs)
+        if cs.get("autoDisabledAt"):
+            click.echo(
+                f"skipping {conn_id}: auto-disabled after repeated failures "
+                f"(resume: awewarm config set {conn_id} --on)"
+            )
+            continue
         result = _execute_activation(conn, conn_id, cs, now, "manual", reset_due=False)
         mark = "✓" if result["ok"] else "✗"
         suffix = f" — {result['detail']}" if result["detail"] else ""
@@ -655,9 +682,29 @@ def _fire_all():
 def _ensure_fixed(conn):
     fixed = conn["schedule"].setdefault("fixed", {})
     fixed.setdefault("days", "weekday")
-    fixed.setdefault("catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES)
     fixed.setdefault("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES)
     return fixed
+
+
+def _ensure_catchup(conn):
+    return conn.setdefault("catchup", {})
+
+
+def _node_for(action, now):
+    """Scheduled node an activate action belongs to; manual fires pass None."""
+    reason = action.get("reason")
+    if reason == "fixed":
+        return {
+            "key": f"{action['slotAt'].strftime('%Y-%m-%d')} {action['slot']}",
+            "dueAt": action["slotAt"],
+            "slot": action["slot"],
+        }
+    if reason == "interval":
+        due = action.get("dueAt") or now
+        return {"key": f"interval {schedule.iso(due)}", "dueAt": due}
+    if reason == "first-anchor":
+        return {"key": "first-anchor", "dueAt": None}
+    return None
 
 
 def _show_settings(conn_id, conn):
@@ -670,6 +717,12 @@ def _show_settings(conn_id, conn):
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
     click.echo(f"  window: {duration}")
+    catchup = conn.get("catchup") or {}
+    click.echo(
+        f"  catch-up: {catchup.get('attempts', DEFAULT_CATCHUP_ATTEMPTS)} attempts within "
+        f"{catchup.get('withinMinutes', DEFAULT_CATCHUP_MINUTES)} minutes"
+    )
+    click.echo(f"  degrade after nodes: {conn.get('degradeAfterNodes', DEFAULT_DEGRADE_AFTER_NODES)}")
     click.echo(f"  wake when asleep: {'true' if wake else 'false'} (macOS/Windows only; Linux cannot wake)")
     click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed --no-wake")
 
@@ -677,16 +730,20 @@ def _show_settings(conn_id, conn):
 def _status_block(conn_id, conn, state, now, detailed):
     enabled = conn.get("enabled", True)
     errors = connection_errors(conn, conn_id)
+    cs = conn_state(state, conn_id)
+    schedule.migrate_state(cs)
     if not enabled:
         word = "disabled"
     elif errors:
         word = "invalid"
+    elif cs.get("autoDisabledAt"):
+        word = "auto-disabled"
+    elif cs.get("degradedAt"):
+        word = "degraded"
+    elif cs.get("nodeKey") or cs.get("failedNodes", 0) > 0:
+        word = "failing"
     else:
         word = "connected"
-    cs = state["connections"].get(conn_id) or {}
-    degraded = cs.get("intervalDisabledAt") and conn["schedule"]["mode"] == "interval"
-    if degraded and word == "connected":
-        word = "degraded"
     click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}")
     if errors:
         click.echo(f"  Problem: {errors[0]}")
@@ -698,11 +755,24 @@ def _status_block(conn_id, conn, state, now, detailed):
     fixed = conn["schedule"].get("fixed") or {}
     times_line = f"{', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})"
     mode = conn["schedule"]["mode"]
-    click.echo(f"  Mode: {mode}" + (" (interval paused after failures)" if degraded else ""))
+    click.echo(f"  Mode: {mode}" + (" (single-shot after failures)" if word == "degraded" else ""))
     if mode == "fixed":
         click.echo(f"  Times: {times_line}")
     else:
         click.echo(f"  Window: {window_line}" + (f" (evidence: {window['evidence']})" if detailed else ""))
+    if word in ("failing", "degraded", "auto-disabled"):
+        threshold = conn.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES)
+        if word == "failing":
+            attempts_max = (conn.get("catchup") or {}).get("attempts", DEFAULT_CATCHUP_ATTEMPTS)
+            if cs.get("nodeKey"):
+                detail = f"catch-up attempt {cs.get('nodeAttempts', 0)}/{attempts_max}"
+            else:
+                detail = "waiting for the next node"
+            click.echo(f"  Health: failing — {cs.get('failedNodes', 0)}/{threshold} nodes lost, {detail}")
+        elif word == "degraded":
+            click.echo(f"  Health: degraded — one shot per node ({cs.get('degradedFailedNodes', 0)}/{threshold} lost)")
+        else:
+            click.echo(f"  Health: stopped after repeated node failures — resume with: awewarm config set {conn_id} --on")
     if detailed:
         target = conn["transport"].get("baseUrl") or conn["transport"].get("cliCommand")
         click.echo(f"  Transport: {conn['transport']['kind']}" + (f" → {target}" if target else ""))
@@ -719,6 +789,9 @@ def _status_block(conn_id, conn, state, now, detailed):
         click.echo(f"  Last result: failure ({_fmt_moment(attempted, now)}) — {detail}")
     if not enabled:
         click.echo("  Next due: none (disabled)")
+        return
+    if cs.get("autoDisabledAt"):
+        click.echo("  Next due: none (auto-disabled)")
         return
     due_at, due_kind = schedule.next_due(conn, cs, now)
     click.echo(f"  Next due: {_fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
@@ -834,7 +907,8 @@ Offers detected local accounts plus a manual subscription endpoint."""
     _config_add()
 
 
-def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake):
+def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
+                catchup_minutes=None, catchup_attempts=None, degrade_after_nodes=None):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     slots = []
@@ -843,7 +917,10 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
             slots = _slots_proc(times)
         except ValueError as exc:
             die(str(exc))
-    if all(value is None for value in (times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake)):
+    if all(value is None for value in (
+        times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
+        catchup_minutes, catchup_attempts, degrade_after_nodes,
+    )):
         _show_settings(conn_id, conn)
         return
     if api_key is not None:
@@ -868,8 +945,28 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         conn["schedule"]["mode"] = mode
     if enabled is not None:
         conn["enabled"] = enabled
+        if enabled:
+            # Resuming is a conscious fresh start: drop the failure ladder,
+            # keep schedule memory (anchor, chain, completed slots).
+            schedule.migrate_state(conn_state(state, conn_id))
+            schedule.reset_ladder(conn_state(state, conn_id))
+            state_changed = True
     if wake is not None:
         conn["schedule"]["wakeWhenAsleep"] = wake
+    if catchup_minutes is not None or catchup_attempts is not None:
+        block = _ensure_catchup(conn)
+        if catchup_minutes is not None:
+            if not 5 <= catchup_minutes <= 240:
+                die("--catchup-minutes must be between 5 and 240")
+            block["withinMinutes"] = catchup_minutes
+        if catchup_attempts is not None:
+            if not 1 <= catchup_attempts <= 10:
+                die("--catchup-attempts must be between 1 and 10")
+            block["attempts"] = catchup_attempts
+    if degrade_after_nodes is not None:
+        if not 1 <= degrade_after_nodes <= 10:
+            die("--degrade-after-nodes must be between 1 and 10")
+        conn["degradeAfterNodes"] = degrade_after_nodes
     if anchor_hhmm is not None:
         window = conn["window"]
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
@@ -918,9 +1015,17 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
     if mode:
         click.echo(f"✓ Mode for {conn_id}: {mode}")
     if enabled is True:
-        click.echo(f"✓ {conn_id} enabled (mode: {conn['schedule']['mode']})")
+        click.echo(f"✓ {conn_id} enabled (mode: {conn['schedule']['mode']}, failure counters reset)")
     if enabled is False:
         click.echo(f"✓ {conn_id} disabled — resume with: awewarm config set {conn_id} --on")
+    if catchup_minutes is not None or catchup_attempts is not None:
+        block = conn.get("catchup") or {}
+        click.echo(
+            f"✓ Catch-up for {conn_id}: {block.get('attempts', DEFAULT_CATCHUP_ATTEMPTS)} attempts within "
+            f"{block.get('withinMinutes', DEFAULT_CATCHUP_MINUTES)} minutes"
+        )
+    if degrade_after_nodes is not None:
+        click.echo(f"✓ Degrade after {conn['degradeAfterNodes']} consecutive lost nodes (both rungs)")
     if anchor_hhmm is not None:
         next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
         click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, anchor_now)} (interval)")
@@ -950,17 +1055,22 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
 @click.option("--times", "times", default=None, metavar="HH:MM,...", help="Fixed activation times, comma- or space-separated, e.g. 06:35,11:40.")
 @click.option("--days", type=click.Choice(["weekday", "every-day"]), default=None, help="Which days the fixed times fire.")
 @click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Switch schedule mode.")
-@click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection.")
+@click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection (--on also resets failure counters).")
 @click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
 @click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer interval activation until this time (today, or tomorrow if passed).")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
 @click.option("--wake/--no-wake", "wake", default=None, help="Let fixed slots wake a sleeping machine (macOS/Windows).")
-def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake):
+@click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node (default 30).")
+@click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node (default 5).")
+@click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled (default 3).")
+def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
+               catchup_minutes, catchup_attempts, degrade_after_nodes):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
-    _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake)
+    _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
+                catchup_minutes, catchup_attempts, degrade_after_nodes)
 
 
 def _config_remove(connection):

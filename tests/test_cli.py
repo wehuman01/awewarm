@@ -321,7 +321,7 @@ class RunTests(IsolatedTestCase):
         # 00:00 slot, every day, catch-up window longer than a day, so the
         # first run of any test is always "due" regardless of wall clock.
         conn = account_connection(mode="fixed", fixed_at=("00:00",), days="every-day")
-        conn["schedule"]["fixed"]["catchUpWindowMinutes"] = 1441
+        conn["catchup"] = {"attempts": 5, "withinMinutes": 1441}
         return conn
 
     def test_run_requires_force_without_tty(self):
@@ -366,6 +366,188 @@ class RunTests(IsolatedTestCase):
         result = invoke(["run", "--force"])
         self.assertIn("No enabled connections", result.output)
         send.assert_not_called()
+
+    @mock.patch("awewarm.transport.send_activation")
+    def test_run_all_skips_auto_disabled(self, send):
+        write_config(self.always_due_conn())
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["autoDisabledAt"] = "2026-08-19T06:35:00+08:00"
+        cfg.save_state(state)
+        result = invoke(["run", "--force"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("auto-disabled after repeated failures", result.output)
+        self.assertIn("0 of 1 activated", result.output)
+        send.assert_not_called()
+
+
+class LadderStatusTests(IsolatedTestCase):
+    def seed_state(self, **fields):
+        write_config(account_connection(mode="fixed"))
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs.update(fields)
+        cfg.save_state(state)
+        return cs
+
+    def test_status_failing_shows_health_line(self):
+        self.seed_state(
+            nodeKey="2026-08-19 06:35", nodeDueAt="2026-08-19T06:35:00+08:00",
+            nodeAttempts=2, failedNodes=1,
+            lastResult="failure", lastError="HTTP 500",
+        )
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("(claude-code-main) — failing", result.output)
+        self.assertIn("Health: failing — 1/3 nodes lost, catch-up attempt 2/5", result.output)
+
+    def test_status_degraded_shows_single_shot(self):
+        self.seed_state(degradedAt="2026-08-19T18:29:00+08:00", degradedFailedNodes=1)
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("(claude-code-main) — degraded", result.output)
+        self.assertIn("Mode: fixed (single-shot after failures)", result.output)
+        self.assertIn("Health: degraded — one shot per node (1/3 lost)", result.output)
+
+    def test_status_auto_disabled_shows_resume_hint(self):
+        self.seed_state(autoDisabledAt="2026-08-19T22:00:00+08:00")
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("(claude-code-main) — auto-disabled", result.output)
+        self.assertIn("resume with: awewarm config set claude-code-main --on", result.output)
+        self.assertIn("Next due: none (auto-disabled)", result.output)
+
+    def test_user_disabled_still_wins_display(self):
+        conn = account_connection(mode="fixed")
+        conn["enabled"] = False
+        write_config(conn)
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["autoDisabledAt"] = "2026-08-19T22:00:00+08:00"
+        cfg.save_state(state)
+        result = invoke(["status"])
+        self.assertIn("(claude-code-main) — disabled", result.output)
+        self.assertNotIn("auto-disabled", result.output)
+
+    def test_on_resets_the_ladder(self):
+        self.seed_state(
+            nodeKey="2026-08-19 06:35", nodeAttempts=3, failedNodes=3,
+            degradedAt="2026-08-19T18:29:00+08:00", degradedFailedNodes=2,
+            autoDisabledAt="2026-08-19T22:00:00+08:00",
+        )
+        result = invoke(["config", "set", "claude-code-main", "--on"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("failure counters reset", result.output)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertIsNone(cs["degradedAt"])
+        self.assertIsNone(cs["autoDisabledAt"])
+        self.assertIsNone(cs["nodeKey"])
+        self.assertEqual(cs["failedNodes"], 0)
+
+    def test_legacy_interval_disabled_state_shows_degraded(self):
+        self.seed_state(
+            lastActivationAt="2026-08-19T07:05:00+08:00",
+            nextDueAt="2026-08-19T12:06:15+08:00",
+            intervalDisabledAt="2026-08-19T08:00:00+08:00",
+        )
+        conn = account_connection(mode="interval", fixed_at=())
+        write_config(conn)
+        result = invoke(["status"])
+        self.assertIn("(claude-code-main) — degraded", result.output)
+        self.assertIn("probing after failures", result.output)
+
+
+class CatchupFlagTests(IsolatedTestCase):
+    def test_flags_persist_and_show(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke([
+            "config", "set", "claude-code-main",
+            "--catchup-attempts", "3", "--catchup-minutes", "60", "--degrade-after-nodes", "5",
+        ])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Catch-up for claude-code-main: 3 attempts within 60 minutes", result.output)
+        self.assertIn("Degrade after 5 consecutive lost nodes", result.output)
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["catchup"], {"attempts": 3, "withinMinutes": 60})
+        self.assertEqual(conn["degradeAfterNodes"], 5)
+        shown = invoke(["config", "set", "claude-code-main"])
+        self.assertIn("catch-up: 3 attempts within 60 minutes", shown.output)
+        self.assertIn("degrade after nodes: 5", shown.output)
+
+    def test_out_of_range_rejected(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main", "--catchup-minutes", "3"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("between 5 and 240", output_of(result))
+        result = invoke(["config", "set", "claude-code-main", "--catchup-attempts", "0"])
+        self.assertNotEqual(result.exit_code, 0)
+        result = invoke(["config", "set", "claude-code-main", "--degrade-after-nodes", "11"])
+        self.assertNotEqual(result.exit_code, 0)
+
+
+class TickLadderTests(IsolatedTestCase):
+    def tick_at(self, moment, send_result):
+        with mock.patch("awewarm.cli._now") as now, mock.patch("awewarm.transport.send_activation") as send:
+            now.return_value = moment
+            send.return_value = send_result
+            result = invoke(["tick"])
+        return result, send
+
+    def test_tick_failure_opens_node_and_throttles(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        write_config(account_connection(mode="fixed", fixed_at=("06:35",), days="every-day"))
+        tz = ZoneInfo("Asia/Shanghai")
+        _, first = self.tick_at(datetime(2026, 8, 19, 6, 36, tzinfo=tz), {"ok": False, "detail": "HTTP 500"})
+        self.assertEqual(first.call_count, 1)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(cs["nodeAttempts"], 1)
+        self.assertEqual(cs["failedNodes"], 0)
+        self.assertIsNotNone(cs["nodeKey"])
+        # inside the 5-minute throttle nothing refires
+        _, throttled = self.tick_at(datetime(2026, 8, 19, 6, 38, tzinfo=tz), {"ok": False, "detail": "HTTP 500"})
+        self.assertEqual(throttled.call_count, 0)
+        # past the throttle the catch-up retry fires
+        _, retried = self.tick_at(datetime(2026, 8, 19, 6, 42, tzinfo=tz), {"ok": False, "detail": "HTTP 500"})
+        self.assertEqual(retried.call_count, 1)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(cs["nodeAttempts"], 2)
+
+    def test_tick_degraded_fixed_slot_single_shot(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        write_config(account_connection(mode="fixed", fixed_at=("06:35",), days="every-day"))
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["degradedAt"] = "2026-08-18T21:50:00+08:00"
+        cfg.save_state(state)
+        tz = ZoneInfo("Asia/Shanghai")
+        _, first = self.tick_at(datetime(2026, 8, 19, 6, 36, tzinfo=tz), {"ok": False, "detail": "HTTP 429"})
+        self.assertEqual(first.call_count, 1)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(cs["degradedFailedNodes"], 1)
+        self.assertIn("06:35", cs["skippedSlots"]["2026-08-19"])
+        # single shot: the retry throttle window passing must NOT refire
+        _, later = self.tick_at(datetime(2026, 8, 19, 6, 50, tzinfo=tz), {"ok": False, "detail": "HTTP 429"})
+        self.assertEqual(later.call_count, 0)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(cs["degradedFailedNodes"], 1)
+
+    def test_tick_auto_disabled_is_silent(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        write_config(account_connection(mode="fixed", fixed_at=("06:35",), days="every-day"))
+        state = cfg.empty_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["autoDisabledAt"] = "2026-08-18T22:00:00+08:00"
+        cfg.save_state(state)
+        tz = ZoneInfo("Asia/Shanghai")
+        result, send = self.tick_at(datetime(2026, 8, 19, 6, 36, tzinfo=tz), {"ok": True, "detail": "ok"})
+        self.assertIn("nothing due", result.output)
+        self.assertEqual(send.call_count, 0)
 
 
 class RunConnectionTests(IsolatedTestCase):

@@ -427,7 +427,6 @@ class CalendarEntriesTests(IsolatedTestCase):
     def _conn(times, days="weekday", mode="fixed", enabled=True, wake=None):
         schedule = {"mode": mode, "fixed": {
             "at": times, "days": days,
-            "catchUpWindowMinutes": cfg.DEFAULT_CATCHUP_MINUTES,
             "skipIfActivatedWithinMinutes": cfg.DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
         }, "interval": {
             "graceSeconds": cfg.DEFAULT_GRACE_SECONDS,

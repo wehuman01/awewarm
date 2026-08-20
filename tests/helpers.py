@@ -53,12 +53,13 @@ def account_connection(mode="fixed", window_status="verified", fixed_at=("06:35"
             "evidence": "builtin-provider" if verified else "none",
         },
         "activation": {"model": "haiku", "prompt": "Reply with exactly: ok", "maxTokens": 4},
+        "catchup": {"attempts": 5, "withinMinutes": 30},
+        "degradeAfterNodes": 3,
         "schedule": {
             "mode": mode,
             "fixed": {
                 "at": list(fixed_at),
                 "days": days,
-                "catchUpWindowMinutes": 45,
                 "skipIfActivatedWithinMinutes": 30,
             },
             "interval": {"graceSeconds": 75, "jitterSeconds": 30},
@@ -86,12 +87,13 @@ def plan_connection(mode="fixed", fixed_at=("06:35",), days="weekday", window_st
             "evidence": "user-confirmed" if confirmed else "none",
         },
         "activation": {"model": "glm-4.7", "prompt": "Reply with exactly: ok", "maxTokens": 4},
+        "catchup": {"attempts": 5, "withinMinutes": 30},
+        "degradeAfterNodes": 3,
         "schedule": {
             "mode": mode,
             "fixed": {
                 "at": list(fixed_at),
                 "days": days,
-                "catchUpWindowMinutes": 45,
                 "skipIfActivatedWithinMinutes": 30,
             },
             "interval": {"graceSeconds": 75, "jitterSeconds": 30},

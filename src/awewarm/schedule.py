@@ -4,14 +4,23 @@ No network, no disk, no clock reads — `now` is always injected. Actions are
 plain dicts so `run` can execute or dry-run them.
 
 Action shapes:
-  {"type": "activate", "reason": "fixed"|"interval"|"first-anchor", "slot": "HH:MM"?, "slotAt": datetime?}
-  {"type": "skip-slot", "slot": "HH:MM", "why": "past-catchup"|"recently-activated"}
+  {"type": "activate", "reason": "fixed"|"interval"|"first-anchor", "slot": "HH:MM"?, "slotAt": datetime?, "dueAt": datetime?}
+  {"type": "skip-slot", "slot": "HH:MM", "why": "past-catchup"|"recently-activated", "lost": True?}
+  {"type": "node-lost"}
+
+Health ladder (per connection, both modes share it):
+  connected → failing (a node failed, catch-up retries allowed)
+            → degraded (N consecutive lost nodes; single shot per node)
+            → auto-disabled (N more lost nodes; fully silent until --on)
+Any scheduled or manual success resets the whole ladder.
 """
 import random
 from datetime import datetime, timedelta
 
 from .config import (
+    DEFAULT_CATCHUP_ATTEMPTS,
     DEFAULT_CATCHUP_MINUTES,
+    DEFAULT_DEGRADE_AFTER_NODES,
     DEFAULT_GRACE_SECONDS,
     DEFAULT_HISTORY_LIMIT,
     DEFAULT_JITTER_SECONDS,
@@ -20,8 +29,22 @@ from .config import (
 )
 
 RETRY_THROTTLE = timedelta(minutes=5)
-DEGRADE_AFTER_FAILURES = 3
 SLOT_KEEP_DAYS = 7
+
+
+def _catchup(connection):
+    block = connection.get("catchup") or {}
+    attempts = block.get("attempts", DEFAULT_CATCHUP_ATTEMPTS)
+    within = timedelta(minutes=block.get("withinMinutes", DEFAULT_CATCHUP_MINUTES))
+    return max(1, attempts), within
+
+
+def _degrade_after(connection):
+    return max(1, connection.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES))
+
+
+def _window(connection):
+    return timedelta(minutes=(connection["window"].get("durationMinutes") or 60))
 
 
 def window_override_notice(old_window, new_minutes, grace_seconds=None):
@@ -124,13 +147,21 @@ def _throttled(conn_state, now):
     return failed and last_attempt is not None and now - last_attempt < RETRY_THROTTLE
 
 
+def _fixed_node_key(day_key, hhmm):
+    return f"{day_key} {hhmm}"
+
+
 def _due_fixed(connection, conn_state, now):
-    """At most one activate for the earliest due slot, plus skip bookkeeping."""
+    """At most one activate for the earliest due slot, plus skip bookkeeping.
+
+    In degraded mode a slot still fires (single shot); the node closes and the
+    slot is marked skipped on that one failure, so it never refires.
+    """
     fixed = connection["schedule"].get("fixed") or {}
     if not is_active_day(now.date(), fixed.get("days", "weekday")):
         return [], None
     at_times = fixed.get("at") or []
-    catchup = timedelta(minutes=fixed.get("catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES))
+    catchup = _catchup(connection)[1]
     skip_window = timedelta(
         minutes=fixed.get("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES)
     )
@@ -147,7 +178,15 @@ def _due_fixed(connection, conn_state, now):
         if slot_at is None or now < slot_at:
             continue
         if now > slot_at + catchup:
-            pending_skip.append({"type": "skip-slot", "slot": hhmm, "why": "past-catchup"})
+            expired = {
+                "type": "skip-slot",
+                "slot": hhmm,
+                "why": "past-catchup",
+            }
+            node_key = conn_state.get("nodeKey")
+            if node_key == _fixed_node_key(day_key, hhmm) and conn_state.get("nodeAttempts"):
+                expired["lost"] = True
+            pending_skip.append(expired)
             continue
         if last_ok is not None and slot_at - last_ok < skip_window:
             pending_skip.append({"type": "skip-slot", "slot": hhmm, "why": "recently-activated"})
@@ -159,56 +198,149 @@ def _due_fixed(connection, conn_state, now):
     return pending_skip, activate
 
 
-def interval_thaw_at(connection, conn_state):
-    """When a failure-paused interval may probe again, or None when running.
+def _probe_at(conn_state, connection):
+    """Earliest single-shot probe moment while degraded, or None when running.
 
-    A probe that fails re-freezes for another full window (record_failure
-    re-stamps intervalDisabledAt), so degraded connections back off without
-    going silent forever — pure interval mode has no fixed slot to rescue it.
+    A failed probe re-stamps nextProbeAt for another full window, so degraded
+    connections back off without going silent forever.
     """
-    disabled_at = parse_ts(conn_state.get("intervalDisabledAt"))
-    if disabled_at is None:
+    explicit = parse_ts(conn_state.get("nextProbeAt"))
+    if explicit is not None:
+        return explicit
+    entered = parse_ts(conn_state.get("degradedAt"))
+    if entered is None:
         return None
-    cooldown = timedelta(minutes=(connection["window"].get("durationMinutes") or 60))
-    return disabled_at + cooldown
+    return entered + _window(connection)
 
 
 def _due_interval(connection, conn_state, now):
+    if conn_state.get("autoDisabledAt"):
+        return None
     defer = parse_ts(conn_state.get("deferUntil"))
     if defer is not None and now < defer:
         return None
-    thaw_at = interval_thaw_at(connection, conn_state)
-    if thaw_at is not None and now < thaw_at:
-        return None
-    if _last_success(conn_state) is None:
-        # No anchor yet: fire once to open the first window.
+    catchup_attempts, catchup_within = _catchup(connection)
+    if not conn_state.get("degradedAt"):
+        node_due = parse_ts(conn_state.get("nodeDueAt"))
+        if conn_state.get("nodeKey") and node_due is not None and now > node_due + catchup_within:
+            return {"type": "node-lost"}
+        if _last_success(conn_state) is None:
+            # No anchor yet: fire once to open the first window. nextDueAt,
+            # when set, is the backoff from a lost first-anchor node.
+            floor = parse_ts(conn_state.get("nextDueAt"))
+            if floor is not None and now < floor:
+                return None
+            if _throttled(conn_state, now):
+                return None
+            return {"type": "activate", "reason": "first-anchor"}
+        due = parse_ts(conn_state.get("nextDueAt"))
+        if due is None:
+            # State written before nextDueAt existed; recompute deterministically.
+            due = compute_next_due(connection, _last_success(conn_state), jitter_seconds=0)
+        if now < due:
+            return None
         if _throttled(conn_state, now):
             return None
-        return {"type": "activate", "reason": "first-anchor"}
-    due = parse_ts(conn_state.get("nextDueAt"))
-    if due is None:
-        # State written before nextDueAt existed; recompute deterministically.
-        due = compute_next_due(connection, _last_success(conn_state), jitter_seconds=0)
-    if now < due:
+        return {"type": "activate", "reason": "interval", "dueAt": due}
+    probe = _probe_at(conn_state, connection)
+    if probe is not None and now < probe:
         return None
     if _throttled(conn_state, now):
         return None
-    return {"type": "activate", "reason": "interval", "dueAt": due}
+    return {"type": "activate", "reason": "interval", "dueAt": probe}
 
 
 def plan_actions(connection, conn_state, now):
     """All bookkeeping actions plus at most one activation for this tick."""
+    migrate_state(conn_state)
+    if conn_state.get("autoDisabledAt"):
+        return []
     mode = connection["schedule"]["mode"]
     actions = []
     activate = None
     if mode == "fixed":
         pending_skip, activate = _due_fixed(connection, conn_state, now)
         actions.extend(pending_skip)
-    if activate is None and mode == "interval":
+    else:
         activate = _due_interval(connection, conn_state, now)
+        if activate is not None and activate.get("type") == "node-lost":
+            actions.append(activate)
+            activate = None
     if activate is not None:
         actions.append(activate)
     return actions
+
+
+def reset_ladder(conn_state):
+    """Clear the whole health ladder; schedule memory (anchor, slots) stays."""
+    for key in ("nodeKey", "nodeDueAt", "nodeSlot", "degradedAt", "nextProbeAt", "autoDisabledAt"):
+        conn_state[key] = None
+    conn_state["nodeAttempts"] = 0
+    conn_state["failedNodes"] = 0
+    conn_state["degradedFailedNodes"] = 0
+
+
+def migrate_state(conn_state):
+    """Fold pre-ladder state fields into the new ones, in place."""
+    if conn_state.get("intervalDisabledAt"):
+        stamp = parse_ts(conn_state["intervalDisabledAt"])
+        conn_state["degradedAt"] = conn_state["intervalDisabledAt"]
+        conn_state["nextProbeAt"] = None  # _probe_at derives stamp + window from degradedAt
+        conn_state["degradedFailedNodes"] = 0
+        if stamp is None:
+            conn_state["degradedAt"] = None
+    conn_state.pop("intervalDisabledAt", None)
+    conn_state.pop("consecutiveFailures", None)
+
+
+def _open_node(conn_state, node, now):
+    if conn_state.get("nodeKey") != node["key"]:
+        conn_state["nodeKey"] = node["key"]
+        conn_state["nodeDueAt"] = iso(node.get("dueAt") or now)
+        conn_state["nodeSlot"] = node.get("slot")
+        conn_state["nodeAttempts"] = 0
+
+
+def close_lost_node(conn_state, connection, now, why):
+    """Resolve the open node as lost and move the ladder one rung if due.
+
+    In fixed mode the lost slot is marked skipped so it never refires today.
+    """
+    slot = conn_state.get("nodeSlot")
+    node_due = parse_ts(conn_state.get("nodeDueAt"))
+    conn_state["nodeKey"] = None
+    conn_state["nodeDueAt"] = None
+    conn_state["nodeSlot"] = None
+    conn_state["nodeAttempts"] = 0
+    if slot and node_due is not None and connection["schedule"]["mode"] == "fixed":
+        day_key = node_due.strftime("%Y-%m-%d")
+        slots = conn_state.setdefault("skippedSlots", {}).setdefault(day_key, [])
+        if slot not in slots:
+            slots.append(slot)
+    threshold = _degrade_after(connection)
+    if conn_state.get("degradedAt"):
+        lost = conn_state.get("degradedFailedNodes", 0) + 1
+        conn_state["degradedFailedNodes"] = lost
+        if lost >= threshold:
+            conn_state["autoDisabledAt"] = iso(now)
+            _push_history(conn_state, now, "ladder", "auto-disabled", why)
+            return
+        _push_history(conn_state, now, "ladder", "node-lost", why)
+    else:
+        lost = conn_state.get("failedNodes", 0) + 1
+        conn_state["failedNodes"] = lost
+        if lost >= threshold:
+            conn_state["degradedAt"] = iso(now)
+            conn_state["degradedFailedNodes"] = 0
+            _push_history(conn_state, now, "ladder", "degraded", why)
+        else:
+            _push_history(conn_state, now, "ladder", "node-lost", why)
+    if connection["schedule"]["mode"] == "interval":
+        # Next node one full window out — pure backoff, the old window is closed.
+        if conn_state.get("degradedAt"):
+            conn_state["nextProbeAt"] = iso(now + _window(connection))
+        else:
+            conn_state["nextDueAt"] = iso(now + _window(connection))
 
 
 def apply_user_anchor(conn_state, connection, reset_at):
@@ -224,9 +356,8 @@ def apply_user_anchor(conn_state, connection, reset_at):
     conn_state["lastAttemptAt"] = iso(opened_at)
     conn_state["lastResult"] = "success"
     conn_state["lastError"] = None
-    conn_state["consecutiveFailures"] = 0
-    conn_state["intervalDisabledAt"] = None
     conn_state["deferUntil"] = None
+    reset_ladder(conn_state)
     conn_state["nextDueAt"] = iso(compute_next_due(connection, opened_at, jitter_seconds=0))
     _push_history(conn_state, opened_at, "user-anchor", "success", None)
 
@@ -244,9 +375,8 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True)
     conn_state["lastActivationAt"] = iso(now)
     conn_state["lastResult"] = "success"
     conn_state["lastError"] = None
-    conn_state["consecutiveFailures"] = 0
-    conn_state["intervalDisabledAt"] = None
     conn_state["deferUntil"] = None
+    reset_ladder(conn_state)
     if kind == "fixed" and slot:
         day_key = now.strftime("%Y-%m-%d")
         slots = conn_state["completedSlots"].setdefault(day_key, [])
@@ -257,17 +387,25 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True)
     _push_history(conn_state, now, kind, "success", None)
 
 
-def record_failure(conn_state, now, kind, error):
-    """Apply a failed activation; auto-pause interval after repeated failures."""
+def record_failure(conn_state, connection, now, kind, error, node=None):
+    """Apply a failed activation and advance the catch-up/ladder bookkeeping.
+
+    node identifies the scheduled node the attempt belongs to; manual and
+    verify fires pass None and never count as nodes.
+    """
     conn_state["lastResult"] = "failure"
     conn_state["lastError"] = str(error)[:300]
-    conn_state["consecutiveFailures"] = conn_state.get("consecutiveFailures", 0) + 1
-    mode_degrades = conn_state.get("consecutiveFailures", 0) >= DEGRADE_AFTER_FAILURES
-    if mode_degrades:
-        # Re-stamped on every degrading failure: a failed cooldown probe
-        # re-freezes for another full window instead of retrying every tick.
-        conn_state["intervalDisabledAt"] = iso(now)
     _push_history(conn_state, now, kind, "failure", conn_state["lastError"])
+    if node is None:
+        return
+    _open_node(conn_state, node, now)
+    conn_state["nodeAttempts"] += 1
+    if conn_state.get("degradedAt"):
+        # Single-shot rung: the failed attempt was the whole node.
+        close_lost_node(conn_state, connection, now, "single-shot failed")
+        return
+    if conn_state["nodeAttempts"] >= _catchup(connection)[0]:
+        close_lost_node(conn_state, connection, now, "catch-up exhausted")
 
 
 def record_skip(conn_state, now, slot, why):
@@ -296,10 +434,14 @@ def prune_state(conn_state, now):
 
 def next_due(connection, conn_state, now):
     """Earliest future activation moment, for status display. None if none."""
+    migrate_state(conn_state)
+    if conn_state.get("autoDisabledAt"):
+        return None, None
     mode = connection["schedule"]["mode"]
     candidates = []
     if mode == "fixed":
         fixed = connection["schedule"].get("fixed") or {}
+        catchup = _catchup(connection)[1]
         day = now.date()
         for _ in range(8):  # scan up to a week ahead for the next active day
             if is_active_day(day, fixed.get("days", "weekday")):
@@ -312,24 +454,31 @@ def next_due(connection, conn_state, now):
                     slot_at = slot_datetime(day, hhmm, now.tzinfo)
                     if slot_at is None:
                         continue
-                    if slot_at + timedelta(
-                        minutes=fixed.get("catchUpWindowMinutes", DEFAULT_CATCHUP_MINUTES)
-                    ) <= now and day == now.date():
+                    if slot_at + catchup <= now and day == now.date():
                         continue  # today's slot is already past its catch-up
-                    candidates.append((slot_at, "fixed"))
+                    candidates.append((slot_at, "fixed (single-shot)" if conn_state.get("degradedAt") else "fixed"))
                     break
                 if candidates:
                     break
             day += timedelta(days=1)
     if mode == "interval":
         defer = parse_ts(conn_state.get("deferUntil"))
-        thaw_at = interval_thaw_at(connection, conn_state)
-        if thaw_at is not None and now < thaw_at:
-            if defer is not None and defer > thaw_at:
-                thaw_at = defer
-            candidates.append((thaw_at, "interval (probing after pause)"))
+        if conn_state.get("degradedAt"):
+            probe_at = _probe_at(conn_state, connection)
+            if probe_at is not None and now < probe_at:
+                if defer is not None and defer > probe_at:
+                    probe_at = defer
+                candidates.append((probe_at, "interval (probing after failures)"))
+            else:
+                candidates.append((now, "interval (probing after failures)"))
         elif _last_success(conn_state) is None:
-            candidates.append((defer or now, "interval (first anchor)"))
+            moment = now
+            floor = parse_ts(conn_state.get("nextDueAt"))
+            if floor is not None and floor > moment:
+                moment = floor  # backoff from a lost first-anchor node
+            if defer is not None and defer > moment:
+                moment = defer
+            candidates.append((moment, "interval (first anchor)"))
         else:
             due = parse_ts(conn_state.get("nextDueAt"))
             if due is None:
