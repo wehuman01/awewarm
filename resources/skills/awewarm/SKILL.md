@@ -19,10 +19,12 @@ Every activation sends one REAL request against the user's coding-plan quota:
 
 | Category | Commands |
 |---|---|
-| Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm update --check` |
-| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
-| Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. |
+| Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm remote status`, `awewarm update --check` |
+| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
+| Delegation — changes who ticks a connection; confirm intent first | `awewarm remote connect <url> [--token]`, `awewarm config set <id> --remote` (only subscription connections; pushes config+key to the server), `awewarm config set <id> --local` (takeback: pulls server state), `awewarm remote disconnect` (refuses while delegations exist) |
+| Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. On delegated connections it fires on the server. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
+| Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
 
 Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling — prefer the new names.
 
@@ -38,6 +40,9 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 | "Pause while I'm on vacation", "休假暂停" | `awewarm config set <id> --off` (resume with `--on`) |
 | "Add my GLM subscription", "添加订阅套餐" | Tell the user to run `awewarm config add` in their terminal (interactive API key prompt). It also re-adds removed local accounts. |
 | "Verify the window", "验证窗口时长" | Guide the 3-step verify flow below; only send the real request if the user asks. |
+| "Let the server keep it warm 24/7", "委托服务器保温" | Requires a paired server: `awewarm remote connect <url>` then `awewarm config set <id> --remote` (subscription connections only). Check `awewarm remote status` afterwards. |
+| "Take it back local", "收回本地" | `awewarm config set <id> --local` — pulls server state first, local scheduling resumes. |
+| "Server restarted / key missing", "服务器重启/缺钥" | Harmless by design: any local command or `awewarm remote push` re-claims and re-pushes; held slots fire late within catch-up. |
 | "Remove this plan", "删掉这个连接" | Confirm, then `awewarm config remove <id>` |
 | "Where are awewarm's files?", "配置在哪" | `awewarm config path` |
 | "Is the scheduler installed?", "调度器装了吗" | `awewarm status` (last line) or `awewarm scheduler install` |

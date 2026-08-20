@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+The unreleased entry adds remote delegation: an always-on `awewarm serve` process can tick subscription connections for a machine that sleeps, pairing over a cloudflared tunnel and keeping every secret on the local machine.
+
+### Remote delegation: `serve`, `remote`, `--remote`
+
+Any 24/7 box (VPS, NAS, Raspberry Pi) runs `awewarm serve` — one resident process that serves an authenticated sync API and ticks delegated connections once a minute with the same pure planner and transports as the local CLI. The local machine pairs with `awewarm remote connect <url>` (a token is generated locally, stored in `secrets.json`, and used to claim the server; `serve --token` fixes one ahead of time instead) and hands connections over with `awewarm config set <id> --remote`; `--local` takes them back, pulling server state first so local scheduling resumes where the server left off. Only subscription connections can be delegated — CLI-account logins physically cannot move. The flag only lands after the server accepted the push, so a connection is never left with nobody ticking it; the local tick and wake entries skip delegated connections from then on.
+
+### The server holds no secrets on disk
+
+The pairing token and delegated API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restarting it therefore loses them by design: the local side re-claims and re-pushes automatically whenever it is online (interactive commands immediately, the local scheduler tick at most twice an hour). A slot that came due while its key was missing is *held*, not failed — no health-ladder impact — and still fires inside its catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped. `awewarm remote push` reconciles manually; `config set` pushes schedule edits to delegated connections automatically and, when the server is unreachable, keeps them local under a visible pending marker.
+
+### Status shows one merged truth
+
+`awewarm status` fetches the server's view for delegated connections and renders them from server state (config + ladder + next due), caching the last successful sync so an offline server degrades to a labeled stale view instead of a blank one. `awewarm run <id>` on a delegated connection fires on the server and reports back; `awewarm remote status` shows the server's own uptime, last tick, and per-connection state; `awewarm remote disconnect` refuses while connections are still delegated, so nothing keeps ticking unmanaged. Fixed times run in the delegating machine's timezone — the IANA name travels with the push.
+
 ## v0.3.7
 
 `v0.3.7` replaces the attempt-count failure pause with a node-based health ladder shared by both modes (`connected → failing → degraded → auto-disabled`), unifies and makes catch-up configurable, shows the last activation failure in `status`, asks for the window duration in fixed-mode plan setup so the full-day grid is offered there too, brings Windows wake-from-sleep to parity with macOS and prompts for it at setup, and moves tuning knobs to a layered top-level `settings` block.

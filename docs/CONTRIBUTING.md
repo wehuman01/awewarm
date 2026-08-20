@@ -29,9 +29,12 @@ These are facts and rules, not suggestions. Changes here need a spec update
 first.
 
 - **Tick model**: the system scheduler (launchd on macOS, Task Scheduler on
-  Windows, systemd user timer on Linux) invokes `awewarm run` once a minute.
+  Windows, systemd user timer on Linux) invokes `awewarm tick` once a minute.
   All scheduling state lives in `state.json`; the process is stateless
-  between ticks. There is no daemon.
+  between ticks. There is no local daemon. `awewarm serve` is the one
+  deliberate exception — a resident *server* process for delegated
+  connections; its tick body is the same pure planner and the local rules
+  above still hold for everything running locally.
 - **Pure planner**: `schedule.plan_actions(connection, conn_state, now)` does
   no I/O and takes an injected clock. Every scheduling rule lives there and is
   covered by tests. Do not put time decisions anywhere else.
@@ -60,6 +63,15 @@ first.
   `keychain:` refs migrate once via the `security` CLI); every display path
   goes through `transport.redact`;
   logs never contain API keys or auth headers.
+- **Remote delegation is single-owner**: a connection is ticked by exactly one
+  place — locally, or (subscription connections only, `location: "remote"`)
+  by the paired `awewarm serve`. The server holds no secrets on disk: the
+  claim token and API keys live in local `secrets.json`, are pushed over TLS,
+  and sit in server RAM only; after a restart the local side re-claims and
+  re-keys on contact, and key-missing activations are held (not failed) until
+  catch-up decides. The `--remote` flag only lands after the server accepted
+  the push. Never introduce a state where both sides (or neither) tick a
+  connection.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.
 - **Update checks never run on scheduler ticks**: `update_check.check_async`
