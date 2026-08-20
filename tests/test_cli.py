@@ -1446,3 +1446,35 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertIn("glm", state.get("pendingPush") or {})
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
         self.assertEqual(on_disk["connections"]["glm"]["times"], ["07:07"])
+
+
+class PlainHttpConnectTests(IsolatedTestCase):
+    """remote connect must warn before pairing over plaintext HTTP to a public host."""
+
+    @mock.patch("awewarm.remote.healthz")
+    def test_public_http_declined_refuses_without_contacting_the_server(self, healthz):
+        result = invoke(["remote", "connect", "http://warm.example.com"], input="n\n")
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("refusing to pair over plain HTTP", output_of(result))
+        healthz.assert_not_called()
+        self.assertIsNone(remote.load_token())  # nothing was stored
+
+    @mock.patch("awewarm.remote.healthz", side_effect=remote.RemoteError("cannot reach the awewarm server"))
+    def test_public_http_confirmed_proceeds_to_healthz(self, healthz):
+        result = invoke(["remote", "connect", "http://warm.example.com"], input="y\n")
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("cannot reach the awewarm server", output_of(result))
+
+    @mock.patch("awewarm.remote.healthz", side_effect=remote.RemoteError("cannot reach the awewarm server"))
+    def test_https_never_prompts(self, healthz):
+        result = invoke(["remote", "connect", "https://warm.example.com"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("cannot reach the awewarm server", output_of(result))
+        self.assertNotIn("plain HTTP", output_of(result))
+
+    @mock.patch("awewarm.remote.healthz", side_effect=remote.RemoteError("cannot reach the awewarm server"))
+    def test_loopback_http_never_prompts(self, healthz):
+        result = invoke(["remote", "connect", "http://127.0.0.1:8790"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("cannot reach the awewarm server", output_of(result))
+        self.assertNotIn("plain HTTP", output_of(result))

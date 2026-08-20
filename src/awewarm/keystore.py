@@ -30,12 +30,13 @@ def _read_secrets():
 
 def _write_secrets(data):
     path = secrets_path()
-    had_file = os.path.exists(path)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2)
         handle.write("\n")
-    if not had_file:
-        os.chmod(path, 0o600)
+    try:
+        os.chmod(path, 0o600)  # every write, so a hand-relaxed mode never persists
+    except OSError:
+        pass
 
 
 def store_api_key(conn_id, api_key):

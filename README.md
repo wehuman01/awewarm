@@ -182,6 +182,8 @@ A sleeping laptop only wakes for fixed slots; an interval chain drifts while it 
 
 The server holds **no secrets on disk**. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
 
+Two pairing safety notes. An unclaimed server trusts the **first** token that reaches it — anyone who finds the URL before you connect could claim it instead (your own connect then fails loudly with 403). Keep the URL private, connect promptly after starting `serve`, or pin the token ahead of time with `awewarm serve --token awt_...`. And pair over **https** (e.g. via the cloudflared tunnel below): `remote connect` asks for confirmation before sending the token and any API keys over plain `http://` to a non-local host.
+
 **Set up the server (once):**
 
 ```bash

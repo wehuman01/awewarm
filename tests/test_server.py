@@ -160,6 +160,14 @@ class TickTests(ServerCase):
         self.assertIn("03:00", self.warm.state["connections"]["glm"]["completedSlots"]["2026-08-20"])
 
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_activations_capped_so_a_dead_endpoint_cannot_stall_the_tick(self, send):
+        # The tick holds the server lock while sending; a short per-request
+        # timeout bounds how long API calls can queue behind it.
+        self.push_plan()
+        self.tick(at("03:00", seconds=30))
+        self.assertEqual(send.call_args.kwargs["timeout_seconds"], server.ACTIVATION_TIMEOUT_SECONDS)
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
     def test_missing_key_holds_then_catchup_fires(self, send):
         self.push_plan()
         self.warm.keys.clear()  # a restart wiped the RAM keyring

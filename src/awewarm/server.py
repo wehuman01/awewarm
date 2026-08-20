@@ -24,7 +24,6 @@ Wire protocol (JSON over HTTP, Bearer token):
 import hmac
 import json
 import re
-import secrets as _secrets
 import threading
 import time
 import urllib.parse
@@ -34,13 +33,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import __version__, schedule, transport
-from .config import conn_state, connection_errors, default_conn_state
+from .config import append_log, conn_state, connection_errors, default_conn_state
 
-TOKEN_PREFIX = "awt_"
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
 BODY_LIMIT_BYTES = 256 * 1024
-LOG_ROTATE_BYTES = 5 * 1024 * 1024
-LOG_KEEP_BYTES = 512 * 1024
+# The tick and run_now hold the server lock while sending, so one activation
+# must not stall every API call behind it: cap HTTP far below the 60 s the
+# local CLI allows (delegated connections are always HTTP subscriptions).
+ACTIVATION_TIMEOUT_SECONDS = 15
 
 
 class ApiError(Exception):
@@ -48,10 +48,6 @@ class ApiError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
-
-
-def generate_token():
-    return TOKEN_PREFIX + _secrets.token_urlsafe(32)
 
 
 class WarmServer:
@@ -91,14 +87,7 @@ class WarmServer:
         path.chmod(0o600)
 
     def log(self, message):
-        try:
-            if self.log_path.exists() and self.log_path.stat().st_size > LOG_ROTATE_BYTES:
-                self.log_path.write_bytes(self.log_path.read_bytes()[-LOG_KEEP_BYTES:])
-            stamp = datetime.now().astimezone().isoformat(timespec="seconds")
-            with open(self.log_path, "a") as handle:
-                handle.write(f"{stamp} {message}\n")
-        except OSError:
-            pass
+        append_log(self.log_path, message)
 
     # --- auth ---
 
@@ -249,7 +238,9 @@ class WarmServer:
 
     def _execute(self, conn, conn_id, cs, now, kind, slot, node, reset_due=True):
         schedule.record_attempt(cs, now)
-        result = transport.send_activation(conn, self.keys.get(conn_id))
+        result = transport.send_activation(
+            conn, self.keys.get(conn_id), timeout_seconds=ACTIVATION_TIMEOUT_SECONDS
+        )
         if result["ok"]:
             schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
         else:
@@ -276,15 +267,8 @@ class WarmServer:
                 now = now_fn(conn) if now_fn else self._now(conn)
                 cs = conn_state(self.state, conn_id)
                 schedule.migrate_state(cs)
-                for action in schedule.plan_actions(conn, cs, now):
-                    if action["type"] == "skip-slot":
-                        schedule.record_skip(cs, now, action["slot"], action["why"])
-                        if action.get("lost"):
-                            schedule.close_lost_node(cs, conn, now, "catch-up window expired")
-                        continue
-                    if action["type"] == "node-lost":
-                        schedule.close_lost_node(cs, conn, now, "catch-up window expired")
-                        continue
+
+                def activate(action, node):
                     if not self.keys.get(conn_id):
                         # Hold, don't fail: the key lives in RAM and a restart
                         # wiped it. Catch-up still fires the slot once the local
@@ -292,11 +276,11 @@ class WarmServer:
                         self.log(f"{conn_id}: activation held — API key missing (server restarted?)")
                         if conn_id not in held:
                             held.append(conn_id)
-                        continue
-                    node = schedule.node_for(action, now)
-                    self._execute(conn, conn_id, cs, now, action["reason"], action.get("slot"), node)
-                    fired += 1
-                schedule.prune_state(cs, now)
+                        return None
+                    return self._execute(conn, conn_id, cs, now, action["reason"], action.get("slot"), node)
+
+                results, _skipped = schedule.dispatch_actions(conn, cs, now, activate)
+                fired += len(results)
             self.last_tick_at = schedule.iso(datetime.now().astimezone())
             self._save(self.state_path, self.state)
             return {"fired": fired, "held": held}

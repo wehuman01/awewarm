@@ -162,14 +162,16 @@ def _send_cli(connection):
     return {"ok": False, "detail": _detail(proc.stderr or proc.stdout) or f"{command} exited {proc.returncode}"}
 
 
-def _send_http(connection, api_key):
+def _send_http(connection, api_key, timeout_seconds=None):
     parts = http_request_parts(connection, api_key)
     url, headers, body = parts
+    if timeout_seconds is None:
+        timeout_seconds = HTTP_TIMEOUT_SECONDS
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             response.read()
             return {"ok": True, "detail": ""}
     except urllib.error.HTTPError as exc:
@@ -187,10 +189,14 @@ def _send_http(connection, api_key):
         return {"ok": False, "detail": f"request failed: {reason}"}
 
 
-def send_activation(connection, api_key=None):
-    """Send one minimal activation request. Returns {"ok": bool, "detail": str}."""
+def send_activation(connection, api_key=None, timeout_seconds=None):
+    """Send one minimal activation request. Returns {"ok": bool, "detail": str}.
+
+    timeout_seconds caps an HTTP request (default 60); the delegation server
+    passes a tighter one so a dead endpoint cannot stall its tick loop.
+    """
     if connection["transport"]["kind"] in ("claude-cli", "codex-cli"):
         return _send_cli(connection)
     if not api_key:
         die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm config add")
-    return _send_http(connection, api_key)
+    return _send_http(connection, api_key, timeout_seconds)

@@ -292,6 +292,34 @@ def plan_actions(connection, conn_state, now):
     return actions
 
 
+def dispatch_actions(connection, conn_state, now, activate):
+    """Run one connection's planned actions through the shared bookkeeping.
+
+    Both tick engines — the local `awewarm tick` and `awewarm serve` — route
+    through this so skip bookkeeping, node closure, and pruning stay identical;
+    only the I/O differs. activate(action, node) sends the real request and
+    returns its {"ok", "detail"} dict, or None when the attempt was held
+    (nothing sent, no state recorded — the server's key-missing case).
+    Returns (results, skipped_slots): results in dispatch order.
+    """
+    results, skipped = [], 0
+    for action in plan_actions(connection, conn_state, now):
+        if action["type"] == "skip-slot":
+            record_skip(conn_state, now, action["slot"], action["why"])
+            skipped += 1
+            if action.get("lost"):
+                close_lost_node(conn_state, connection, now, "catch-up window expired")
+            continue
+        if action["type"] == "node-lost":
+            close_lost_node(conn_state, connection, now, "catch-up window expired")
+            continue
+        result = activate(action, node_for(action, now))
+        if result is not None:
+            results.append(result)
+    prune_state(conn_state, now)
+    return results, skipped
+
+
 def reset_ladder(conn_state):
     """Clear the whole health ladder; schedule memory (anchor, slots) stays."""
     for key in ("nodeKey", "nodeDueAt", "nodeSlot", "degradedAt", "nextProbeAt", "autoDisabledAt"):

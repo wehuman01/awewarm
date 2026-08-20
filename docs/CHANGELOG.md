@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+`remote connect` now asks for confirmation before pairing over plain `http://` with a non-local host — the pairing token and any delegated API keys would otherwise cross the network unencrypted. Loopback, private-range, and `.local` addresses do not prompt; https never does. The README's remote-server section also documents the claim model explicitly: an unclaimed server trusts the first token that reaches it, so keep the URL private or pin one ahead of time with `serve --token`.
+
+The delegation server caps each activation request at 15 seconds (the local CLI keeps its 60). The server's tick and `run` hold its lock while sending, so a dead endpoint could previously queue every API call behind retries for minutes; a short per-request timeout bounds that. Delegated connections are always HTTP subscriptions, so the tighter cap costs nothing in practice.
+
+Hardening and internals: `secrets.json` is reset to mode 600 on every write (a hand-relaxed mode no longer persists), the "API key unavailable" failure message no longer mentions the removed env-var refs, the token generator's dead duplicate in `server.py` is gone, and log append/rotation is one shared helper instead of two copies. The two tick engines now share one action dispatcher (`schedule.dispatch_actions`), so skip bookkeeping, node closure, and pruning stay identical by construction. `cli.py` splits its interactive setup wizards into `flows.py` and status rendering into `status.py` (1379 lines, down from 1927), and `config set`'s internal flag passing moved from fourteen positional parameters to a guarded options object — a typo'd field name now raises instead of silently misbinding.
+
 ## v0.4.0
 
 The unreleased entry adds remote delegation: an always-on `awewarm serve` process can tick subscription connections for a machine that sleeps, pairing over a cloudflared tunnel and keeping every secret on the local machine.

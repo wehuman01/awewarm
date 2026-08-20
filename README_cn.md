@@ -182,6 +182,8 @@ macOS 设计的镜像版本：`scheduler install` 为每个 fixed 时间点注�
 
 服务器**磁盘上不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
 
+两条配对安全须知。未认领的服务器信任**第一个**到达的 token —— 在你连接之前拿到 URL 的人会抢先认领（你随后连接会以 403 明确失败）。请保管好 URL，`serve` 启动后尽快连接，或用 `awewarm serve --token awt_...` 预先固定 token。另外请经 **https** 配对（如下文的 cloudflared 隧道）：对非本机主机的明文 `http://` 地址，`remote connect` 会先要求确认才发送 token 和 API key。
+
 **搭建服务器（一次性）：**
 
 ```bash

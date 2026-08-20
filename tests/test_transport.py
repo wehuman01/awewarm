@@ -172,6 +172,20 @@ class SendHttpTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-api-key"), "tok")
 
     @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_timeout_seconds_passed_through(self, urlopen):
+        urlopen.return_value.__enter__ = lambda self: io.BytesIO(b"{}")
+        urlopen.return_value.__exit__ = mock.Mock(return_value=False)
+        transport.send_activation(plan_connection(), api_key="tok", timeout_seconds=15)
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 15)
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_timeout_defaults_to_sixty_seconds(self, urlopen):
+        urlopen.return_value.__enter__ = lambda self: io.BytesIO(b"{}")
+        urlopen.return_value.__exit__ = mock.Mock(return_value=False)
+        transport.send_activation(plan_connection(), api_key="tok")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], transport.HTTP_TIMEOUT_SECONDS)
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
     def test_http_error_extracted(self, urlopen):
         error = transport.urllib.error.HTTPError(
             "url", 401, "Unauthorized", None, io.BytesIO(b'{"error":{"message":"bad key"}}')

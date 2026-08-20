@@ -3,12 +3,12 @@
 tick (hidden), scheduler, update. Older command names still work as hidden
 aliases (removed in v1.0); the scheduler's `awewarm tick` invocation is fixed
 because installed scheduler agents run it verbatim and self-heal if outdated."""
-import json
+import ipaddress
 import os
-import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,19 +16,17 @@ from zoneinfo import ZoneInfo
 import click
 
 from . import __version__, discover, install, keystore, remote, schedule, transport
+from .flows import _add_account_flow, _config_add, _slots_proc
+from .status import _show_status
 from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
     DEFAULT_CATCHUP_ATTEMPTS,
     DEFAULT_CATCHUP_MINUTES,
     DEFAULT_DEGRADE_AFTER_NODES,
-    DEFAULT_FIXED_AT,
-    DEFAULT_GRACE_SECONDS,
-    DEFAULT_JITTER_SECONDS,
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_PROMPT,
     DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
     SCHEDULE_MODES,
     SLOT_RE,
+    append_log,
     config_path,
     conn_state,
     connection_errors,
@@ -40,27 +38,12 @@ from .config import (
     save_state,
     state_path,
     timezone_name,
-    unique_connection_id,
 )
 
-LOG_ROTATE_BYTES = 5 * 1024 * 1024
-LOG_KEEP_BYTES = 512 * 1024
 
-PROTOCOL_CHOICES = {
-    "1": "openai-chat",
-    "2": "openai-responses",
-    "3": "anthropic-messages",
-}
-
-BASE_URL_EXAMPLES = {
-    "openai-chat": "e.g. https://api.openai.com/v1",
-    "openai-responses": "e.g. https://api.openai.com/v1",
-    "anthropic-messages": "e.g. https://api.anthropic.com",
-}
-
-
-def _base_url_example(transport_kind):
-    return BASE_URL_EXAMPLES.get(transport_kind, "e.g. https://your-endpoint/v1")
+def log_event(message):
+    """Append one line to the log; best-effort and never fatal."""
+    append_log(log_path(), message)
 
 
 def _tz(config):
@@ -83,20 +66,6 @@ def _next_occurrence(hhmm, now):
     if moment is not None and moment > now:
         return moment
     return schedule.slot_datetime(now.date() + timedelta(days=1), hhmm, now.tzinfo)
-
-
-def log_event(message):
-    """Append one line to the log; best-effort and never fatal."""
-    path = log_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.stat().st_size > LOG_ROTATE_BYTES:
-            path.write_bytes(path.read_bytes()[-LOG_KEEP_BYTES:])
-        with open(path, "a") as handle:
-            stamp = datetime.now().astimezone().isoformat(timespec="seconds")
-            handle.write(f"{stamp} {message}\n")
-    except OSError:
-        pass
 
 
 def _find_connection(config, conn_id):
@@ -125,9 +94,9 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True,
     if conn["kind"] == "subscription":
         api_key = _resolve_api_key(conn)
         if api_key is None:
-            schedule.record_failure(cs, conn, now, kind, "API key unavailable (secrets file or env)", node=node)
+            schedule.record_failure(cs, conn, now, kind, "API key unavailable (missing from secrets.json)", node=node)
             log_event(f"{conn_id} activation ({kind}) failed: API key unavailable")
-            return {"ok": False, "detail": "API key unavailable (secrets file or env)"}
+            return {"ok": False, "detail": "API key unavailable (missing from secrets.json)"}
     result = transport.send_activation(conn, api_key)
     if result["ok"]:
         schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
@@ -144,391 +113,6 @@ def _fmt_moment(moment, now):
     if moment.date() == now.date():
         return f"today {moment.strftime('%H:%M')}"
     return moment.strftime("%Y-%m-%d %H:%M")
-
-
-def _slots_proc(value):
-    """Parse one or more comma/space-separated HH:MM times into a sorted list."""
-    slots = []
-    for part in str(value).replace(",", " ").split():
-        if not SLOT_RE.match(part):
-            raise ValueError(f"times must look like 06:35 (got {part})")
-        if part not in slots:
-            slots.append(part)
-    if not slots:
-        raise ValueError("enter at least one time like 06:35")
-    return sorted(slots)
-
-
-def _nonempty_proc(value):
-    text = str(value).strip()
-    if not text:
-        raise ValueError("enter a value")
-    return text
-
-
-def _positive_int_proc(value):
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        raise ValueError("enter a whole number")
-    if number <= 0:
-        raise ValueError("enter a number greater than 0")
-    return number
-
-
-def _choice_prompt(label, choices, default):
-    """Numbered-choice prompt: empty input accepts the default, shown as [default N]."""
-    suffix = f"\n[default {default}]" if "\n" in label else f" [default {default}]"
-    return click.prompt(
-        f"{label}{suffix}",
-        type=click.Choice(choices),
-        default=default,
-        show_default=False,
-        show_choices=False,
-    )
-
-
-def _prompt_window_reset(config):
-    """Optional HH:MM today when the currently-open window closes (None if not open).
-
-    Lets the chain anchor past a window the user already opened by hand,
-    instead of burning an immediate first anchor inside it.
-    """
-    now = _now(config)
-
-    def parse(value):
-        value = value.strip()
-        if not value:
-            return None
-        if not SLOT_RE.match(value):
-            raise click.BadParameter("use HH:MM, e.g. 13:27")
-        moment = schedule.slot_datetime(now.date(), value, now.tzinfo)
-        if moment <= now:
-            raise click.BadParameter("that time already passed today — enter a later time, or leave empty")
-        return moment
-
-    return click.prompt(
-        "Current window closes at (optional, HH:MM — empty if no window is open)",
-        default="", show_default=False, value_proc=parse,
-    )
-
-
-def _prompt_fixed_settings(window_minutes=None):
-    fixed_at = click.prompt(
-        "Fixed activation times (one or more, comma-separated)",
-        default=DEFAULT_FIXED_AT, value_proc=_slots_proc,
-    )
-    used_grid = False
-    if window_minutes and len(fixed_at) == 1:
-        fixed_at, used_grid = _maybe_expand_day_grid(fixed_at[0], window_minutes)
-    days_choice = _choice_prompt(
-        "Select days\n  1. weekday (Mon-Fri)\n  2. every day", ["1", "2"],
-        "2" if used_grid else "1",
-    )
-    return fixed_at, "weekday" if days_choice == "1" else "every-day"
-
-
-def _prompt_wake_when_asleep():
-    """Offer wake-from-sleep for fixed slots where the OS supports it (None elsewhere)."""
-    if sys.platform == "darwin":
-        return click.confirm("Wake the Mac at these times even when it's asleep?", default=True)
-    if sys.platform == "win32":
-        return click.confirm("Wake the PC at these times even when it's asleep?", default=True)
-    return None  # Linux: nothing can wake a suspended machine
-
-
-def _maybe_expand_day_grid(entered_time, window_minutes):
-    """Offer the full-day slot grid; a single entered time rarely covers a day.
-
-    Asks for the plan's daily quota reset first — anchoring the grid there
-    minimizes drift; the entered time is the fallback anchor.
-    """
-    reset_hhmm = click.prompt(
-        "Daily quota reset time (optional HH:MM — anchors the grid to it)",
-        default="", show_default=False, value_proc=_optional_slot_proc,
-    )
-    anchor = reset_hhmm or entered_time
-    grid = schedule.grid_times(anchor, window_minutes)
-    if len(grid) < 2:
-        return [entered_time], False
-    click.echo(f"  Full-day coverage for a {window_minutes}-min window: {', '.join(grid)}")
-    if click.confirm("  Use these times?", default=True):
-        return grid, True
-    return [entered_time], False
-
-
-def _optional_slot_proc(value):
-    value = value.strip()
-    if not value:
-        return None
-    if not SLOT_RE.match(value):
-        raise click.BadParameter("use HH:MM, e.g. 01:14")
-    return value
-
-
-def _optional_positive_int_proc(value):
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        number = int(text)
-    except ValueError:
-        raise click.BadParameter("enter minutes as a whole number, or leave empty")
-    if number <= 0:
-        raise click.BadParameter("enter a number greater than 0, or leave empty")
-    return number
-
-
-def _fixed_block(fixed_at, days):
-    return {
-        "at": list(fixed_at),
-        "days": days,
-        "skipIfActivatedWithinMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
-    }
-
-
-def _catchup_block():
-    return {"attempts": DEFAULT_CATCHUP_ATTEMPTS, "withinMinutes": DEFAULT_CATCHUP_MINUTES}
-
-
-def _interval_block():
-    return {"graceSeconds": DEFAULT_GRACE_SECONDS, "jitterSeconds": DEFAULT_JITTER_SECONDS}
-
-
-def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep):
-    provider = finding["provider"]
-    window = dict(finding["builtinWindow"])
-    auth_status = "valid" if finding["authFound"] else "unknown"
-    return {
-        "label": finding["label"],
-        "kind": "account",
-        "enabled": True,
-        "auth": {"type": "local-cli", "status": auth_status, "apiKeyRef": None},
-        "transport": {
-            "kind": discover.PROVIDER_TRANSPORTS[provider],
-            "baseUrl": None,
-            "cliCommand": finding.get("cliPath") or finding["cliCommand"],
-        },
-        "plan": {"url": None, "label": None},
-        "window": window,
-        "activation": {
-            "model": discover.PROVIDER_MODELS[provider],
-            "prompt": DEFAULT_PROMPT,
-            "maxTokens": DEFAULT_MAX_TOKENS,
-        },
-        "catchup": _catchup_block(),
-        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
-        "schedule": {
-            "mode": mode,
-            "fixed": _fixed_block(fixed_at, days),
-            "interval": _interval_block(),
-            "wakeWhenAsleep": wake_when_asleep,
-        },
-    }
-
-
-def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model, mode, window, fixed_at, days, wake_when_asleep):
-    return {
-        "label": label,
-        "kind": "subscription",
-        "enabled": True,
-        "auth": {"type": "api-key", "status": "valid", "apiKeyRef": api_key_ref},
-        "transport": {"kind": transport_kind, "baseUrl": base_url, "cliCommand": None},
-        "plan": {"url": plan_url or None, "label": label},
-        "window": window,
-        "activation": {
-            "model": model,
-            "prompt": DEFAULT_PROMPT,
-            "maxTokens": DEFAULT_MAX_TOKENS,
-        },
-        "catchup": _catchup_block(),
-        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
-        "schedule": {
-            "mode": mode,
-            "fixed": _fixed_block(fixed_at, days),
-            "interval": _interval_block(),
-            "wakeWhenAsleep": wake_when_asleep,
-        },
-    }
-
-
-def _unknown_window():
-    return {
-        "status": "unknown",
-        "startRule": "unknown",
-        "durationMinutes": None,
-        "evidence": "none",
-    }
-
-
-def _scheduler_hint():
-    if install.scheduler_installed():
-        click.echo("Scheduler already installed — it will pick this up automatically.")
-    else:
-        click.echo("Start the scheduler with: awewarm scheduler install")
-
-
-def _add_account_flow(config, state, finding, confirm_first=True):
-    """Interactive prompts that turn one discovered local account into a connection.
-
-    Returns (summary line or None when declined, whether renewal was anchored).
-    """
-    if not finding["authFound"]:
-        hint = "claude auth login" if finding["provider"] == "claude-code" else "codex login"
-        click.echo(f"? {finding['label']} has no login yet — run `{hint}` first, then re-run: awewarm config add")
-        return None, False
-    if confirm_first and not click.confirm(f"Manage {finding['label']} with awewarm?", default=True):
-        return None, False
-    verified = finding["builtinWindow"]["status"] == "verified"
-    mode_label = (
-        f"Select {finding['label']} warm-up mode\n"
-        "  1. fixed — scheduled times (recommended)\n"
-        "  2. interval — renew continuously from last success"
-    )
-    mode_choice = _choice_prompt(mode_label, ["1", "2"] if verified else ["1"], "1")
-    mode = "interval" if mode_choice == "2" else "fixed"
-    wake = None
-    if mode == "fixed":
-        fixed_at, days = _prompt_fixed_settings(finding["builtinWindow"].get("durationMinutes"))
-        wake = _prompt_wake_when_asleep()
-    else:
-        fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
-    conn_id = unique_connection_id(config, finding["label"])
-    conn = _account_connection(conn_id, finding, mode, fixed_at, days, bool(wake))
-    click.echo(f"\nTesting {finding['label']} warm-up (one minimal request)...")
-    test = transport.send_activation(conn)
-    if test["ok"]:
-        click.echo("✓ Activation test passed")
-    else:
-        click.echo(f"✗ Activation test failed: {test['detail']}")
-        if not click.confirm("Save this connection anyway?", default=False):
-            click.echo("aborted — nothing was saved")
-            return None, False
-    config["connections"][conn_id] = conn
-    anchored = False
-    if mode == "interval" and verified and click.confirm(
-        f"Is {finding['label']}'s window already open right now?", default=False
-    ):
-        reset_at = _prompt_window_reset(config)
-        if reset_at is not None:
-            schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
-            anchored = True
-            click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
-    return f"✓ {finding['label']} added — mode {mode}, fixed {', '.join(fixed_at)} {days}", anchored
-
-
-def _add_plan_flow():
-    """Interactive flow for a manual subscription endpoint (protocol + URL + key)."""
-    label = click.prompt("Plan name")
-    click.echo(
-        "Protocol:\n  1. OpenAI Chat Completions\n  2. OpenAI Responses\n  3. Anthropic Messages"
-    )
-    protocol_choice = _choice_prompt("Select protocol", ["1", "2", "3"], "1")
-    transport_kind = PROTOCOL_CHOICES[protocol_choice]
-    base_url = click.prompt(f"API / plan URL ({_base_url_example(transport_kind)})").strip()
-    if not base_url.startswith(("http://", "https://")):
-        die("API base URL must start with http:// or https://")
-    api_key = click.prompt("API key", hide_input=True).strip()
-    if not api_key:
-        die("API key must not be empty")
-    model = click.prompt("Model for warm-up requests", value_proc=_nonempty_proc, show_default=False)
-
-    draft = _plan_connection(
-        "draft", label, base_url, None, base_url, transport_kind, model,
-        "fixed", _unknown_window(), DEFAULT_FIXED_AT, "weekday", True,
-    )
-    click.echo("\nTesting endpoint...")
-    result = transport.send_activation(draft, api_key)
-    if result["ok"]:
-        click.echo("✓ Authentication accepted, minimal request supported")
-    else:
-        click.echo(f"✗ Endpoint test failed: {result['detail']}")
-        if not click.confirm("Save this plan anyway?", default=False):
-            die("aborted — nothing was saved")
-
-    click.echo(
-        "\nSelect warm-up mode:\n"
-        "  1. Fixed activation only — safe default\n"
-        "  2. Verify interval renewal — send one request and confirm the window manually\n"
-        "  3. Configure interval manually — you already know the window duration"
-    )
-    mode_choice = _choice_prompt("Select warm-up mode", ["1", "2", "3"], "1")
-    window = _unknown_window()
-    mode = "fixed"
-    reset_at = None
-    wake = None
-    fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
-    config = load_config()
-    conn_id = unique_connection_id(config, label)
-    state = load_state()
-    now = _now(config)
-
-    if mode_choice == "2":
-        if result["ok"]:
-            # The endpoint test already sent one real request; reuse it as
-            # the verification anchor instead of sending a second one.
-            cs = conn_state(state, conn_id)
-            schedule.record_attempt(cs, now)
-            schedule.record_success(cs, draft, now, "verify")
-            save_state(state)
-            click.echo(f"✓ Verification request recorded at {_fmt_moment(now, now)}")
-        elif click.confirm("Send the verification request now?", default=True):
-            verify_result = transport.send_activation(draft, api_key)
-            if verify_result["ok"]:
-                cs = conn_state(state, conn_id)
-                schedule.record_attempt(cs, now)
-                schedule.record_success(cs, draft, now, "verify")
-                save_state(state)
-                click.echo(f"✓ Verification request recorded at {_fmt_moment(now, now)}")
-            else:
-                click.echo(f"✗ Verification request failed: {verify_result['detail']}")
-        click.echo(
-            "When your plan's window/quota resets, note the elapsed minutes since that\n"
-            f"request, then unlock interval renewal with:\n"
-            f"  awewarm config set {conn_id} --window <minutes>"
-        )
-    elif mode_choice == "3":
-        duration = click.prompt("Window duration in minutes", default=300, value_proc=_positive_int_proc, show_default=True)
-        window = {
-            "status": "user-confirmed",
-            "startRule": "unknown",
-            "durationMinutes": duration,
-            "evidence": "user-confirmed",
-        }
-        mode = "interval"
-        fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
-        if click.confirm("Is this plan's window already open right now?", default=False):
-            reset_at = _prompt_window_reset(config)
-    else:
-        window_minutes = click.prompt(
-            "Window duration in minutes (drives the full-day slot grid)",
-            default=300, value_proc=_optional_positive_int_proc,
-        )
-        window = {
-            "status": "user-confirmed",
-            "startRule": "unknown",
-            "durationMinutes": window_minutes,
-            "evidence": "user-confirmed",
-        }
-        click.echo(f"✓ Window recorded as {window_minutes} minutes — interval renewal unlocked")
-        fixed_at, days = _prompt_fixed_settings(window_minutes)
-        wake = _prompt_wake_when_asleep()
-
-    api_key_ref = keystore.store_api_key(conn_id, api_key)
-    click.echo(f"✓ API key stored in {keystore.secrets_path()} (chmod 600)")
-    config["connections"][conn_id] = _plan_connection(
-        conn_id, label, base_url, api_key_ref, base_url, transport_kind, model,
-        mode, window, fixed_at, days, bool(wake),
-    )
-    save_config(config)
-    if reset_at is not None:
-        conn = config["connections"][conn_id]
-        schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
-        save_state(state)
-        click.echo(f"✓ Renewal anchored: next request after {reset_at.strftime('%H:%M')}")
-    click.echo(f"\n✓ {label} added ({conn_id}) in {mode} mode.")
-    _refresh_wake_after_edit()
-    _scheduler_hint()
 
 
 def _tick():
@@ -565,25 +149,19 @@ def _tick():
             continue
         cs = conn_state(state, conn_id)
         schedule.migrate_state(cs)
-        for action in schedule.plan_actions(conn, cs, now):
-            if action["type"] == "skip-slot":
-                schedule.record_skip(cs, now, action["slot"], action["why"])
-                skipped += 1
-                if action.get("lost"):
-                    schedule.close_lost_node(cs, conn, now, "catch-up window expired")
-                continue
-            if action["type"] == "node-lost":
-                schedule.close_lost_node(cs, conn, now, "catch-up window expired")
-                continue
+
+        def _activate(action, node):
             reason = action["reason"]
             slot_note = f", slot {action['slot']}" if action.get("slot") else ""
-            node = schedule.node_for(action, now)
             result = _execute_activation(conn, conn_id, cs, now, reason, action.get("slot"), node=node)
             mark = "✓" if result["ok"] else "✗"
             suffix = f" — {result['detail']}" if result["detail"] else ""
             click.echo(f"{mark} activated {conn_id} ({reason}{slot_note}){suffix}")
-            activated.append(result["ok"])
-        schedule.prune_state(cs, now)
+            return result
+
+        results, skipped_conn = schedule.dispatch_actions(conn, cs, now, _activate)
+        activated.extend(result["ok"] for result in results)
+        skipped += skipped_conn
     _maybe_sync_remote(config, state)
     save_state(state)
     if activated or skipped:
@@ -876,76 +454,6 @@ def _show_settings(config, conn_id, conn):
     click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed --no-wake")
 
 
-def _status_block(conn_id, conn, state, now, detailed, where=None):
-    enabled = conn.get("enabled", True)
-    errors = connection_errors(conn, conn_id)
-    cs = conn_state(state, conn_id)
-    schedule.migrate_state(cs)
-    if not enabled:
-        word = "disabled"
-    elif errors:
-        word = "invalid"
-    elif cs.get("autoDisabledAt"):
-        word = "auto-disabled"
-    elif cs.get("degradedAt"):
-        word = "degraded"
-    elif cs.get("nodeKey") or cs.get("failedNodes", 0) > 0:
-        word = "failing"
-    else:
-        word = "connected"
-    click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}" + (f" · {where}" if where else ""))
-    if errors:
-        click.echo(f"  Problem: {errors[0]}")
-        return
-    window = conn["window"]
-    window_line = window["status"] if window["status"] in ("verified", "user-confirmed") else "unknown"
-    if window.get("durationMinutes"):
-        window_line = f"{window['durationMinutes']} minutes, {window_line}"
-    fixed = conn["schedule"].get("fixed") or {}
-    times_line = f"{', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})"
-    mode = conn["schedule"]["mode"]
-    click.echo(f"  Mode: {mode}" + (" (single-shot after failures)" if word == "degraded" else ""))
-    if mode == "fixed":
-        click.echo(f"  Times: {times_line}")
-    else:
-        click.echo(f"  Window: {window_line}" + (f" (evidence: {window['evidence']})" if detailed else ""))
-    if word in ("failing", "degraded", "auto-disabled"):
-        threshold = conn.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES)
-        if word == "failing":
-            attempts_max = (conn.get("catchup") or {}).get("attempts", DEFAULT_CATCHUP_ATTEMPTS)
-            if cs.get("nodeKey"):
-                detail = f"catch-up attempt {cs.get('nodeAttempts', 0)}/{attempts_max}"
-            else:
-                detail = "waiting for the next node"
-            click.echo(f"  Health: failing — {cs.get('failedNodes', 0)}/{threshold} nodes lost, {detail}")
-        elif word == "degraded":
-            click.echo(f"  Health: degraded — one shot per node ({cs.get('degradedFailedNodes', 0)}/{threshold} lost)")
-        else:
-            click.echo(f"  Health: stopped after repeated node failures — resume with: awewarm config set {conn_id} --on")
-    if detailed:
-        target = conn["transport"].get("baseUrl") or conn["transport"].get("cliCommand")
-        click.echo(f"  Transport: {conn['transport']['kind']}" + (f" → {target}" if target else ""))
-        click.echo(f"  Kind: {conn['kind']}, model: {conn['activation'].get('model') or 'cli default'}")
-        if mode == "fixed":
-            click.echo(f"  Window: {window_line} (evidence: {window['evidence']})")
-        else:
-            click.echo(f"  Fixed times: {times_line}")
-    last = schedule.parse_ts(cs.get("lastActivationAt"))
-    click.echo(f"  Last activation: {_fmt_moment(last, now)}")
-    if cs.get("lastResult") == "failure":
-        attempted = schedule.parse_ts(cs.get("lastAttemptAt"))
-        detail = cs.get("lastError") or "unknown error"
-        click.echo(f"  Last result: failure ({_fmt_moment(attempted, now)}) — {detail}")
-    if not enabled:
-        click.echo("  Next due: none (disabled)")
-        return
-    if cs.get("autoDisabledAt"):
-        click.echo("  Next due: none (auto-disabled)")
-        return
-    due_at, due_kind = schedule.next_due(conn, cs, now)
-    click.echo(f"  Next due: {_fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
-
-
 def _moved(old, new):
     click.echo(f"note: `awewarm {old}` moved to `awewarm {new}` (legacy alias, removed in v1.0)", err=True)
 
@@ -1008,46 +516,6 @@ def config():
     """Manage connections: add, set, remove, show, edit."""
 
 
-def _config_add():
-    """Interactive add: pick a discovered local account or enter an endpoint."""
-    click.echo("Scanning local coding accounts...")
-    findings = discover.discover_accounts()
-    config = load_config()
-    state = load_state()
-    candidates = []
-    for finding in findings:
-        if not finding["installed"]:
-            continue
-        if not finding["authFound"]:
-            hint = "claude auth login" if finding["provider"] == "claude-code" else "codex login"
-            click.echo(f"? {finding['label']} has no login yet — run `{hint}` first, then re-run: awewarm config add")
-            continue
-        candidates.append(finding)
-    if not candidates:
-        click.echo("No logged-in local accounts found — adding a subscription endpoint.\n")
-        _add_plan_flow()
-        return
-    managed = {conn.get("label") for conn in config["connections"].values()}
-    lines = ["Add what?"]
-    for index, finding in enumerate(candidates, 1):
-        note = " (already managed)" if finding["label"] in managed else ""
-        lines.append(f"  {index}. {finding['label']}{note}")
-    lines.append(f"  {len(candidates) + 1}. Subscription endpoint (API key)")
-    click.echo("\n".join(lines))
-    choice = _choice_prompt("Select connection", [str(i) for i in range(1, len(candidates) + 2)], "1")
-    if int(choice) <= len(candidates):
-        line, anchored = _add_account_flow(config, state, candidates[int(choice) - 1], confirm_first=False)
-        if line is None:
-            return
-        save_config(config)
-        if anchored:
-            save_state(state)
-        click.echo(line)
-        _scheduler_hint()
-        return
-    _add_plan_flow()
-
-
 @config.command("add")
 def config_add():
     """Add a connection (account or plan).
@@ -1056,32 +524,52 @@ Offers detected local accounts plus a manual subscription endpoint."""
     _config_add()
 
 
-def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-                catchup_minutes=None, catchup_attempts=None, degrade_after_nodes=None, location=None):
+class _SetOptions:
+    """Flags of one `config set <id>` invocation; None means "leave unchanged".
+
+    Replaces a 14-parameter signature whose legacy call sites passed runs of
+    positional Nones — a typo'd field name now raises instead of misbinding.
+    """
+
+    FIELDS = (
+        "times", "days", "mode", "enabled", "anchor_hhmm", "start_hhmm",
+        "window_minutes", "api_key", "wake", "catchup_minutes",
+        "catchup_attempts", "degrade_after_nodes", "location",
+    )
+
+    def __init__(self, **kwargs):
+        unknown = set(kwargs) - set(self.FIELDS)
+        if unknown:
+            raise TypeError(f"unknown config set field(s): {', '.join(sorted(unknown))}")
+        for field in self.FIELDS:
+            setattr(self, field, kwargs.get(field))
+
+    def any(self):
+        return any(getattr(self, field) is not None for field in self.FIELDS)
+
+
+def _config_set(connection, opts):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
     slots = []
-    if times:
+    if opts.times:
         try:
-            slots = _slots_proc(times)
+            slots = _slots_proc(opts.times)
         except ValueError as exc:
             die(str(exc))
-    if all(value is None for value in (
-        times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-        catchup_minutes, catchup_attempts, degrade_after_nodes, location,
-    )):
+    if not opts.any():
         _show_settings(config, conn_id, conn)
         return
-    if conn.get("location") == "remote" and anchor_hhmm is not None:
+    if conn.get("location") == "remote" and opts.anchor_hhmm is not None:
         die(f"{conn_id} is delegated — its state lives on the server\n"
             f"  fix: take it back first: awewarm config set {conn_id} --local")
-    if conn.get("location") == "remote" and start_hhmm is not None:
+    if conn.get("location") == "remote" and opts.start_hhmm is not None:
         die(f"{conn_id} is delegated — its state lives on the server\n"
             f"  fix: take it back first: awewarm config set {conn_id} --local")
-    if api_key is not None:
-        if not api_key.strip() or "\n" in api_key:
+    if opts.api_key is not None:
+        if not opts.api_key.strip() or "\n" in opts.api_key:
             die("--api-key must be a single non-empty line")
-        conn.setdefault("auth", {})["apiKeyRef"] = keystore.store_api_key(conn_id, api_key.strip())
+        conn.setdefault("auth", {})["apiKeyRef"] = keystore.store_api_key(conn_id, opts.api_key.strip())
     state = load_state()
     state_changed = False
     anchor_now = None
@@ -1094,39 +582,39 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
                 f"these times apply after: awewarm config set {conn_id} --mode fixed"
             )
         _ensure_fixed(conn)["at"] = slots
-    if days:
-        _ensure_fixed(conn)["days"] = days
-    if mode:
-        conn["schedule"]["mode"] = mode
-    if enabled is not None:
-        conn["enabled"] = enabled
-        if enabled:
+    if opts.days:
+        _ensure_fixed(conn)["days"] = opts.days
+    if opts.mode:
+        conn["schedule"]["mode"] = opts.mode
+    if opts.enabled is not None:
+        conn["enabled"] = opts.enabled
+        if opts.enabled:
             # Resuming is a conscious fresh start: drop the failure ladder,
             # keep schedule memory (anchor, chain, completed slots).
             schedule.migrate_state(conn_state(state, conn_id))
             schedule.reset_ladder(conn_state(state, conn_id))
             state_changed = True
-    if wake is not None:
-        conn["schedule"]["wakeWhenAsleep"] = wake
-    if catchup_minutes is not None or catchup_attempts is not None:
+    if opts.wake is not None:
+        conn["schedule"]["wakeWhenAsleep"] = opts.wake
+    if opts.catchup_minutes is not None or opts.catchup_attempts is not None:
         block = _ensure_catchup(conn)
         overrides = conn.setdefault("settings", {})
-        if catchup_minutes is not None:
-            if not 5 <= catchup_minutes <= 240:
+        if opts.catchup_minutes is not None:
+            if not 5 <= opts.catchup_minutes <= 240:
                 die("--catchup-minutes must be between 5 and 240")
-            block["withinMinutes"] = catchup_minutes
-            overrides["catchupMinutes"] = catchup_minutes
-        if catchup_attempts is not None:
-            if not 1 <= catchup_attempts <= 10:
+            block["withinMinutes"] = opts.catchup_minutes
+            overrides["catchupMinutes"] = opts.catchup_minutes
+        if opts.catchup_attempts is not None:
+            if not 1 <= opts.catchup_attempts <= 10:
                 die("--catchup-attempts must be between 1 and 10")
-            block["attempts"] = catchup_attempts
-            overrides["catchupAttempts"] = catchup_attempts
-    if degrade_after_nodes is not None:
-        if not 1 <= degrade_after_nodes <= 10:
+            block["attempts"] = opts.catchup_attempts
+            overrides["catchupAttempts"] = opts.catchup_attempts
+    if opts.degrade_after_nodes is not None:
+        if not 1 <= opts.degrade_after_nodes <= 10:
             die("--degrade-after-nodes must be between 1 and 10")
-        conn["degradeAfterNodes"] = degrade_after_nodes
-        conn.setdefault("settings", {})["degradeAfterNodes"] = degrade_after_nodes
-    if anchor_hhmm is not None:
+        conn["degradeAfterNodes"] = opts.degrade_after_nodes
+        conn.setdefault("settings", {})["degradeAfterNodes"] = opts.degrade_after_nodes
+    if opts.anchor_hhmm is not None:
         window = conn["window"]
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
             die(f"{conn_id}: anchoring needs a known window duration\n"
@@ -1134,38 +622,38 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         if conn["schedule"]["mode"] != "interval":
             die(f"{conn_id}: anchoring only affects interval renewal\n"
                 f"  fix: run: awewarm config set {conn_id} --mode interval")
-        if not SLOT_RE.match(anchor_hhmm):
+        if not SLOT_RE.match(opts.anchor_hhmm):
             die("use HH:MM, e.g. 13:27")
         anchor_now = _now(config)
-        reset_at = schedule.slot_datetime(anchor_now.date(), anchor_hhmm, anchor_now.tzinfo)
+        reset_at = schedule.slot_datetime(anchor_now.date(), opts.anchor_hhmm, anchor_now.tzinfo)
         if reset_at is None or reset_at <= anchor_now:
             die("that time already passed today — enter a later time today")
         schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
         state_changed = True
-    if start_hhmm is not None:
-        if not SLOT_RE.match(start_hhmm):
+    if opts.start_hhmm is not None:
+        if not SLOT_RE.match(opts.start_hhmm):
             die("use HH:MM, e.g. 08:00")
         if conn["schedule"]["mode"] != "interval":
             die(f"{conn_id}: --start only defers interval activation\n"
-                f"  fix: run: awewarm config set {conn_id} --mode interval --start {start_hhmm}")
+                f"  fix: run: awewarm config set {conn_id} --mode interval --start {opts.start_hhmm}")
         start_now = _now(config)
         conn_state(state, conn_id)["deferUntil"] = schedule.iso(
-            _next_occurrence(start_hhmm, start_now)
+            _next_occurrence(opts.start_hhmm, start_now)
         )
         state_changed = True
-    if window_minutes is not None:
-        if window_minutes <= 0:
+    if opts.window_minutes is not None:
+        if opts.window_minutes <= 0:
             die("--window needs the duration in minutes you verified (greater than 0)")
-        window_notice = schedule.window_override_notice(conn["window"], window_minutes)
+        window_notice = schedule.window_override_notice(conn["window"], opts.window_minutes)
         conn["window"] = {
             "status": "user-confirmed",
             "startRule": conn["window"].get("startRule", "unknown"),
-            "durationMinutes": window_minutes,
+            "durationMinutes": opts.window_minutes,
             "evidence": "user-confirmed",
         }
 
-    if location is not None:
-        if location:
+    if opts.location is not None:
+        if opts.location:
             _delegate_remote(config, conn_id, conn)
         else:
             _takeback_remote(config, state, conn_id, conn)
@@ -1176,48 +664,48 @@ def _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm,
         save_state(state)
     if slots:
         click.echo(f"✓ Fixed times for {conn_id}: {', '.join(conn['schedule']['fixed']['at'])}")
-    if days:
-        click.echo(f"✓ Days for {conn_id}: {days}")
-    if mode:
-        click.echo(f"✓ Mode for {conn_id}: {mode}")
-    if enabled is True:
+    if opts.days:
+        click.echo(f"✓ Days for {conn_id}: {opts.days}")
+    if opts.mode:
+        click.echo(f"✓ Mode for {conn_id}: {opts.mode}")
+    if opts.enabled is True:
         click.echo(f"✓ {conn_id} enabled (mode: {conn['schedule']['mode']}, failure counters reset)")
-    if enabled is False:
+    if opts.enabled is False:
         click.echo(f"✓ {conn_id} disabled — resume with: awewarm config set {conn_id} --on")
-    if catchup_minutes is not None or catchup_attempts is not None:
+    if opts.catchup_minutes is not None or opts.catchup_attempts is not None:
         block = conn.get("catchup") or {}
         click.echo(
             f"✓ Catch-up for {conn_id}: {block.get('attempts', DEFAULT_CATCHUP_ATTEMPTS)} attempts within "
             f"{block.get('withinMinutes', DEFAULT_CATCHUP_MINUTES)} minutes"
         )
-    if degrade_after_nodes is not None:
+    if opts.degrade_after_nodes is not None:
         click.echo(f"✓ Degrade after {conn['degradeAfterNodes']} consecutive lost nodes (both rungs)")
-    if anchor_hhmm is not None:
+    if opts.anchor_hhmm is not None:
         next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
         click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, anchor_now)} (interval)")
-    if start_hhmm is not None:
+    if opts.start_hhmm is not None:
         defer = schedule.parse_ts(conn_state(state, conn_id)["deferUntil"])
         click.echo(f"✓ {conn_id} interval deferred until {_fmt_moment(defer, start_now)} — no request fires before then")
-    if window_minutes is not None:
-        click.echo(f"✓ Window recorded as {window_minutes} minutes, user-confirmed.")
+    if opts.window_minutes is not None:
+        click.echo(f"✓ Window recorded as {opts.window_minutes} minutes, user-confirmed.")
         if window_notice:
             click.echo(window_notice)
         click.echo(f"Interval renewal is unlocked — switch modes with: awewarm config set {conn_id} --mode interval")
-    if api_key is not None:
+    if opts.api_key is not None:
         click.echo(f"✓ API key for {conn_id} stored in {keystore.secrets_path()}")
-    if wake is not None:
-        if wake:
+    if opts.wake is not None:
+        if opts.wake:
             click.echo(f"✓ {conn_id} may wake a sleeping machine at its fixed slots")
             if sys.platform not in ("darwin", "win32"):
                 click.echo("  note: this platform cannot wake a suspended machine — the flag has no effect here")
         else:
             click.echo(f"✓ {conn_id} will not wake a sleeping machine (missed slots catch up on next wake)")
-    if conn.get("location") == "remote" and location is not True and any(value is not None for value in (
-        times, days, mode, enabled, window_minutes, api_key,
-        catchup_minutes, catchup_attempts, degrade_after_nodes,
+    if conn.get("location") == "remote" and opts.location is not True and any(value is not None for value in (
+        opts.times, opts.days, opts.mode, opts.enabled, opts.window_minutes, opts.api_key,
+        opts.catchup_minutes, opts.catchup_attempts, opts.degrade_after_nodes,
     )):
         _push_edits_to_remote(config, state, conn_id)
-    if any(value is not None for value in (times, days, mode, enabled, wake)):
+    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake)):
         _refresh_wake_after_edit()
 
 
@@ -1260,8 +748,12 @@ def config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, 
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
-    _config_set(connection, times, days, mode, enabled, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-                catchup_minutes, catchup_attempts, degrade_after_nodes, location)
+    _config_set(connection, _SetOptions(
+        times=times, days=days, mode=mode, enabled=enabled, anchor_hhmm=anchor_hhmm,
+        start_hhmm=start_hhmm, window_minutes=window_minutes, api_key=api_key, wake=wake,
+        catchup_minutes=catchup_minutes, catchup_attempts=catchup_attempts,
+        degrade_after_nodes=degrade_after_nodes, location=location,
+    ))
 
 
 def _config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes):
@@ -1385,79 +877,6 @@ def config_edit_command():
             click.echo(f"  {error}")
     else:
         click.echo("✓ config is valid")
-
-
-def _fetch_remote_view(config, state):
-    """Server truth for delegated connections, cached for offline display.
-
-    Returns (view or None, note or None); the note explains stale or missing
-    data. Never fatal — status works offline off the last successful sync.
-    """
-    try:
-        view = remote.ensure_session(config)
-        state["remoteCache"] = {"fetchedAt": schedule.iso(datetime.now().astimezone()), "server": view}
-        return view, None
-    except remote.RemoteError as exc:
-        cache = state.get("remoteCache") or {}
-        if cache.get("server"):
-            fetched = schedule.parse_ts(cache.get("fetchedAt"))
-            when = _fmt_moment(fetched, datetime.now().astimezone()) if fetched else "an unknown time"
-            return cache["server"], f"server unreachable, showing the last sync from {when}"
-        return None, f"server unreachable ({exc})"
-
-
-def _show_status(connection, as_json):
-    config = load_config()
-    if connection:
-        _find_connection(config, connection)
-        conns = {connection: config["connections"][connection]}
-    else:
-        conns = config["connections"]
-    state = load_state()
-    remote_view, remote_note = (None, None)
-    if remote.remote_url(config) and any(c.get("location") == "remote" for c in conns.values()):
-        cached_before = state.get("remoteCache")
-        remote_view, remote_note = _fetch_remote_view(config, state)
-        if state.get("remoteCache") != cached_before:
-            save_state(state)  # persist the sync cache for offline status runs
-    if as_json:
-        view = {
-            "config": {"version": config["version"], "connections": conns},
-            "state": {"connections": {k: state["connections"].get(k) for k in conns}},
-            "scheduler": {"installed": install.scheduler_installed()},
-            "remote": {"url": remote.remote_url(config), "server": remote_view, "note": remote_note},
-        }
-        click.echo(json.dumps(transport.redact(view), indent=2))
-        return
-    if not conns:
-        click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
-        return
-    now = _now(config)
-    for conn_id in sorted(conns):
-        conn = conns[conn_id]
-        if conn.get("location") == "remote" and remote_view:
-            entry = (remote_view.get("connections") or {}).get(conn_id)
-            if entry:
-                server_state = {"connections": {conn_id: entry.get("state") or {}}}
-                _status_block(
-                    conn_id, entry.get("config") or conn, server_state, now,
-                    detailed=bool(connection), where=remote.remote_url(config),
-                )
-                if entry.get("keyMissing"):
-                    click.echo("  ⚠ the server lost its key (restarted?) — rerun: awewarm remote push")
-                continue
-        _status_block(conn_id, conn, state, now, detailed=bool(connection))
-    footer = f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}"
-    if remote.remote_url(config):
-        delegated = sum(1 for c in config["connections"].values() if c.get("location") == "remote")
-        cached = state.get("remoteCache") or {}
-        synced = _fmt_moment(schedule.parse_ts(cached.get("fetchedAt")), now) if cached.get("fetchedAt") else None
-        footer += f"\nRemote: {remote.remote_url(config)} ({delegated} delegated"
-        footer += f", last sync {synced}" if synced else ""
-        footer += ")"
-        if remote_note:
-            footer += f" — {remote_note}"
-    click.echo(footer)
 
 
 @cli.command("status")
@@ -1604,10 +1023,43 @@ def remote_group():
     only). Delegate per connection with: awewarm config set <id> --remote."""
 
 
+def _plaintext_http_host(url):
+    """Hostname when url is plain http://, else None (https is exempt)."""
+    parsed = urllib.parse.urlparse(url)
+    return parsed.hostname if parsed.scheme == "http" else None
+
+
+def _host_is_local(host):
+    """Loopback, link-local, private-range, or LAN-style name — safe for http."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return host == "localhost" or host.endswith(".local")
+    return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
+def _confirm_plaintext_http(url):
+    """Refuse silent plain-HTTP pairing with a non-local host unless confirmed.
+
+    The pairing token and every delegated API key cross this connection; over
+    public http:// they would be readable on the wire.
+    """
+    host = _plaintext_http_host(url)
+    if host is None or _host_is_local(host):
+        return
+    if not click.confirm(
+        f"{url} uses plain HTTP — the pairing token and any delegated API keys"
+        " would cross the network unencrypted.\nContinue anyway?",
+        default=False,
+    ):
+        die("refusing to pair over plain HTTP\nfix: use https:// (e.g. via a cloudflared tunnel), or an http:// address on your LAN")
+
+
 def _remote_connect(url, token_opt):
     url = (url or "").strip().rstrip("/")
     if not url.startswith(("http://", "https://")):
         die("server URL must start with http:// or https://")
+    _confirm_plaintext_http(url)
     try:
         health = remote.healthz(url)
     except remote.RemoteError as exc:
@@ -1819,7 +1271,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
     if user_confirm:
         if not duration or duration <= 0:
             die("--user-confirm needs --duration <minutes> (the window length you verified)")
-        _config_set(connection, None, None, None, None, None, None, duration, None, None)
+        _config_set(connection, _SetOptions(window_minutes=duration))
         return
     if confirm:
         _activate_now(connection, reset_due=True)
@@ -1848,7 +1300,7 @@ def legacy_verify(connection, confirm, duration, user_confirm):
 def legacy_enable(connection, mode):
     """Legacy alias: config set <id> --on [--mode M]."""
     _moved(f"enable {connection}", f"config set {connection} --on")
-    _config_set(connection, None, None, mode, True, None, None, None, None, None)
+    _config_set(connection, _SetOptions(mode=mode, enabled=True))
 
 
 @cli.command("anchor", hidden=True)
@@ -1857,7 +1309,7 @@ def legacy_enable(connection, mode):
 def legacy_anchor(connection, reset_hhmm):
     """Legacy alias: config set <id> --anchor HH:MM."""
     _moved(f"anchor {connection}", f"config set {connection} --anchor {reset_hhmm}")
-    _config_set(connection, None, None, None, None, reset_hhmm, None, None, None, None)
+    _config_set(connection, _SetOptions(anchor_hhmm=reset_hhmm))
 
 
 @cli.command("disable", hidden=True)
@@ -1865,7 +1317,7 @@ def legacy_anchor(connection, reset_hhmm):
 def legacy_disable(connection):
     """Legacy alias: config set <id> --off."""
     _moved(f"disable {connection}", f"config set {connection} --off")
-    _config_set(connection, None, None, None, False, None, None, None, None, None)
+    _config_set(connection, _SetOptions(enabled=False))
 
 
 @cli.command("times", hidden=True)
@@ -1874,7 +1326,7 @@ def legacy_disable(connection):
 def legacy_times(connection, times):
     """Legacy alias: config set <id> --times HH:MM...."""
     _moved(f"times {connection}", f"config set {connection} --times HH:MM...")
-    _config_set(connection, " ".join(times) if times else None, None, None, None, None, None, None, None, None)
+    _config_set(connection, _SetOptions(times=" ".join(times) if times else None))
 
 
 @cli.command("remove", hidden=True)

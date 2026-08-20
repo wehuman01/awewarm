@@ -17,6 +17,7 @@ the connection's `settings` the same way.
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 CONFIG_VERSION = 2
@@ -79,6 +80,28 @@ def log_path():
     return Path(
         os.environ.get("AWEWARM_LOG", "~/.local/state/awewarm/awewarm.log")
     ).expanduser()
+
+
+LOG_ROTATE_BYTES = 5 * 1024 * 1024
+LOG_KEEP_BYTES = 512 * 1024
+
+
+def append_log(path, message):
+    """Append one stamped line to the event log; best-effort, never fatal.
+
+    Shared by the CLI and `awewarm serve`: rotate by truncating to the last
+    LOG_KEEP_BYTES once the file passes LOG_ROTATE_BYTES, then append.
+    """
+    try:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > LOG_ROTATE_BYTES:
+            path.write_bytes(path.read_bytes()[-LOG_KEEP_BYTES:])
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with open(path, "a") as handle:
+            handle.write(f"{stamp} {message}\n")
+    except OSError:
+        pass
 
 
 def empty_config():
