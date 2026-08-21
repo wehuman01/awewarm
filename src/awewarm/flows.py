@@ -275,7 +275,7 @@ def _add_account_flow(config, state, finding, confirm_first=True):
     else:
         fixed_at, days = [DEFAULT_FIXED_AT], "weekday"
     conn_id = unique_connection_id(config, finding["label"])
-    conn = _account_connection(conn_id, finding, mode, fixed_at, days, bool(wake))
+    conn = _account_connection(conn_id, finding, mode, fixed_at, days, wake)
     click.echo(f"\nTesting {finding['label']} warm-up (one minimal request)...")
     test = transport.send_activation(conn)
     if test["ok"]:
@@ -400,7 +400,7 @@ def _add_plan_flow():
     click.echo(f"✓ API key stored in {keystore.secrets_path()} (chmod 600)")
     config["connections"][conn_id] = _plan_connection(
         conn_id, label, base_url, api_key_ref, base_url, transport_kind, model,
-        mode, window, fixed_at, days, bool(wake),
+        mode, window, fixed_at, days, wake,
     )
     save_config(config)
     if reset_at is not None:

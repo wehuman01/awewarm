@@ -7,18 +7,23 @@ also the primary test seam.
 On-disk format (v3) is flat — one level of connection fields — with settings
 layered three deep. Every settings block (the top-level `settings`, one per
 location under `connectionDefaults`, and each connection's own `settings`)
-carries the tuning knobs and, since v3, a `schedule` block. A connection
-resolves each field own-overrides-first, then its location's defaults, then
-the global block; knobs follow that chain everywhere, while a schedule
-inherited from the global block never reaches a delegated (`remote`)
-connection — the global schedule describes this machine's day, and a server
-must only fire times written for remote (or the connection's own). An
-inherited interval mode never breaks a connection whose window is unverified
-(it stays fixed); an explicit own override surfaces the gating error instead.
-load_config expands everything into the richer runtime shape the rest of the
-code reads (resolved schedule, catch-up, degrade knobs); save_config compacts
-back, dropping any override that merely repeats what the connection would
-inherit anyway. v1 (nested) and v2 files upgrade in place on first load.
+carries the tuning knobs and a `schedule` block. A connection resolves each
+field own-overrides-first, then its location's defaults, then the global
+block; knobs follow that chain everywhere, while a schedule inherited from the
+global block never reaches a delegated (`remote`) connection — the global
+schedule describes this machine's day, and a server must only fire times
+written for remote (or the connection's own). An inherited interval mode never
+breaks a connection whose window is unverified (it stays fixed); an explicit
+own override surfaces the gating error instead. load_config expands everything
+into the richer runtime shape the rest of the code reads (resolved schedule,
+catch-up, degrade knobs); save_config compacts back, dropping any override
+that merely repeats what the connection would inherit anyway.
+
+There is no upgrade path: a file older than v3 is refused with a pointer to
+`awewarm config template` (the same shape as resources/config.template.json),
+and the user adjusts the file by hand. Unknown connection fields are refused
+the same way, so a hand-edited typo or a leftover v2 field never silently
+no-ops.
 """
 import json
 import os
@@ -80,6 +85,49 @@ SCHEDULE_SETTINGS_KEYS = (
 )
 
 SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+# Fields a flat v3 connection may carry on disk; anything else is a hand-edit
+# typo or a leftover from an older format and refuses to load.
+KNOWN_CONN_KEYS = frozenset({
+    "label", "url", "protocol", "apiKey", "cli", "model",
+    "windowMinutes", "settings", "enabled", "hide", "location",
+})
+
+# The reference shape of a valid config, printed by `awewarm config template`
+# and pointed at by every load refusal. resources/config.template.json holds
+# the same text for repo readers; a test keeps the two from drifting.
+CONFIG_TEMPLATE = """\
+{
+  "version": 3,
+  "settings": {
+    "catchupMinutes": 30,
+    "catchupAttempts": 5,
+    "degradeAfterNodes": 3,
+    "schedule": {"times": ["06:35"], "days": "weekday"}
+  },
+  "connectionDefaults": {
+    "local": {"catchupMinutes": 20},
+    "remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}
+  },
+  "connections": {
+    "claude-code": {
+      "label": "Claude Code",
+      "cli": "/usr/local/bin/claude",
+      "windowMinutes": 300,
+      "settings": {"schedule": {"times": ["06:35"]}}
+    },
+    "glm": {
+      "label": "glm",
+      "url": "https://open.bigmodel.cn/api/anthropic",
+      "protocol": "anthropic-messages",
+      "apiKey": "file:glm",
+      "model": "GLM-5-Turbo",
+      "windowMinutes": 300,
+      "location": "remote"
+    }
+  }
+}
+"""
 
 
 def die(message):
@@ -333,11 +381,22 @@ def _read_json(path, what):
 def _write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    # Same-dir temp + rename: readers (and a concurrent writer in another
+    # process — the scheduler tick racing an edit command) never see a torn
+    # file, where truncate-then-write once left two JSON docs concatenated.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with open(tmp, "w") as handle:
+        handle.write(json.dumps(data, indent=2) + "\n")
     try:
-        os.chmod(path, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    os.replace(tmp, path)
+
+
+def _template_fix(where):
+    """The actionable tail of every config-load refusal."""
+    return f"fix: see the current format: awewarm config template\n     adjust {where} accordingly, or start fresh: awewarm init"
 
 
 def load_config(path=None):
@@ -345,38 +404,33 @@ def load_config(path=None):
     if data is None:
         return empty_config()
     if not isinstance(data, dict) or not isinstance(data.get("connections"), dict):
-        die("config is malformed (expected a JSON object with 'connections')\nfix: delete the file and re-run: awewarm init")
+        die("config is malformed (expected a JSON object with 'connections')\n"
+            + _template_fix(path or config_path()))
     version = data.get("version", 1)
     if version > CONFIG_VERSION:
         die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm update")
+    if version < CONFIG_VERSION:
+        die(
+            f"config version {version} predates the current format (version {CONFIG_VERSION}); "
+            "older files are not upgraded automatically\n"
+            + _template_fix(path or config_path())
+        )
 
-    if version == 1:
-        # Legacy nested files are already the runtime shape. Each connection's
-        # resolved schedule becomes its own settings.schedule override so the
-        # rewrite as v3 changes nothing about what fires when.
-        runtime = data
-        _migrate_hybrid_nested(runtime)
-        _pin_runtime_schedules(runtime)
-        _write_json(path or config_path(), _compact_config(runtime))
-        return {
-            "version": CONFIG_VERSION,
-            "global": runtime.get("global") or {},
-            "settings": _resolve_settings(runtime.get("settings")),
-            "connectionDefaults": runtime.get("connectionDefaults") or {},
-            "remote": runtime.get("remote") or {},
-            "connections": runtime["connections"],
-        }
-
-    if version == 2:
-        _migrate_hybrid_flat(data)
-        _migrate_settings_flat(data)
-        _migrate_wake_when_asleep(data)
-        _migrate_v2_flat_schedules(data)
-        _write_json(path or config_path(), data)
+    for conn_id, flat in data["connections"].items():
+        if not isinstance(flat, dict):
+            die(f"connection '{conn_id}' must be a JSON object\n" + _template_fix(path or config_path()))
+        unknown = sorted(set(flat) - KNOWN_CONN_KEYS)
+        if unknown:
+            die(
+                f"connection '{conn_id}' has unknown field(s): {', '.join(unknown)}\n"
+                "  (schedule fields live under settings.schedule since version 3)\n"
+                + _template_fix(path or config_path())
+            )
 
     connection_defaults = data.get("connectionDefaults") or {}
     if not isinstance(connection_defaults, dict):
-        die("config is malformed (connectionDefaults must be an object)\nfix: fix the file, or reset it: awewarm config settings --reset")
+        die("config is malformed (connectionDefaults must be an object)\n"
+            "fix: fix the file per: awewarm config template")
     blocks = [("settings", data.get("settings"))]
     blocks.extend(
         (f"connectionDefaults.{loc}", connection_defaults[loc])

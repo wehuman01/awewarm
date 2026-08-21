@@ -45,7 +45,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import __version__, schedule, transport
-from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for
+from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for, _write_json
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
 INVITE_RE = re.compile(r"^awi_[A-Za-z0-9_-]{16,128}$")
@@ -106,9 +106,7 @@ class WarmServer:
             )
 
     def _save(self, path, data):
-        path = Path(path)
-        path.write_text(json.dumps(data, indent=2) + "\n")
-        path.chmod(0o600)
+        _write_json(path, data)
 
     def log(self, message):
         append_log(self.log_path, message)
@@ -407,9 +405,7 @@ class Hub:
         return data
 
     def _save(self):
-        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
-        self.registry_path.write_text(json.dumps(self.registry, indent=2) + "\n")
-        self.registry_path.chmod(0o600)
+        _write_json(self.registry_path, self.registry)
 
     def log(self, message):
         append_log(self.log_path, message)

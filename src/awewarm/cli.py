@@ -475,7 +475,7 @@ def _show_settings(config, conn_id, conn):
     )
     click.echo(f"  degrade after nodes: {conn.get('degradeAfterNodes', DEFAULT_DEGRADE_AFTER_NODES)}")
     click.echo(f"  wake when asleep: {'true' if wake else 'false'} (macOS/Windows only; Linux cannot wake)")
-    click.echo(f"change with: awewarm config set {conn_id} --times 06:35 11:40 --mode fixed --no-wake")
+    click.echo(f"change with: awewarm config set {conn_id} --times 06:35,11:40 --mode fixed --no-wake")
 
 
 def _moved(old, new):
@@ -848,7 +848,7 @@ def _show_settings_scope(config, scope):
          "every connection inherits the knobs; the schedule reaches local connections only — delegated ones never follow it")
     show("Local", defaults.get("local"), "overrides global for local connections")
     show("Remote", defaults.get("remote"), "delegated connections; the schedule never falls back to the global block")
-    click.echo("change with: awewarm config settings --times 06:35 11:40")
+    click.echo("change with: awewarm config settings --times 06:35,11:40")
     click.echo("            awewarm config settings local|remote --times 09:00 --catchup-minutes 45")
 
 
