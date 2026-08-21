@@ -21,6 +21,7 @@ from .flows import _add_account_flow, _config_add, _slots_proc
 from .status import _show_status
 from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
+    CONFIG_TEMPLATE,
     DEFAULT_CATCHUP_ATTEMPTS,
     DEFAULT_CATCHUP_MINUTES,
     DEFAULT_DEGRADE_AFTER_NODES,
@@ -1022,6 +1023,14 @@ def config_show_command():
     if not path.exists():
         die(f"no config at {path} yet\nfix: run: awewarm init")
     click.echo(path.read_text(), nl=False)
+
+
+@config.command("template")
+def config_template_command():
+    """Print the reference config shape.
+
+    Use this as a template when adjusting a hand-edited or pre-v3 config by hand."""
+    click.echo(CONFIG_TEMPLATE, nl=False)
 
 
 @config.command("edit")

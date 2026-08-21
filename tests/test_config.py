@@ -189,34 +189,19 @@ if __name__ == "__main__":
 
 
 class V2FormatTests(IsolatedTestCase):
-    def _v1_conn(self):
-        return {
-            "label": "glm", "kind": "subscription", "enabled": True,
-            "auth": {"type": "api-key", "status": "valid", "apiKeyRef": "file:glm"},
-            "transport": {"kind": "openai-chat", "baseUrl": "https://x.example/v4", "cliCommand": None},
-            "plan": {"url": "https://x.example/v4", "label": "glm"},
-            "window": {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": 300, "evidence": "user-confirmed"},
-            "activation": {"model": "GLM-5-Turbo", "prompt": "Reply with exactly: ok", "maxTokens": 4},
-            "schedule": {"mode": "fixed",
-                         "fixed": {"at": ["06:00"], "days": "every-day", "skipIfActivatedWithinMinutes": 30},
-                         "interval": {"graceSeconds": 75, "jitterSeconds": 30}},
-        }
-
     def test_save_compacts_to_flat_v3(self):
         conf = config.empty_config()
-        conf["connections"]["glm"] = self._v1_conn()
+        conf["connections"]["glm"] = plan_connection(
+            mode="fixed", fixed_at=("06:00",), days="every-day",
+            window_status="user-confirmed", duration=300,
+        )
         config.save_config(conf)
         on_disk = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(on_disk["version"], 3)
-        # a runtime conn with no own settings pins the schedule it carries,
-        # minus fields that merely repeat the defaults
-        self.assertEqual(on_disk["connections"]["glm"], {
-            "label": "glm", "url": "https://x.example/v4", "protocol": "openai-chat",
-            "apiKey": "file:glm", "model": "GLM-5-Turbo", "windowMinutes": 300,
-            "settings": {"schedule": {"times": ["06:00"], "days": "every-day"}},
-        })
+        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"], {
+            "times": ["06:00"], "days": "every-day"})
 
-    def test_load_expands_flat_v2(self):
+    def test_load_refuses_flat_v2(self):
         Path(config.config_path()).write_text(json.dumps({
             "version": 2,
             "connections": {"glm": {
@@ -225,53 +210,49 @@ class V2FormatTests(IsolatedTestCase):
                 "mode": "fixed", "times": ["06:00"], "days": "every-day",
             }},
         }))
-        conn = config.load_config()["connections"]["glm"]
-        self.assertEqual(conn["kind"], "subscription")
-        self.assertEqual(conn["transport"]["baseUrl"], "https://x.example/v4")
-        self.assertEqual(conn["auth"]["apiKeyRef"], "$GLM_KEY")
-        self.assertEqual(conn["window"]["durationMinutes"], 300)
-        self.assertEqual(conn["schedule"]["fixed"]["at"], ["06:00"])
-        self.assertEqual(conn["catchup"], {"attempts": 5, "withinMinutes": 30})
-        self.assertEqual(conn["degradeAfterNodes"], 3)
-        self.assertEqual(config.connection_errors(conn, "glm"), [])
+        with self.assertRaises(SystemExit) as ctx:
+            config.load_config()
+        msg = str(ctx.exception)
+        self.assertIn("older files are not upgraded automatically", msg)
+        self.assertIn("config template", msg)
 
-    def test_hybrid_flat_migrated_to_fixed_on_load(self):
+    def test_load_refuses_nested_v1(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 1,
+            "global": {},
+            "connections": {"glm": {
+                "label": "glm", "kind": "subscription", "enabled": True,
+                "auth": {"type": "api-key", "status": "valid", "apiKeyRef": "file:glm"},
+                "transport": {"kind": "openai-chat", "baseUrl": "https://x.example/v4", "cliCommand": None},
+                "plan": {"url": "https://x.example/v4", "label": "glm"},
+                "window": {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": 300, "evidence": "user-confirmed"},
+                "activation": {"model": "GLM-5-Turbo", "prompt": "Reply with exactly: ok", "maxTokens": 4},
+                "schedule": {"mode": "fixed",
+                             "fixed": {"at": ["06:00"], "days": "every-day", "skipIfActivatedWithinMinutes": 30},
+                             "interval": {"graceSeconds": 75, "jitterSeconds": 30}},
+            }},
+        }))
+        with self.assertRaises(SystemExit) as ctx:
+            config.load_config()
+        msg = str(ctx.exception)
+        self.assertIn("older files are not upgraded automatically", msg)
+        self.assertIn("config template", msg)
+
+    def test_v2_flat_knobs_refused_older_version(self):
         Path(config.config_path()).write_text(json.dumps({
             "version": 2,
             "connections": {"glm": {
                 "label": "glm", "url": "https://x.example/v4", "apiKey": "file:glm",
                 "model": "GLM-5-Turbo", "windowMinutes": 300,
-                "mode": "hybrid", "times": ["06:00"], "days": "every-day",
+                "mode": "fixed", "times": ["06:00"], "days": "every-day",
+                "catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4,
             }},
         }))
-        conn = config.load_config()["connections"]["glm"]
-        self.assertEqual(conn["schedule"]["mode"], "fixed")
-        # the file is rewritten so the migration sticks
-        on_disk = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(on_disk["version"], 3)
-        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"]["mode"], "fixed")
-
-    def test_hybrid_v1_nested_migrated_on_load(self):
-        v1_conn = self._v1_conn()
-        v1_conn["schedule"]["mode"] = "hybrid"
-        Path(config.config_path()).write_text(json.dumps(
-            {"version": 1, "global": {}, "connections": {"glm": v1_conn}}
-        ))
-        conn = config.load_config()["connections"]["glm"]
-        self.assertEqual(conn["schedule"]["mode"], "fixed")
-
-    def test_v1_file_upgraded_in_place_on_load(self):
-        v1 = {"version": 1, "global": {}, "connections": {"glm": self._v1_conn()}}
-        Path(config.config_path()).write_text(json.dumps(v1))
-        conn = config.load_config()["connections"]["glm"]
-        on_disk = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(on_disk["version"], 3)
-        self.assertNotIn("transport", on_disk["connections"]["glm"])
-        # the schedule the v1 connection ran on is pinned as its own overrides
-        self.assertEqual(
-            on_disk["connections"]["glm"]["settings"]["schedule"]["times"], ["06:00"]
-        )
-        self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm")
+        with self.assertRaises(SystemExit) as ctx:
+            config.load_config()
+        msg = str(ctx.exception)
+        self.assertIn("older files are not upgraded automatically", msg)
+        self.assertIn("config template", msg)
 
     def test_account_roundtrip_via_cli_flag(self):
         conn = account_connection()
@@ -287,7 +268,7 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(loaded["transport"]["kind"], "codex-cli")
 
     def test_custom_tuning_knobs_survive_roundtrip(self):
-        conn = self._v1_conn()
+        conn = plan_connection(mode="fixed", fixed_at=("06:00",), days="every-day")
         conn["settings"] = {"catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5}
         conn["catchup"] = {"attempts": 2, "withinMinutes": 1441}
         conn["degradeAfterNodes"] = 5
@@ -306,12 +287,10 @@ class V2FormatTests(IsolatedTestCase):
     def test_global_settings_inherited_by_connections(self):
         conf = config.empty_config()
         conf["settings"] = {"catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6}
-        conf["connections"]["glm"] = self._v1_conn()
+        conf["connections"]["glm"] = plan_connection(mode="fixed", fixed_at=("06:00",), days="every-day")
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], {"catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6})
-        # no knob overrides pinned on the connection (its settings hold only
-        # the schedule pin every runtime conn carries)
         self.assertFalse(set(file["connections"]["glm"]["settings"]) - {"schedule"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 45})
@@ -320,45 +299,20 @@ class V2FormatTests(IsolatedTestCase):
     def test_connection_override_beats_global_settings(self):
         conf = config.empty_config()
         conf["settings"] = {"catchupMinutes": 45, "catchupAttempts": 2}
-        conn = self._v1_conn()
+        conn = plan_connection()
         conn["settings"] = {"catchupMinutes": 60}
         conn["catchup"] = {"attempts": 2, "withinMinutes": 60}
         conf["connections"]["glm"] = conn
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
-        # only the knob that actually differs from the global block persists on the connection
         self.assertEqual(file["connections"]["glm"]["settings"]["catchupMinutes"], 60)
         self.assertNotIn("catchupAttempts", file["connections"]["glm"]["settings"])
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 60})
 
-    def test_flat_knobs_migrated_into_settings_on_load(self):
-        Path(config.config_path()).write_text(json.dumps({
-            "version": 2,
-            "connections": {"glm": {
-                "label": "glm", "url": "https://x.example/v4", "apiKey": "file:glm",
-                "mode": "fixed", "times": ["06:00"], "days": "every-day",
-                "catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4,
-            }},
-        }))
-        conn = config.load_config()["connections"]["glm"]
-        self.assertEqual(conn["catchup"], {"attempts": 2, "withinMinutes": 60})
-        self.assertEqual(conn["degradeAfterNodes"], 4)
-        # the file is rewritten so the migration sticks: per-connection values stay
-        # per-connection, and the top-level block is materialized with its defaults
-        file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["settings"], config.default_settings())
-        self.assertEqual(file["connections"]["glm"]["settings"], {
-            "catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4,
-            "schedule": {"mode": "fixed", "times": ["06:00"], "days": "every-day"},
-        })
-        self.assertNotIn("catchupMinutes", file["connections"]["glm"])
-        self.assertNotIn("degradeAfterNodes", file["connections"]["glm"])
-        self.assertNotIn("times", file["connections"]["glm"])
-
     def test_settings_block_always_written(self):
         conf = config.empty_config()
-        conf["connections"]["glm"] = self._v1_conn()
+        conf["connections"]["glm"] = plan_connection(mode="fixed", fixed_at=("06:00",), days="every-day")
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], config.default_settings())
@@ -368,7 +322,7 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(loaded["degradeAfterNodes"], 3)
 
     def test_disabled_flag_roundtrips(self):
-        conn = self._v1_conn()
+        conn = plan_connection()
         conn["enabled"] = False
         conf = config.empty_config()
         conf["connections"]["glm"] = conn
@@ -568,3 +522,10 @@ class RemoteBlockTests(IsolatedTestCase):
         with self.assertRaises(SystemExit):
             config.save_config(conf)
         self.assertEqual(config.remote_errors(conf["remote"])[0], config.remote_errors({"url": "warm.example.com", "tokenRef": "file:remote-token"})[0])
+
+
+class TemplateTests(unittest.TestCase):
+    def test_template_file_matches_constant(self):
+        template_path = Path(__file__).resolve().parents[1] / "resources" / "config.template.json"
+        on_disk = json.loads(template_path.read_text())
+        self.assertEqual(on_disk, json.loads(config.CONFIG_TEMPLATE))

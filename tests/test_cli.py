@@ -86,7 +86,7 @@ class SurfaceTests(IsolatedTestCase):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
-        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show"])
+        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show", "template"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push", "status"])
         self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "revoke"])
@@ -287,7 +287,7 @@ class WakePromptTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.sys.platform", "linux")
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.transport.send_activation")
-    def test_linux_skips_wake_prompt_and_records_false(self, send, _discover):
+    def test_linux_skips_wake_prompt_and_follows_layer_defaults(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
         # no wake input line at all — Linux must not ask
         result = invoke(["config", "add"], input=(
@@ -296,7 +296,7 @@ class WakePromptTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertNotIn("asleep?", result.output)
         conn = cfg.load_config()["connections"]["glm"]
-        self.assertFalse(conn["schedule"]["wakeWhenAsleep"])
+        self.assertTrue(conn["schedule"]["wakeWhenAsleep"])
 
     def test_config_set_wake_flag_round_trip(self):
         write_config(account_connection(mode="fixed"))
@@ -975,6 +975,12 @@ class ConfigPathTests(IsolatedTestCase):
         self.assertIn(str(cfg.config_path()), result.output)
         self.assertIn(str(cfg.state_path()), result.output)
         self.assertIn(str(cfg.log_path()), result.output)
+
+    def test_config_template_prints_valid_json(self):
+        result = invoke(["config", "template"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        parsed = json.loads(result.output)
+        self.assertEqual(parsed["version"], 3)
 
 
 class SchedulerCommandTests(IsolatedTestCase):
