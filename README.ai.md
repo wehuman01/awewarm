@@ -176,6 +176,8 @@ awewarm config set <id> --times 06:35,11:40,16:45   # set fixed warm-up times
 awewarm config set <id> --mode interval              # switch mode (interval needs a verified window)
 awewarm config set <id> --off                       # pause while on vacation
 awewarm scheduler install                           # (re)install the background scheduler
+awewarm scheduler install --wake                    # also wake a lid-closed sleeping machine at slot/renewal
+                                                     # moments (macOS: one sudo; Windows: no grant needed)
 ```
 
 `interval` mode stays locked until the window is verified or user-confirmed. If the user wants it, guide the three-step flow in the skill (`awewarm run <id>`, observe the quota reset, `awewarm config set <id> --window <minutes>`) — but that request itself consumes quota, so only run it when the user asks.
@@ -202,7 +204,8 @@ awewarm config set <id> --mode ...         # switch mode
 awewarm config set <id> --on / --off       # resume / pause scheduling
 awewarm config set <id> --anchor HH:MM     # anchor past an already-open window (no request)
 awewarm config remove <id>                 # delete connection + stored API key (confirm first)
-awewarm scheduler install / uninstall      # background scheduler (launchd / Task Scheduler / systemd)
+awewarm scheduler install [--wake]         # background scheduler (launchd / Task Scheduler / systemd);
+                                           # --wake arms RTC wake-from-sleep for slot/renewal moments
 awewarm update                             # upgrade awewarm
 ```
 
@@ -211,9 +214,11 @@ User-only commands (interactive or quota-consuming):
 ```bash
 awewarm init                        # interactive onboarding
 awewarm config add                  # interactive, prompts for API key
-awewarm run <id> [--reset-due]       # sends a real request (schedule untouched unless --reset-due)
-awewarm run                         # scheduler tick — may fire real requests
+awewarm run <id> [--reset-due]       # sends a real request now (prompts; schedule untouched unless --reset-due)
+awewarm run [--force]               # fires every enabled connection now (prompts; --force skips, required when non-interactive)
 ```
+
+The background scheduler's own command is `awewarm tick` (hidden, invoked once a minute by the installed agent) — never call it manually; use `awewarm run` for manual activations and `awewarm status` to preview what would fire.
 
 Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling.
 

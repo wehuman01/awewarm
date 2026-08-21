@@ -96,7 +96,7 @@ Both modes send the same one minimal request — what differs is *when* it fires
 
 One request at each fixed local time (`weekday` or `every-day`); each hit opens a fresh window.
 
-- If the machine was asleep at the slot time, the slot still fires late within the catch-up window (default 45 min); past that it is recorded as skipped.
+- If the machine was asleep at the slot time, the slot still fires late within the catch-up window (default 30 min); past that it is recorded as skipped.
 - A slot landing within 30 min of a previous success is skipped — never pay for two windows at once.
 - The only mode that works while window semantics are unknown, which is why unverified plans start here.
 - During setup, when the window duration is known, awewarm asks for the plan's daily quota reset time and offers a full-day grid anchored on it — one slot per window, spaced window + 5 min apart (e.g. reset 01:14 + a 5 h window → 01:14, 06:19, 11:24, 16:29, 21:34). Declining keeps just the time you entered. Plans added in fixed mode are asked for the window duration first (default 300) — it spaces the grid and is recorded as a user-confirmed window that unlocks interval mode.
@@ -231,6 +231,32 @@ awewarm status                                    # merged view: local + delegat
 
 `--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back — and, same as locally, a successful manual run clears an auto-disabled ladder — and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` refuses while anything is still delegated, then forgets the server and releases its claim (another machine can pair immediately); the pairing token stays in `secrets.json`, so reconnecting later is instant even against a server that kept the old claim. Fixed times run in the delegating machine's timezone (it travels with the push; machines whose zone has no IANA name, e.g. Windows, push a fixed `UTC±HH:MM` offset instead); wake-from-sleep does not apply on a server that never sleeps.
 
+## Hub mode — one server, many users
+
+`awewarm serve --hub` turns the same server into a shared warming point: a team, a family, or a community can run one box while everyone keeps their own secrets on their own machine. Pairing goes through one-time invites instead of first-token-claims — the race that makes the single-user model unsafe to share never happens.
+
+```bash
+# on the hub machine (same cloudflared setup as above)
+awewarm serve --hub --data-dir ~/awewarm-server
+awewarm hub invite --note alice      # prints: awi_...  (one use, 48 h)
+
+# on each user's machine
+awewarm remote connect https://warm.example.com --invite awi_...
+awewarm config set glm --remote      # same delegation as single-user mode
+```
+
+Each tenant gets a private workspace: connections, state, and keys are invisible to other tenants (their `glm` and yours never collide), and everything from single-user delegation works unchanged — edits push, `run` fires remotely, `--local` takes back, fixed times follow the *user's* timezone. Hub administration lives on the server:
+
+```bash
+awewarm hub list                     # tenants, connections, activation usage, last seen
+awewarm hub revoke <tenant>          # drop a tenant: token, connections, state
+awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
+```
+
+Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
+
+One trust rule to state plainly: the hub fires requests with its users' API keys, so their plaintext keys pass through its RAM. Hub for people who trust the machine's operator (and root); a shared VPS with strangers is not that.
+
 ## Config
 
 Users never hand-edit config; `init` / `config add` generate it at `~/.config/awewarm/config.json` (state at `~/.local/state/awewarm/state.json`). The shape, for reference:
@@ -276,15 +302,20 @@ A connection with `url` + `apiKey` is a subscription; one with `cli` is a local 
 awewarm init                          # interactive onboarding: scan accounts, pick schedules, install scheduler
 awewarm discover                      # read-only scan of local CLIs and logins
 awewarm config add                    # add a connection: a detected account or a subscription endpoint
-awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --hide/--show, --anchor, --start, --window
+awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --hide/--show,
+                                       #   --anchor, --start, --window, --api-key, --wake/--no-wake, --remote/--local,
+                                       #   --catchup-minutes, --catchup-attempts, --degrade-after-nodes
+awewarm config settings [flags]       # show or change global defaults: --catchup-minutes, --catchup-attempts, --degrade-after-nodes
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
-awewarm run                           # fire every enabled connection now, ignoring the schedule
+awewarm run [--force]                 # fire every enabled connection now, ignoring the schedule (prompts; --force skips)
 awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
 awewarm scheduler install [--wake] / uninstall # background scheduler (launchd / Task Scheduler / systemd); --wake also arms RTC wake-from-sleep
 awewarm serve                          # run the always-on server that ticks delegated connections
+awewarm serve --hub                    # multi-tenant server: users pair with one-time invites
+awewarm hub invite / list / revoke     # hub administration (run on the hub machine)
 awewarm remote connect <url>           # pair with a server (token generated + stored locally)
 awewarm remote status                  # server view: uptime, last tick, delegated connections
 awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)

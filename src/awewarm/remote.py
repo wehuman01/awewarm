@@ -84,6 +84,11 @@ def claim(url, token):
     return _request(url, "POST", "/v1/claim", {"token": token})
 
 
+def join(url, invite):
+    """Exchange a one-time hub invite for a personal pairing token."""
+    return _request(url, "POST", "/v1/join", {"invite": invite})
+
+
 def release(url, token):
     return _request(url, "POST", "/v1/release", {}, token)
 

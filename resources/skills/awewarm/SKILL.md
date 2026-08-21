@@ -20,11 +20,12 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Category | Commands |
 |---|---|
 | Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm remote status`, `awewarm update --check` |
-| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install`, `awewarm scheduler uninstall`, `awewarm update` |
-| Delegation — changes who ticks a connection; confirm intent first | `awewarm remote connect <url> [--token]`, `awewarm config set <id> --remote` (only subscription connections; pushes config+key to the server), `awewarm config set <id> --local` (takeback: pulls server state), `awewarm remote disconnect` (refuses while delegations exist) |
+| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install [--wake]`, `awewarm scheduler uninstall`, `awewarm update` |
+| Delegation — changes who ticks a connection; confirm intent first | `awewarm remote connect <url> [--token]` (single-user server) or `awewarm remote connect <url> --invite awi_...` (hub server), `awewarm config set <id> --remote` (only subscription connections; pushes config+key to the server), `awewarm config set <id> --local` (takeback: pulls server state), `awewarm remote disconnect` (refuses while delegations exist) |
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. On delegated connections it fires on the server. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 | Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
+| Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json), `awewarm hub list [--json]` (read-only), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
 
 Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling — prefer the new names.
 
@@ -41,11 +42,13 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 | "Add my GLM subscription", "添加订阅套餐" | Tell the user to run `awewarm config add` in their terminal (interactive API key prompt). It also re-adds removed local accounts. |
 | "Verify the window", "验证窗口时长" | Guide the 3-step verify flow below; only send the real request if the user asks. |
 | "Let the server keep it warm 24/7", "委托服务器保温" | Requires a paired server: `awewarm remote connect <url>` then `awewarm config set <id> --remote` (subscription connections only). Check `awewarm remote status` afterwards. |
+| "Share one server with my team", "多人共用一台服务器/hub" | Operator runs `awewarm serve --hub` and hands out `awewarm hub invite` codes; each user runs `awewarm remote connect <url> --invite awi_...`. Warn: hub users must trust the box's operator/root — their API keys pass through its RAM. |
 | "Take it back local", "收回本地" | `awewarm config set <id> --local` — pulls server state first, local scheduling resumes. |
 | "Server restarted / key missing", "服务器重启/缺钥" | Harmless by design: any local command or `awewarm remote push` re-claims and re-pushes; held slots fire late within catch-up. |
 | "Remove this plan", "删掉这个连接" | Confirm, then `awewarm config remove <id>` |
 | "Where are awewarm's files?", "配置在哪" | `awewarm config path` |
 | "Is the scheduler installed?", "调度器装了吗" | `awewarm status` (last line) or `awewarm scheduler install` |
+| "Wake the machine even with the lid closed", "合盖睡眠也要准时保温" | macOS/Windows only: `awewarm scheduler install --wake` (macOS prompts for sudo once to write /etc/sudoers.d/awewarm; Windows needs no grant). Verify with `awewarm status` — footer shows `Wake layer: enabled` and the next armed wake. Per-connection opt-out: `awewarm config set <id> --no-wake`. Linux cannot wake a suspended machine; suggest delegating to `awewarm serve` instead. |
 
 ## Config and State
 
@@ -60,7 +63,7 @@ Subscription API keys live in `secrets.json` next to the config (0600) — never
 
 | Mode | Fires when | Needs verified window |
 |---|---|---|
-| `fixed` | fixed local times (`weekday` or `every-day`), each slot may fire late within its catch-up window (default 45 min) | no |
+| `fixed` | fixed local times (`weekday` or `every-day`), each slot may fire late within its catch-up window (default 30 min) | no |
 | `interval` | `window duration + grace + jitter` after each success | yes |
 
 Gating rule: `interval` is locked until the window is verified or user-confirmed with `awewarm config set <id> --window <minutes>`.
@@ -73,7 +76,7 @@ Gating rule: `interval` is locked until the window is verified or user-confirmed
 awewarm status
 ```
 
-Per connection: mode, schedule line (fixed times in fixed mode; window in interval mode), last activation, next due moment; last line shows whether the background scheduler is installed. `awewarm status <id>` shows one connection in detail (transport, evidence, plus the schedule info the summary omits). `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
+Per connection: mode, schedule line (fixed times in fixed mode; window in interval mode), last activation, next due moment; last line shows whether the background scheduler is installed (on macOS, a second footer line shows the wake layer: `Wake layer: enabled — N RTC wake(s) armed` or the `--wake` enable hint). `awewarm status <id>` shows one connection in detail (transport, evidence, plus the schedule info the summary omits). `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
 
 ### Change fixed times
 
@@ -146,6 +149,14 @@ awewarm config set <id> --start HH:MM
 ```
 
 One-time gate: no request fires before that moment (today, or tomorrow if it has passed) — covers the first anchor and any stale chain due. The first tick past it opens the chain; the gate clears on the first success (`--anchor` clears it too). Requires interval mode; combine with the switch: `awewarm config set <id> --mode interval --start HH:MM`.
+
+### Enable RTC wake for lid-closed sleep
+
+```bash
+awewarm scheduler install --wake
+```
+
+Two layers on macOS: calendar entries fire the tick exactly while awake (default); `--wake` additionally arms `pmset` RTC wake events so a lid-closed sleeping Mac wakes at every slot/renewal moment (asks for sudo once — writes a scoped `/etc/sudoers.d/awewarm` grant; the unattended tick re-arms events as schedules drift). Windows needs no grant: fixed slots get Wake-to-run tasks, interval renewals get one-shot wake tasks. Verify with `awewarm status` (wake footer) or `pmset -g sched`. Battery standby (RAM off) cannot be woken on schedule — for that, delegate to an always-on `awewarm serve`. `awewarm config set <id> --no-wake` opts one connection out of both layers; `scheduler uninstall` cancels all armed events and removes the grant.
 
 ### Remove a connection
 

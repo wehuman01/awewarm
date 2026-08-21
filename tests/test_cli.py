@@ -69,14 +69,14 @@ def claude_finding(**overrides):
 
 
 class SurfaceTests(IsolatedTestCase):
-    def test_help_shows_exactly_nine_commands(self):
+    def test_help_shows_exactly_ten_commands(self):
         result = invoke(["--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Usage: awewarm [OPTIONS] COMMAND [ARGS]...", result.output)
         self.assertIn("-v, --version", result.output)
         self.assertEqual(
             command_names(result.output),
-            ["config", "discover", "init", "remote", "run", "scheduler", "serve", "status", "update"],
+            ["config", "discover", "hub", "init", "remote", "run", "scheduler", "serve", "status", "update"],
         )
 
     def test_legacy_command_names_are_hidden(self):
@@ -88,6 +88,8 @@ class SurfaceTests(IsolatedTestCase):
     def test_group_help_lists_subcommands(self):
         self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
+        self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push", "status"])
+        self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["invite", "list", "revoke"])
 
     def test_version_prints_bare_number(self):
         result = invoke(["-v"])

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""awewarm CLI: eight visible commands — init, discover, config, status, run,
-tick (hidden), scheduler, update. Older command names still work as hidden
+"""awewarm CLI: init, discover, config, status, run, scheduler, remote, serve,
+hub, update (plus tick, hidden). Older command names still work as hidden
 aliases (removed in v1.0); the scheduler's `awewarm tick` invocation is fixed
 because installed scheduler agents run it verbatim and self-heal if outdated."""
 import ipaddress
+import json
 import os
 import shutil
 import subprocess
@@ -1124,7 +1125,7 @@ def _confirm_plaintext_http(url):
         die("refusing to pair over plain HTTP\nfix: use https:// (e.g. via a cloudflared tunnel), or an http:// address on your LAN")
 
 
-def _remote_connect(url, token_opt):
+def _remote_connect(url, token_opt, invite_opt=None):
     url = (url or "").strip().rstrip("/")
     if not url.startswith(("http://", "https://")):
         die("server URL must start with http:// or https://")
@@ -1135,6 +1136,9 @@ def _remote_connect(url, token_opt):
         die(str(exc))
     if not health.get("ok"):
         die(f"{url} answered, but is not an awewarm server")
+    if health.get("hub"):
+        _remote_connect_hub(url, token_opt, invite_opt, health)
+        return
     token = token_opt or remote.load_token() or remote.generate_token()
     try:
         remote.claim(url, token)
@@ -1148,12 +1152,46 @@ def _remote_connect(url, token_opt):
     click.echo("  Delegate a connection with: awewarm config set <id> --remote")
 
 
+def _remote_connect_hub(url, token_opt, invite_opt, health):
+    """Pair with a multi-tenant hub: reuse a working token or burn an invite."""
+    token = token_opt or remote.load_token()
+    if token:
+        try:
+            remote.fetch_state(url, token)
+        except remote.RemoteError as exc:
+            if "401" not in str(exc):
+                die(str(exc))
+            click.echo("the stored token was rejected by the hub — pairing with a new invite")
+        else:
+            remote.store_token(token)
+            config = load_config()
+            config["remote"] = {"url": url, "tokenRef": f"file:{remote.TOKEN_SECRET_ID}"}
+            save_config(config)
+            click.echo(f"✓ Connected to awewarm hub {health.get('version')} at {url} (already paired)")
+            click.echo("  Delegate a connection with: awewarm config set <id> --remote")
+            return
+    invite = invite_opt
+    if invite is None:
+        invite = click.prompt("Invite code from the hub operator").strip()
+    try:
+        joined = remote.join(url, invite)
+    except remote.RemoteError as exc:
+        die(str(exc))
+    remote.store_token(joined["token"])
+    config = load_config()
+    config["remote"] = {"url": url, "tokenRef": f"file:{remote.TOKEN_SECRET_ID}"}
+    save_config(config)
+    click.echo(f"✓ Joined awewarm hub {health.get('version')} at {url} (tenant {joined['tenantId']})")
+    click.echo("  Delegate a connection with: awewarm config set <id> --remote")
+
+
 @remote_group.command("connect")
 @click.argument("url")
 @click.option("--token", "token_opt", default=None, help="Use this token when the server runs `serve --token`.")
-def remote_connect_command(url, token_opt):
+@click.option("--invite", "invite_opt", default=None, help="One-time invite code when the server runs `serve --hub`.")
+def remote_connect_command(url, token_opt, invite_opt):
     """Pair with an `awewarm serve` process (URL + token stored locally)."""
-    _remote_connect(url, token_opt)
+    _remote_connect(url, token_opt, invite_opt)
 
 
 def _remote_status():
@@ -1266,26 +1304,121 @@ def remote_disconnect_command():
     _remote_disconnect()
 
 
+# --- hub administration: run on the machine that runs `awewarm serve --hub` ---
+
+HUB_DEFAULT_DATA_DIR = "~/.awewarm-server"  # mirrors the `serve --data-dir` default
+
+
+def _load_hub(data_dir):
+    from . import server
+    return server.Hub(data_dir)
+
+
+@cli.group()
+def hub():
+    """Manage a multi-tenant `serve --hub` (run on the hub machine).
+
+    The operator mints one-time invites; users never run these commands —
+    they pair with: awewarm remote connect <url> --invite awi_..."""
+
+
+@hub.command("invite")
+@click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+@click.option("--note", default=None, help="Who this invite is for (shown in hub list).")
+@click.option("--expires-hours", "expires_hours", type=int, default=48, show_default=True, help="How long the invite stays usable.")
+def hub_invite_command(data_dir, note, expires_hours):
+    """Mint a one-time pairing invite (printed once; stored only as a hash)."""
+    if expires_hours <= 0:
+        die("--expires-hours must be greater than 0")
+    engine = _load_hub(data_dir)
+    code = engine.mint_invite(note, expires_hours)
+    click.echo(f"✓ Invite minted{f' for {note}' if note else ''} — one use, expires in {expires_hours} h")
+    click.echo(f"  {code}")
+    click.echo("  The user runs: awewarm remote connect <hub-url> --invite " + code)
+
+
+@hub.command("list")
+@click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
+def hub_list_command(data_dir, as_json):
+    """Show tenants: pairing, connections, and activation usage."""
+    engine = _load_hub(data_dir)
+    rows = engine.summarize()
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        click.echo(f"No tenants paired yet — mint invites with: awewarm hub invite --data-dir {data_dir}")
+        return
+    now = datetime.now().astimezone()
+    for row in rows:
+        note = f" ({row['note']})" if row["note"] else ""
+        conns = ", ".join(row["connections"]) or "none"
+        usage = row["usage"] or {}
+        seen = _fmt_moment(schedule.parse_ts(row["lastSeenAt"]), now) if row["lastSeenAt"] else "never"
+        click.echo(
+            f"{row['tenant']}{note} — {len(row['connections'])} connection(s): {conns}\n"
+            f"  paired {_fmt_moment(schedule.parse_ts(row['createdAt']), now)}, last seen {seen}, "
+            f"activations {usage.get('today', 0)} today / {usage.get('total', 0)} total"
+        )
+    pending = len(engine.registry["invites"])
+    footer = f"{len(rows)} tenant(s)"
+    if pending:
+        footer += f", {pending} unused invite(s) pending"
+    click.echo(footer)
+
+
+@hub.command("revoke")
+@click.argument("tenant")
+@click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+def hub_revoke_command(tenant, data_dir):
+    """Drop a tenant: its token, connections, and their state."""
+    engine = _load_hub(data_dir)
+    known = {row["tenant"]: row for row in engine.summarize()}
+    if tenant not in known:
+        die(f"no such tenant: {tenant}\nknown tenants: {', '.join(sorted(known)) or 'none'}")
+    row = known[tenant]
+    label = f" ({row['note']})" if row["note"] else ""
+    conns = ", ".join(row["connections"]) or "no connections"
+    if not click.confirm(f"Revoke {tenant}{label}? Its delegated connections stop being ticked: {conns}", default=False):
+        click.echo("aborted — nothing revoked")
+        return
+    engine.revoke(tenant)
+    click.echo(f"✓ {tenant} revoked — its token no longer works; connections and state removed")
+
+
 @cli.command("serve")
 @click.option("--data-dir", default="~/.awewarm-server", show_default=True, help="Directory for server config/state/log (never secrets).")
 @click.option("--bind", default="127.0.0.1", show_default=True, help="Address to listen on.")
 @click.option("--port", default=8790, show_default=True, type=int, help="Port to listen on (0 picks a free one).")
 @click.option("--token", "fixed_token", default=None, help="Require exactly this token instead of the first-connect claim.")
+@click.option("--hub", is_flag=True, help="Multi-tenant mode: users pair with one-time invites (awewarm hub invite).")
+@click.option("--max-tenants", "max_tenants", default=50, show_default=True, type=int, help="Hub mode: tenant cap (joining refuses past it).")
+@click.option("--max-conns-per-tenant", "max_conns_per_tenant", default=5, show_default=True, type=int, help="Hub mode: delegated connections each tenant may keep.")
 @click.option("--tick-seconds", default=60, show_default=True, type=int, help="Seconds between scheduling passes.")
-def serve_command(data_dir, bind, port, fixed_token, tick_seconds):
+def serve_command(data_dir, bind, port, fixed_token, hub, max_tenants, max_conns_per_tenant, tick_seconds):
     """Run the always-on server that ticks delegated connections.
 
 \b
   awewarm serve                    # token claimed by the first remote connect
   awewarm serve --token awt_...    # fixed token (RAM only)
+  awewarm serve --hub              # many users, one-time invites to pair
   awewarm serve --data-dir /data   # keep config/state/log in one place
 
 Expose it safely with a cloudflared tunnel (README → Remote server).
 Nothing secret is ever written to disk: API keys live in server RAM and are
-re-pushed by the local machine after a restart.
+re-pushed by the local machine after a restart. In hub mode only token and
+invite hashes reach disk (tenants.json) so pairings survive a restart.
     """
+    if hub and fixed_token:
+        die("--token pins a single pairing; --hub pairs many users via invites — pick one")
+    if max_tenants <= 0 or max_conns_per_tenant <= 0:
+        die("--max-tenants and --max-conns-per-tenant must be greater than 0")
     from . import server
-    server.run(data_dir, bind=bind, port=port, fixed_token=fixed_token, tick_seconds=tick_seconds)
+    server.run(
+        data_dir, bind=bind, port=port, fixed_token=fixed_token, tick_seconds=tick_seconds,
+        hub=hub, max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
+    )
 
 
 def _self_update(check_only):

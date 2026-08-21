@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths: [src/**, tests/**, pyproject.toml]
   pull_request:
 
 jobs:
@@ -22,6 +23,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   package:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

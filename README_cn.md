@@ -96,7 +96,7 @@ awewarm 是 AI 编程 agent 工具家族的一员：
 
 在每个固定本地时间点（`weekday` 或 `every-day`）各发一条请求，每次命中开启一个新窗口。
 
-- 时间点到了但机器在睡眠？在补跑窗口内（默认 45 分钟）仍会补发；超时则记为跳过。
+- 时间点到了但机器在睡眠？在补跑窗口内（默认 30 分钟）仍会补发；超时则记为跳过。
 - 距离上一次成功不足 30 分钟的时间点会自动跳过 —— 绝不重复为一个还热着的窗口买单。
 - 唯一在窗口语义未知时也能用的模式，未验证的套餐因此从这里起步。
 - 添加流程里窗口时长已知时，awewarm 会询问套餐每日配额的重置时间，并据此提供全天网格 —— 每个窗口一个时间点、间隔为窗口 + 5 分钟（例如重置 01:14 + 5 小时窗口 → 01:14, 06:19, 11:24, 16:29, 21:34）；拒绝则只保留你输入的时间。套餐选择 fixed 添加时会先问窗口时长（默认 300）—— 它决定网格间隔，并记录为 user-confirmed 窗口、解锁 interval 模式。
@@ -106,7 +106,7 @@ awewarm config set claude-code --times 06:35,11:40,16:45   # 间隔 5 小时 5 �
 awewarm config set claude-code --mode fixed
 ```
 
-**案例** —— 晚上合盖的笔记本：06:35 / 11:40 / 16:45 三个时间点让每个工作日从 06:35 到约 21:45 都有窗口开着，机器只需在每个时间点后 45 分钟内醒来。
+**案例** —— 晚上合盖的笔记本：06:35 / 11:40 / 16:45 三个时间点让每个工作日从 06:35 到约 21:45 都有窗口开着，机器只需在每个时间点后 30 分钟内醒来。
 
 ### `interval` —— 滚动续期
 
@@ -172,7 +172,7 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
   覆盖边界：正常睡眠（插电合盖，以及电池合盖进入 standby 之前）下 RTC 唤醒可靠；电池长时间睡眠进入 standby（RAM 断电）后，Apple 的设计不允许定时唤醒 —— 这种场景请委托给常开服务器（见下）。`awewarm status` 显示该层状态；`scheduler uninstall` 会取消全部已排事件并移除授权。
 
-每个连接可以设置 `schedule.wakeWhenAsleep: false` 同时退出两层（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 45 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
+每个连接可以设置 `schedule.wakeWhenAsleep: false` 同时退出两层（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 30 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
 
 ### Sleeping PCs — wake tasks (Windows)
 
@@ -231,6 +231,32 @@ awewarm status                                    # 合并视图：本地 + 委�
 
 `--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果，且和本地一致——一次成功的手动 run 同样会解除 auto-disabled 阶梯；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器并释放其 claim（其他机器可以立即配对），仍有委托连接时拒绝执行；配对 token 保留在 `secrets.json` 里，之后重连即刻完成，即使服务器还留着旧 claim 也不受影响。fixed 时间按委托方机器的时区运行（时区随推送传递；本机时区没有 IANA 名的机器（如 Windows）会推送固定的 `UTC±HH:MM` 偏移）；从不睡觉的服务器谈不上 wake。
 
+## Hub 模式 —— 一台服务器，多个用户
+
+`awewarm serve --hub` 把同一台服务器变成共享保温点：团队、家人或社区共用一台常开机器，每个人的秘密仍留在各自电脑上。配对改走一次性邀请码，而不是"第一个 token 认领"——单用户模式里那个不能分享的抢跑竞态不复存在。
+
+```bash
+# hub 机器上（cloudflared 隧道配置与上文相同）
+awewarm serve --hub --data-dir ~/awewarm-server
+awewarm hub invite --note alice      # 打印: awi_... （一次性，48 小时有效）
+
+# 每个用户自己的机器上
+awewarm remote connect https://warm.example.com --invite awi_...
+awewarm config set glm --remote      # 委托方式与单用户模式完全相同
+```
+
+每个租户有独立的工作区：连接、状态、密钥对其他租户不可见（别人的 `glm` 和你的互不干扰），单用户模式的一切照常——改动自动推送、`run` 远程执行、`--local` 收回、fixed 时间跟随**用户自己**的时区。管理命令在服务器上运行：
+
+```bash
+awewarm hub list                     # 租户、连接数、激活用量、最近在线
+awewarm hub revoke <tenant>          # 吊销租户：token、连接、状态一并删除
+awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
+```
+
+与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
+
+一条信任规则必须说清楚：hub 用用户的 API key 发请求，明文 key 必然经过它的内存。Hub 适合**信任机器运营者（及其 root）**的人群——团队、朋友、自己家的设备；和陌生人合用一台 VPS 不属于这种场景。
+
 ## 配置
 
 用户不需要手改配置；`init` / `config add` 会生成 `~/.config/awewarm/config.json`（状态在 `~/.local/state/awewarm/state.json`）。结构示例：
@@ -276,15 +302,20 @@ awewarm status                                    # 合并视图：本地 + 委�
 awewarm init                          # 交互式引导：扫描账号、选择调度、安装后台调度器
 awewarm discover                      # 纯读扫描本机 CLI 与登录态
 awewarm config add                    # 添加连接：本机账号或订阅 endpoint
-awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--hide/--show、--anchor、--start、--window
+awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--hide/--show、
+                                       #   --anchor、--start、--window、--api-key、--wake/--no-wake、--remote/--local、
+                                       #   --catchup-minutes、--catchup-attempts、--degrade-after-nodes
+awewarm config settings [flags]       # 查看或修改全局默认值：--catchup-minutes、--catchup-attempts、--degrade-after-nodes
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
-awewarm run                           # 立即触发所有启用的连接（无视调度计划）
+awewarm run [--force]                 # 立即触发所有启用的连接（无视调度计划；会确认提示，--force 跳过）
 awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动原计划，--reset-due 才重算下次到期）
 awewarm scheduler install [--wake] / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）；--wake 额外启用合盖睡眠 RTC 唤醒
 awewarm serve                          # 运行常驻服务器，调度已委托的连接
+awewarm serve --hub                    # 多租户服务器：用户凭一次性邀请码配对
+awewarm hub invite / list / revoke     # hub 管理（在 hub 机器上运行）
 awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
 awewarm remote status                  # 服务器视角：运行时长、上次 tick、委托连接
 awewarm remote push [<id>]             # 向服务器重新同步委托连接（配置 + 密钥）
