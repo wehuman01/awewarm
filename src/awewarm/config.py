@@ -4,15 +4,21 @@ Everything on disk is JSON written by the tool itself; users interact through
 commands, never by hand-editing. Path env overrides (AWEWARM_CONFIG etc.) are
 also the primary test seam.
 
-On-disk format (v2) is flat — one level of connection fields. Tuning knobs
-(catch-up, degrade) live in one top-level `settings` object, always written
-with its effective values; a connection can override individual knobs in its
-own `settings`, and anything it leaves out falls back to the top level — the
-same layering the schedule fields use. load_config expands everything into
-the richer runtime shape the rest of the code reads (each connection gets its
-resolved knobs); save_config compacts back. v1 files (nested) upgrade in place
-on first load, and knob keys written flat by earlier v2 builds migrate into
-the connection's `settings` the same way.
+On-disk format (v3) is flat — one level of connection fields — with settings
+layered three deep. Every settings block (the top-level `settings`, one per
+location under `connectionDefaults`, and each connection's own `settings`)
+carries the tuning knobs and, since v3, a `schedule` block. A connection
+resolves each field own-overrides-first, then its location's defaults, then
+the global block; knobs follow that chain everywhere, while a schedule
+inherited from the global block never reaches a delegated (`remote`)
+connection — the global schedule describes this machine's day, and a server
+must only fire times written for remote (or the connection's own). An
+inherited interval mode never breaks a connection whose window is unverified
+(it stays fixed); an explicit own override surfaces the gating error instead.
+load_config expands everything into the richer runtime shape the rest of the
+code reads (resolved schedule, catch-up, degrade knobs); save_config compacts
+back, dropping any override that merely repeats what the connection would
+inherit anyway. v1 (nested) and v2 files upgrade in place on first load.
 """
 import json
 import os
@@ -23,7 +29,7 @@ from zoneinfo import ZoneInfo
 
 from .discover import BUILTIN_WINDOWS
 
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 STATE_VERSION = 1
 
 KIND_ACCOUNT = "account"
@@ -58,6 +64,20 @@ DEFAULT_DEGRADE_AFTER_NODES = 3
 DEFAULT_SKIP_IF_ACTIVATED_MINUTES = 30
 DEFAULT_FIXED_AT = "06:35"
 DEFAULT_HISTORY_LIMIT = 20
+
+# Settings every block may carry: knobs plus the schedule fields (v3 moved
+# the per-connection schedule into its settings block, so all three layers
+# speak the same shape).
+KNOB_KEYS = ("catchupMinutes", "catchupAttempts", "degradeAfterNodes")
+SCHEDULE_SETTINGS_KEYS = (
+    "mode",
+    "times",
+    "days",
+    "skipIfActivatedMinutes",
+    "graceSeconds",
+    "jitterSeconds",
+    "wakeWhenAsleep",
+)
 
 SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
@@ -108,7 +128,13 @@ def append_log(path, message):
 
 
 def empty_config():
-    return {"version": CONFIG_VERSION, "global": {}, "settings": {}, "connections": {}}
+    return {
+        "version": CONFIG_VERSION,
+        "global": {},
+        "settings": {},
+        "connectionDefaults": {},
+        "connections": {},
+    }
 
 
 def default_settings():
@@ -119,9 +145,145 @@ def default_settings():
     }
 
 
+def default_schedule():
+    """Code defaults for every schedule field; the base of the inheritance chain."""
+    return {
+        "mode": "fixed",
+        "times": [DEFAULT_FIXED_AT],
+        "days": "weekday",
+        "skipIfActivatedMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
+        "graceSeconds": DEFAULT_GRACE_SECONDS,
+        "jitterSeconds": DEFAULT_JITTER_SECONDS,
+        "wakeWhenAsleep": True,
+    }
+
+
 def _resolve_settings(raw):
-    """Fill in code defaults for missing knobs so the block is always complete."""
-    return {**default_settings(), **(raw if isinstance(raw, dict) else {})}
+    """Fill in code defaults for missing knobs so the block is always complete.
+
+    A `schedule` sub-block passes through untouched (its fields resolve
+    per-connection against the layers above, not here)."""
+    resolved = {**default_settings(), **(raw if isinstance(raw, dict) else {})}
+    schedule = raw.get("schedule") if isinstance(raw, dict) else None
+    if isinstance(schedule, dict):
+        resolved["schedule"] = schedule
+    return resolved
+
+
+def _settings_knobs(block):
+    """The knob keys of one settings block (everything but `schedule`)."""
+    return {key: value for key, value in (block or {}).items() if key != "schedule"}
+
+
+def _schedule_of(block):
+    schedule = (block or {}).get("schedule")
+    return schedule if isinstance(schedule, dict) else {}
+
+
+def _inherited_knobs(location, global_settings, connection_defaults):
+    """Knob values a connection inherits before its own overrides."""
+    chain = dict(_settings_knobs(global_settings))
+    chain.update(_settings_knobs((connection_defaults or {}).get(location)))
+    return chain
+
+
+def _inherited_schedule(location, global_settings, connection_defaults):
+    """Schedule fields a connection inherits before its own overrides.
+
+    Delegated (`remote`) connections never see the global schedule: it
+    describes this machine's workday. They follow only defaults written
+    explicitly for remote — everything else falls to the code defaults."""
+    chain = {}
+    if location != "remote":
+        chain.update(_schedule_of(global_settings))
+    chain.update(_schedule_of((connection_defaults or {}).get(location)))
+    return chain
+
+
+def _window_allows_interval(window):
+    return (
+        isinstance(window, dict)
+        and window.get("status") in ("verified", "user-confirmed")
+        and isinstance(window.get("durationMinutes"), int)
+        and not isinstance(window.get("durationMinutes"), bool)
+        and window["durationMinutes"] > 0
+    )
+
+
+def _resolved_schedule(own, location, window, global_settings, connection_defaults):
+    """Merge one connection's own schedule overrides over its layers."""
+    chain = {**_inherited_schedule(location, global_settings, connection_defaults), **(own or {})}
+    schedule = {**default_schedule(), **chain}
+    # An inherited interval mode must not invalidate a connection whose window
+    # is unverified (the tick would skip it entirely) — such connections stay
+    # on fixed. An explicit own override is honored as-is so the usual gating
+    # error tells the user to verify the window first.
+    if (
+        schedule["mode"] == "interval"
+        and not (own or {}).get("mode")
+        and not _window_allows_interval(window)
+    ):
+        schedule["mode"] = "fixed"
+    return schedule
+
+
+def _apply_resolved(conn, global_settings, connection_defaults):
+    """(Re)compute a runtime connection's resolved schedule/catchup/degrade
+    fields from its own `settings` overrides plus the config's layers."""
+    own = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
+    location = conn.get("location") or "local"
+    sched = _resolved_schedule(
+        own.get("schedule"), location, conn.get("window"), global_settings, connection_defaults
+    )
+    conn["schedule"] = {
+        "mode": sched["mode"],
+        "fixed": {
+            "at": list(sched["times"]),
+            "days": sched["days"],
+            "skipIfActivatedWithinMinutes": sched["skipIfActivatedMinutes"],
+        },
+        "interval": {
+            "graceSeconds": sched["graceSeconds"],
+            "jitterSeconds": sched["jitterSeconds"],
+        },
+        "wakeWhenAsleep": sched["wakeWhenAsleep"],
+    }
+    knobs = {**_inherited_knobs(location, global_settings, connection_defaults), **_settings_knobs(own)}
+    conn["catchup"] = {
+        "attempts": knobs.get("catchupAttempts", DEFAULT_CATCHUP_ATTEMPTS),
+        "withinMinutes": knobs.get("catchupMinutes", DEFAULT_CATCHUP_MINUTES),
+    }
+    conn["degradeAfterNodes"] = knobs.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES)
+    return conn
+
+
+def resolve_connection(conn, config):
+    """Re-resolve one runtime connection against a loaded config's layers.
+
+    Called after edits (CLI `config set`, delegation flows) so the resolved
+    fields never drift from the overrides and defaults layers."""
+    return _apply_resolved(
+        conn, config.get("settings") or {}, config.get("connectionDefaults") or {}
+    )
+
+
+def flatten_schedule(schedule):
+    """Runtime schedule block → flat settings.schedule fields (all seven).
+
+    Used by the v1 upgrade (the resolved schedule a connection ran on becomes
+    its own overrides) and by delegation (freezing the effective schedule of
+    a connection the moment it moves to the server)."""
+    fixed = (schedule or {}).get("fixed") or {}
+    interval = (schedule or {}).get("interval") or {}
+    return {
+        "mode": (schedule or {}).get("mode") or "fixed",
+        "times": list(fixed.get("at") or [DEFAULT_FIXED_AT]),
+        "days": fixed.get("days") or "weekday",
+        "skipIfActivatedMinutes": fixed.get("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
+        "graceSeconds": interval.get("graceSeconds", DEFAULT_GRACE_SECONDS),
+        "jitterSeconds": interval.get("jitterSeconds", DEFAULT_JITTER_SECONDS),
+        "wakeWhenAsleep": (schedule or {}).get("wakeWhenAsleep", True),
+    }
 
 
 def empty_state():
@@ -185,46 +347,58 @@ def load_config(path=None):
     if not isinstance(data, dict) or not isinstance(data.get("connections"), dict):
         die("config is malformed (expected a JSON object with 'connections')\nfix: delete the file and re-run: awewarm init")
     version = data.get("version", 1)
-    if version == 1:
-        # Legacy nested files are already the runtime shape; rewrite as v2.
-        runtime = data
-        runtime["version"] = CONFIG_VERSION
-        _migrate_hybrid_nested(runtime)
-        _write_json(path or config_path(), _compact_config(runtime))
-        return runtime
-    if version != CONFIG_VERSION:
+    if version > CONFIG_VERSION:
         die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm update")
 
-    if _migrate_hybrid_flat(data) or _migrate_settings_flat(data):
+    if version == 1:
+        # Legacy nested files are already the runtime shape. Each connection's
+        # resolved schedule becomes its own settings.schedule override so the
+        # rewrite as v3 changes nothing about what fires when.
+        runtime = data
+        _migrate_hybrid_nested(runtime)
+        _pin_runtime_schedules(runtime)
+        _write_json(path or config_path(), _compact_config(runtime))
+        return {
+            "version": CONFIG_VERSION,
+            "global": runtime.get("global") or {},
+            "settings": _resolve_settings(runtime.get("settings")),
+            "connectionDefaults": runtime.get("connectionDefaults") or {},
+            "remote": runtime.get("remote") or {},
+            "connections": runtime["connections"],
+        }
+
+    if version == 2:
+        _migrate_hybrid_flat(data)
+        _migrate_settings_flat(data)
+        _migrate_wake_when_asleep(data)
+        _migrate_v2_flat_schedules(data)
         _write_json(path or config_path(), data)
 
-    global_cfg = data.get("global") or {}
-    if "wakeWhenAsleep" in global_cfg:
-        for conn in data.get("connections", {}).values():
-            sched = conn.setdefault("schedule", {})
-            if "wakeWhenAsleep" not in sched:
-                sched["wakeWhenAsleep"] = bool(global_cfg["wakeWhenAsleep"])
-        global_cfg.pop("wakeWhenAsleep")
-        data["global"] = global_cfg
-        _write_json(path or config_path(), data)
+    connection_defaults = data.get("connectionDefaults") or {}
+    if not isinstance(connection_defaults, dict):
+        die("config is malformed (connectionDefaults must be an object)\nfix: fix the file, or reset it: awewarm config settings --reset")
+    blocks = [("settings", data.get("settings"))]
+    blocks.extend(
+        (f"connectionDefaults.{loc}", connection_defaults[loc])
+        for loc in LOCATIONS if loc in connection_defaults
+    )
+    for name, block in blocks:
+        errors = settings_block_errors(block, name)
+        if errors:
+            die(
+                "config has invalid " + name + ":\n  " + "\n  ".join(errors)
+                + "\nfix: fix the file, or reset the block: awewarm config settings --reset"
+            )
 
-    for conn in data.get("connections", {}).values():
-        sched = conn.get("schedule") if isinstance(conn.get("schedule"), dict) else None
-        if sched and "wakeWhenAsleep" in sched:
-            continue
-        if "wakeWhenAsleep" in conn:
-            sched = conn.setdefault("schedule", {})
-            sched["wakeWhenAsleep"] = bool(conn.pop("wakeWhenAsleep"))
-            _write_json(path or config_path(), data)
-
-    settings = _resolve_settings(data.get("settings"))
+    global_settings = _resolve_settings(data.get("settings"))
     return {
         "version": CONFIG_VERSION,
         "global": data.get("global") or {},
-        "settings": settings,
+        "settings": global_settings,
+        "connectionDefaults": connection_defaults,
         "remote": data.get("remote") or {},
         "connections": {
-            conn_id: _expand_conn(conn_id, conn, settings)
+            conn_id: _expand_conn(conn_id, conn, global_settings, connection_defaults)
             for conn_id, conn in data["connections"].items()
         },
     }
@@ -241,10 +415,10 @@ def _migrate_hybrid_flat(data):
 
 
 def _migrate_settings_flat(data):
-    """Knobs live in a top-level `settings` block with optional per-connection
-    overrides. Legacy flat per-connection keys lift into the connection's own
-    `settings` (they were per-connection values), and the top-level block is
-    materialized so it is always visible on disk."""
+    """Knobs live in settings blocks with optional per-connection overrides.
+    Legacy flat per-connection keys lift into the connection's own `settings`
+    (they were per-connection values), and the top-level block is materialized
+    so it is always visible on disk."""
     changed = False
     defaults = default_settings()
     for conn in data.get("connections", {}).values():
@@ -267,6 +441,33 @@ def _migrate_settings_flat(data):
     return changed
 
 
+def _migrate_wake_when_asleep(data):
+    """Legacy wake placements (a global flag, a flat connection field) fold
+    into per-connection schedules; returns True when the file changed."""
+    changed = False
+    global_cfg = data.get("global") or {}
+    if "wakeWhenAsleep" in global_cfg:
+        for conn in data.get("connections", {}).values():
+            if not isinstance(conn, dict):
+                continue
+            sched = conn.setdefault("schedule", {})
+            if "wakeWhenAsleep" not in sched:
+                sched["wakeWhenAsleep"] = bool(global_cfg["wakeWhenAsleep"])
+        global_cfg.pop("wakeWhenAsleep")
+        data["global"] = global_cfg
+        changed = True
+    for conn in data.get("connections", {}).values():
+        if not isinstance(conn, dict) or "wakeWhenAsleep" not in conn:
+            continue
+        sched = conn.get("schedule") if isinstance(conn.get("schedule"), dict) else None
+        if sched and "wakeWhenAsleep" in sched:
+            continue
+        sched = conn.setdefault("schedule", {})
+        sched["wakeWhenAsleep"] = bool(conn.pop("wakeWhenAsleep"))
+        changed = True
+    return changed
+
+
 def _migrate_hybrid_nested(runtime):
     """v1 nested config: same migration on the runtime shape."""
     for conn in runtime.get("connections", {}).values():
@@ -275,10 +476,46 @@ def _migrate_hybrid_nested(runtime):
             sched["mode"] = "fixed"
 
 
-def _expand_conn(conn_id, flat, global_settings):
-    """Flat v2 fields → the nested runtime shape the codebase reads.
+def _pin_runtime_schedules(runtime):
+    """v1 nested → v3: each connection's resolved schedule becomes its own
+    settings.schedule override — the exact values it fired on stay pinned."""
+    for conn in runtime.get("connections", {}).values():
+        if not isinstance(conn, dict):
+            continue
+        settings = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
+        settings["schedule"] = flatten_schedule(conn.get("schedule"))
+        conn["settings"] = settings
 
-    Knobs resolve per-connection first, then the top-level `settings`."""
+
+def _migrate_v2_flat_schedules(data):
+    """v2 flat → v3: each connection's schedule fields move from the flat top
+    level into its own settings.schedule — same values, now overrides."""
+    for conn in data.get("connections", {}).values():
+        if not isinstance(conn, dict):
+            continue
+        legacy_sched = conn.pop("schedule", None)
+        own = {
+            key: conn.pop(key)
+            for key in ("mode", "times", "days", "skipIfActivatedMinutes", "graceSeconds", "jitterSeconds")
+            if key in conn
+        }
+        if isinstance(legacy_sched, dict) and "wakeWhenAsleep" in legacy_sched:
+            own["wakeWhenAsleep"] = legacy_sched["wakeWhenAsleep"]
+        if not own:
+            continue
+        settings = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
+        merged = dict(_schedule_of(settings))
+        merged.update(own)
+        settings["schedule"] = merged
+        conn["settings"] = settings
+    data["version"] = CONFIG_VERSION
+
+
+def _expand_conn(conn_id, flat, global_settings, connection_defaults):
+    """Flat v3 fields → the nested runtime shape the codebase reads.
+
+    Schedule and knobs resolve own-overrides first, then the location's
+    defaults, then the global block (schedule: local connections only)."""
     subscription = bool(flat.get("url"))
     if subscription:
         kind, auth, transport = KIND_SUBSCRIPTION, (
@@ -305,21 +542,11 @@ def _expand_conn(conn_id, flat, global_settings):
         builtin = BUILTIN_WINDOWS[provider]
         if builtin["status"] == "verified" and window["durationMinutes"] in (None, builtin["durationMinutes"]):
             window = dict(builtin)
-    settings = {**global_settings, **(flat.get("settings") or {})}
-    schedule = {
-        "mode": flat.get("mode") or "fixed",
-        "fixed": {
-            "at": list(flat.get("times") or [DEFAULT_FIXED_AT]),
-            "days": flat.get("days") or "weekday",
-            "skipIfActivatedWithinMinutes": flat.get("skipIfActivatedMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
-        },
-        "interval": {
-            "graceSeconds": flat.get("graceSeconds", DEFAULT_GRACE_SECONDS),
-            "jitterSeconds": flat.get("jitterSeconds", DEFAULT_JITTER_SECONDS),
-        },
-        "wakeWhenAsleep": (flat.get("schedule") or {}).get("wakeWhenAsleep", flat.get("wakeWhenAsleep", True)),
-    }
-    return {
+    own = dict(flat.get("settings") or {}) if isinstance(flat.get("settings"), dict) else {}
+    # An explicit (possibly empty) schedule marker records "this connection
+    # has no own overrides" — compaction then never pins inherited values.
+    own.setdefault("schedule", {})
+    conn = {
         "label": flat.get("label") or conn_id,
         "kind": kind,
         "enabled": flat.get("enabled", True),
@@ -335,21 +562,21 @@ def _expand_conn(conn_id, flat, global_settings):
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
-        # the connection's own knob overrides (empty = pure inheritance);
-        # catchup/degradeAfterNodes below are the resolved values code reads
-        "settings": dict(flat.get("settings") or {}),
-        "catchup": {
-            "attempts": settings.get("catchupAttempts", DEFAULT_CATCHUP_ATTEMPTS),
-            "withinMinutes": settings.get("catchupMinutes", DEFAULT_CATCHUP_MINUTES),
-        },
-        "degradeAfterNodes": settings.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES),
-        "schedule": schedule,
+        # the connection's own overrides (knobs + schedule; empty schedule =
+        # pure inheritance) — schedule/catchup/degrade below are the resolved
+        # values the rest of the code reads
+        "settings": own,
     }
+    return _apply_resolved(conn, global_settings, connection_defaults)
 
 
-def _compact_conn(conn, global_settings):
-    """Runtime shape → flat v2 fields. The connection's `settings` overrides
-    persist as-is, minus any that merely repeat the top-level block."""
+def _compact_conn(conn, global_settings, connection_defaults):
+    """Runtime shape → flat v3 fields.
+
+    Own overrides persist as-is, minus any that merely repeat what the
+    connection would inherit anyway. A runtime connection without the
+    schedule marker (built in code, never loaded) pins the schedule it
+    carries, the way every connection did before settings layers existed."""
     flat = {}
     if conn.get("label"):
         flat["label"] = conn["label"]
@@ -369,31 +596,29 @@ def _compact_conn(conn, global_settings):
     duration = window.get("durationMinutes")
     if window.get("status") in ("verified", "user-confirmed") and isinstance(duration, int) and duration > 0:
         flat["windowMinutes"] = duration
-    schedule = conn.get("schedule") or {}
-    flat["mode"] = schedule.get("mode") or "fixed"
-    fixed = schedule.get("fixed") or {}
-    if schedule.get("mode") == "fixed" or fixed.get("at"):
-        flat["times"] = list(fixed.get("at") or [DEFAULT_FIXED_AT])
-        if fixed.get("days"):
-            flat["days"] = fixed["days"]
-        value = fixed.get("skipIfActivatedWithinMinutes")
-        if value is not None and value != DEFAULT_SKIP_IF_ACTIVATED_MINUTES:
-            flat["skipIfActivatedMinutes"] = value
-    overrides = {
-        key: value for key, value in (conn.get("settings") or {}).items()
-        if key in ("catchupMinutes", "catchupAttempts", "degradeAfterNodes") and value != global_settings.get(key)
+    own = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
+    location = conn.get("location") or "local"
+    inherited_knobs = _inherited_knobs(location, global_settings, connection_defaults)
+    inherited_schedule = {
+        **default_schedule(),
+        **_inherited_schedule(location, global_settings, connection_defaults),
     }
+    if isinstance(own.get("schedule"), dict):
+        own_schedule = own["schedule"]
+    else:
+        own_schedule = flatten_schedule(conn.get("schedule"))
+    overrides = {
+        key: value for key, value in _settings_knobs(own).items()
+        if key in default_settings() and value != inherited_knobs.get(key)
+    }
+    schedule_overrides = {
+        key: value for key, value in own_schedule.items()
+        if value != inherited_schedule.get(key)
+    }
+    if schedule_overrides:
+        overrides["schedule"] = schedule_overrides
     if overrides:
         flat["settings"] = overrides
-    flat.setdefault("schedule", {})["wakeWhenAsleep"] = bool(schedule.get("wakeWhenAsleep", True))
-    interval = schedule.get("interval") or {}
-    for run_key, default in (
-        ("graceSeconds", DEFAULT_GRACE_SECONDS),
-        ("jitterSeconds", DEFAULT_JITTER_SECONDS),
-    ):
-        value = interval.get(run_key)
-        if value is not None and value != default:
-            flat[run_key] = value
     if conn.get("enabled") is False:
         flat["enabled"] = False
     if conn.get("hide"):
@@ -405,16 +630,66 @@ def _compact_conn(conn, global_settings):
 
 def _compact_config(config):
     settings = _resolve_settings(config.get("settings"))
+    defaults = config.get("connectionDefaults") or {}
     return {
         "version": CONFIG_VERSION,
         **({"global": config["global"]} if config.get("global") else {}),
         **({"remote": config["remote"]} if config.get("remote") else {}),
         "settings": settings,
+        **({"connectionDefaults": defaults} if defaults else {}),
         "connections": {
-            conn_id: _compact_conn(conn, settings)
+            conn_id: _compact_conn(conn, config.get("settings") or {}, defaults)
             for conn_id, conn in config["connections"].items()
         },
     }
+
+
+def settings_block_errors(block, what="settings"):
+    """Problems with one settings block (the global one or a location's
+    defaults); empty means valid. Knobs must be positive integers, schedule
+    fields must match their connection-level shapes, unknown keys are
+    rejected so typos never silently no-op."""
+    if not block:
+        return []
+    if not isinstance(block, dict):
+        return [f"{what}: must be an object"]
+    errors = []
+    for key, value in block.items():
+        if key == "schedule":
+            continue
+        if key not in KNOB_KEYS:
+            errors.append(
+                f"{what}: unknown key '{key}' (knobs: {', '.join(KNOB_KEYS)}; or a 'schedule' block)"
+            )
+        elif not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            errors.append(f"{what}: {key} must be an integer > 0")
+    schedule = block.get("schedule")
+    if schedule is None:
+        return errors
+    if not isinstance(schedule, dict):
+        return errors + [f"{what}.schedule: must be an object"]
+    for key, value in schedule.items():
+        if key not in SCHEDULE_SETTINGS_KEYS:
+            errors.append(
+                f"{what}.schedule: unknown key '{key}' (known: {', '.join(SCHEDULE_SETTINGS_KEYS)})"
+            )
+        elif key == "mode" and value not in SCHEDULE_MODES:
+            errors.append(f"{what}.schedule: mode must be one of: {', '.join(SCHEDULE_MODES)}")
+        elif key == "times" and (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(slot, str) and SLOT_RE.match(slot) for slot in value)
+        ):
+            errors.append(f"{what}.schedule: times must be a non-empty list of HH:MM")
+        elif key == "days" and value not in DAY_RULES:
+            errors.append(f"{what}.schedule: days must be 'weekday' or 'every-day'")
+        elif key == "wakeWhenAsleep" and not isinstance(value, bool):
+            errors.append(f"{what}.schedule: wakeWhenAsleep must be a boolean")
+        elif key in ("skipIfActivatedMinutes", "graceSeconds", "jitterSeconds") and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+        ):
+            errors.append(f"{what}.schedule: {key} must be an integer >= 0")
+    return errors
 
 
 def remote_errors(remote):
@@ -432,6 +707,14 @@ def remote_errors(remote):
 
 
 def save_config(config, path=None):
+    for name, block in (
+        ("settings", config.get("settings")),
+        ("connectionDefaults.local", (config.get("connectionDefaults") or {}).get("local")),
+        ("connectionDefaults.remote", (config.get("connectionDefaults") or {}).get("remote")),
+    ):
+        errors = settings_block_errors(block, name)
+        if errors:
+            die(f"refusing to save invalid {name}:\n  " + "\n  ".join(errors))
     for conn_id, conn in config["connections"].items():
         errors = connection_errors(conn, conn_id)
         if errors:
@@ -502,11 +785,7 @@ def connection_errors(conn, conn_id="<connection>"):
         errors.append(f"{conn_id}: schedule.mode must be one of: {', '.join(SCHEDULE_MODES)}")
         return errors
 
-    interval_locked = isinstance(window, dict) and (
-        window.get("status") not in ("verified", "user-confirmed")
-        or not isinstance(window.get("durationMinutes"), int)
-        or window["durationMinutes"] <= 0
-    )
+    interval_locked = not _window_allows_interval(window)
     if schedule["mode"] == "interval" and interval_locked:
         errors.append(
             f"{conn_id}: schedule.mode '{schedule['mode']}' needs a verified or user-confirmed window"

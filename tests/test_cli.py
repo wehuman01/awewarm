@@ -89,7 +89,7 @@ class SurfaceTests(IsolatedTestCase):
         self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push", "status"])
-        self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["invite", "list", "revoke"])
+        self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "revoke"])
 
     def test_version_prints_bare_number(self):
         result = invoke(["-v"])
@@ -485,7 +485,7 @@ class CatchupFlagTests(IsolatedTestCase):
         write_config(account_connection(mode="fixed"))
         result = invoke(["config", "settings", "--catchup-minutes", "60", "--catchup-attempts", "2"])
         self.assertEqual(result.exit_code, 0, output_of(result))
-        self.assertIn("Catch-up defaults: 2 attempts within 60 minutes", result.output)
+        self.assertIn("2 attempts within 60 minutes", result.output)
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["catchup"], {"attempts": 2, "withinMinutes": 60})
         self.assertEqual(conn["degradeAfterNodes"], 3)
@@ -1434,6 +1434,30 @@ class RemoteDelegationTests(IsolatedTestCase):
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
         self.assertEqual(on_disk["connections"]["glm"]["location"], "remote")
 
+    def test_delegation_freezes_schedule_against_global_edits(self):
+        # the global schedule exists and the connection follows it while local;
+        # handover pins the effective times, and later global edits never move
+        # the delegated connection
+        data = cfg.empty_config()
+        data["settings"]["schedule"] = {"times": ["09:00"]}
+        data["remote"] = {"url": self.url, "tokenRef": "file:remote-token"}
+        conn = plan_connection(fixed_at=("09:00",))
+        conn["settings"] = {"schedule": {}}  # follows the global 09:00
+        conn["auth"]["apiKeyRef"] = keystore.store_api_key("glm", "sk-test")
+        data["connections"]["glm"] = conn
+        cfg.save_config(data)
+        result = invoke(["config", "set", "glm", "--remote"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        entry = self.server_view()["connections"]["glm"]
+        self.assertEqual(entry["config"]["schedule"]["fixed"]["at"], ["09:00"])
+        on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
+        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"]["times"], ["09:00"])  # pinned
+        invoke(["config", "settings", "--times", "10:10"])
+        entry = self.server_view()["connections"]["glm"]
+        self.assertEqual(entry["config"]["schedule"]["fixed"]["at"], ["09:00"])  # server untouched
+        loaded = cfg.load_config()["connections"]["glm"]
+        self.assertEqual(loaded["schedule"]["fixed"]["at"], ["09:00"])  # pinned, not following global
+
     def test_config_set_remote_rejects_cli_accounts(self):
         self.paired_config(account_connection(), conn_id="claude")
         result = invoke(["config", "set", "claude", "--remote"])
@@ -1546,7 +1570,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         state = cfg.load_state()
         self.assertIn("glm", state.get("pendingPush") or {})
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["glm"]["times"], ["07:07"])
+        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"]["times"], ["07:07"])
 
 
 class PlainHttpConnectTests(IsolatedTestCase):
@@ -1607,3 +1631,131 @@ class PushTimezoneTests(IsolatedTestCase):
         pushed = "UTC-05:30"
         tz = cfg.timezone_for(pushed)
         self.assertEqual(datetime(2026, 8, 21, tzinfo=tz).utcoffset(), -timedelta(hours=5, minutes=30))
+
+
+class SettingsScopeTests(IsolatedTestCase):
+    """`config settings [global|local|remote]` — the three layers on disk."""
+
+    def _write_two_conns(self):
+        local = account_connection(mode="fixed")
+        remote_conn = plan_connection(mode="fixed")
+        remote_conn["location"] = "remote"
+        data = cfg.empty_config()
+        data["connections"]["claude-code-main"] = local
+        data["connections"]["glm"] = remote_conn
+        cfg.save_config(data)
+
+    def test_global_schedule_reaches_local_not_remote(self):
+        self._write_two_conns()
+        result = invoke(["config", "settings", "--times", "07:07"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("reaches local connections only", output_of(result))
+        loaded = cfg.load_config()
+        self.assertEqual(loaded["connections"]["claude-code-main"]["schedule"]["fixed"]["at"], ["07:07"])
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["06:35"])  # untouched
+
+    def test_remote_scope_sets_remote_layer_and_marks_delegated_for_push(self):
+        self._write_two_conns()
+        result = invoke(["config", "settings", "remote", "--times", "08:08", "--catchup-minutes", "45"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Marked glm for re-push", output_of(result))
+        self.assertIn("glm", cfg.load_state().get("pendingPush") or {})
+        loaded = cfg.load_config()
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["08:08"])
+        self.assertEqual(loaded["connections"]["glm"]["catchup"]["withinMinutes"], 45)
+        self.assertEqual(loaded["connections"]["claude-code-main"]["schedule"]["fixed"]["at"], ["06:35"])
+
+    def test_local_scope_only_moves_local_connections(self):
+        self._write_two_conns()
+        result = invoke(["config", "settings", "local", "--times", "09:09"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        loaded = cfg.load_config()
+        self.assertEqual(loaded["connections"]["claude-code-main"]["schedule"]["fixed"]["at"], ["09:09"])
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["06:35"])
+
+    def test_show_lists_the_three_layers(self):
+        self._write_two_conns()
+        result = invoke(["config", "settings"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        for word in ("Global", "Local", "Remote", "never follow"):
+            self.assertIn(word, output_of(result))
+
+    def test_reset_clears_a_scope(self):
+        self._write_two_conns()
+        invoke(["config", "settings", "local", "--times", "09:09"])
+        result = invoke(["config", "settings", "local", "--reset"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        loaded = cfg.load_config()
+        self.assertNotIn("local", loaded["connectionDefaults"])
+        self.assertEqual(loaded["connections"]["claude-code-main"]["schedule"]["fixed"]["at"], ["06:35"])
+
+
+class ProfileScheduleTests(IsolatedTestCase):
+    """`config set` writes the connection's own settings; --inherit-schedule drops them."""
+
+    def test_times_persist_as_own_overrides(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "set", "claude-code-main", "--times", "07:07"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        on_disk = json.loads(Path(cfg.config_path()).read_text())
+        self.assertEqual(on_disk["connections"]["claude-code-main"]["settings"]["schedule"]["times"], ["07:07"])
+        loaded = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(loaded["schedule"]["fixed"]["at"], ["07:07"])
+
+    def test_inherit_schedule_drops_own_overrides(self):
+        write_config(account_connection(mode="fixed"))
+        invoke(["config", "settings", "--times", "08:08"])
+        invoke(["config", "set", "claude-code-main", "--times", "07:07"])
+        result = invoke(["config", "set", "claude-code-main", "--inherit-schedule"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("dropped its own schedule overrides", output_of(result))
+        loaded = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(loaded["schedule"]["fixed"]["at"], ["08:08"])  # follows global now
+
+    def test_settings_show_names_the_schedule_source(self):
+        write_config(account_connection(mode="fixed"))
+        shown = invoke(["config", "set", "claude-code-main"])
+        self.assertIn("schedule source:", output_of(shown))
+        self.assertIn("local defaults → global", output_of(shown))
+
+
+class HubDataDirTests(IsolatedTestCase):
+    """`hub config --data-dir` persists the default; serve/hub commands follow it."""
+
+    def test_flag_beats_persisted_beats_default(self):
+        from awewarm.cli import DEFAULT_SERVER_DATA_DIR, _resolve_server_data_dir
+        self.assertEqual(_resolve_server_data_dir(None), DEFAULT_SERVER_DATA_DIR)
+        self.assertEqual(_resolve_server_data_dir("/tmp/flag"), "/tmp/flag")
+        invoke(["hub", "config", "--data-dir", "/tmp/persisted"])
+        self.assertEqual(_resolve_server_data_dir(None), "/tmp/persisted")
+        self.assertEqual(_resolve_server_data_dir("/tmp/flag"), "/tmp/flag")
+
+    def test_config_command_show_set_unset(self):
+        result = invoke(["hub", "config"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("~/.awewarm-server", output_of(result))
+        self.assertIn("the default", output_of(result))
+        invoke(["hub", "config", "--data-dir", "/tmp/hubdata"])
+        result = invoke(["hub", "config"])
+        self.assertIn("/tmp/hubdata", output_of(result))
+        self.assertIn("set with: awewarm hub config --data-dir", output_of(result))
+        invoke(["hub", "config", "--unset"])
+        result = invoke(["hub", "config"])
+        self.assertIn("the default", output_of(result))
+
+    def test_hub_commands_use_the_persisted_dir_without_the_flag(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        data_dir = str(Path(tmp.name) / "hub")
+        invoke(["hub", "config", "--data-dir", data_dir])
+        result = invoke(["hub", "list"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn(data_dir, output_of(result))  # the resolved dir is named in the hint
+        engine = server.Hub(data_dir)
+        engine.join(engine.mint_invite("alice"))
+        result = invoke(["hub", "list"])
+        self.assertIn("alice", output_of(result))
+
+    def test_unset_and_data_dir_conflict(self):
+        result = invoke(["hub", "config", "--data-dir", "/x", "--unset"])
+        self.assertNotEqual(result.exit_code, 0)

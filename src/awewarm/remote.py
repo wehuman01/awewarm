@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import keystore
+from . import __version__, keystore
 
 # Namespaced so no connection id can collide with it (slugify never emits ":").
 TOKEN_SECRET_ID = "remote:token"
@@ -54,7 +54,12 @@ def store_token(token):
 def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
     target = url.rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        # urllib's default "Python-urllib/3.x" UA is on Cloudflare Bot Fight
+        # Mode's signature blocklist (error 1010) — name ourselves instead.
+        "User-Agent": f"awewarm/{__version__}",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(target, data=data, headers=headers, method=method)
@@ -66,7 +71,12 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
             detail = json.loads(exc.read().decode()).get("error", "")
         except Exception:
             detail = ""
-        raise RemoteError(f"{method} {path} failed (HTTP {exc.code}){': ' + detail if detail else ''}")
+        message = f"{method} {path} failed (HTTP {exc.code}){': ' + detail if detail else ''}"
+        if exc.code == 403 and not detail:
+            # Cloudflare Bot Fight Mode answers with a bare "error code: 1010"
+            # plain-text body — point at the proxy, not the awewarm server.
+            message += " — a proxy or WAF (e.g. Cloudflare bot protection) in front of the server may be blocking this client"
+        raise RemoteError(message)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", None) or exc
         raise RemoteError(f"cannot reach the awewarm server at {url}: {reason}")

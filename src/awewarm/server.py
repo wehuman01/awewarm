@@ -546,7 +546,6 @@ class Hub:
                     "protocol": transport.get("kind"),
                     "model": (conn.get("activation") or {}).get("model"),
                     "enabled": conn.get("enabled", True),
-                    "keyMissing": conn.get("kind") == "subscription" and not warm.keys.get(cid),
                     "timezone": conn.get("timezone"),
                     "nextDueAt": cs.get("nextDueAt"),
                 })

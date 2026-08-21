@@ -12,20 +12,15 @@ import click
 
 from . import discover, install, keystore, schedule, transport
 from .config import (
-    DEFAULT_CATCHUP_ATTEMPTS,
-    DEFAULT_CATCHUP_MINUTES,
-    DEFAULT_DEGRADE_AFTER_NODES,
     DEFAULT_FIXED_AT,
-    DEFAULT_GRACE_SECONDS,
-    DEFAULT_JITTER_SECONDS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_PROMPT,
-    DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
     SLOT_RE,
     conn_state,
     die,
     load_config,
     load_state,
+    resolve_connection,
     save_config,
     save_state,
     unique_connection_id,
@@ -182,27 +177,22 @@ def _optional_positive_int_proc(value):
     return number
 
 
-def _fixed_block(fixed_at, days):
-    return {
-        "at": list(fixed_at),
-        "days": days,
-        "skipIfActivatedWithinMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
-    }
+def _own_schedule_settings(mode, fixed_at, days, wake_when_asleep):
+    """The connection's own schedule overrides: what the prompts collected.
 
-
-def _catchup_block():
-    return {"attempts": DEFAULT_CATCHUP_ATTEMPTS, "withinMinutes": DEFAULT_CATCHUP_MINUTES}
-
-
-def _interval_block():
-    return {"graceSeconds": DEFAULT_GRACE_SECONDS, "jitterSeconds": DEFAULT_JITTER_SECONDS}
+    wakeWhenAsleep rides along only where the platform can wake (None on
+    Linux) — elsewhere it follows the settings layers."""
+    schedule_settings = {"mode": mode, "times": list(fixed_at), "days": days}
+    if wake_when_asleep is not None:
+        schedule_settings["wakeWhenAsleep"] = bool(wake_when_asleep)
+    return {"schedule": schedule_settings}
 
 
 def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep):
     provider = finding["provider"]
     window = dict(finding["builtinWindow"])
     auth_status = "valid" if finding["authFound"] else "unknown"
-    return {
+    conn = {
         "label": finding["label"],
         "kind": "account",
         "enabled": True,
@@ -219,19 +209,13 @@ def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
-        "catchup": _catchup_block(),
-        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
-        "schedule": {
-            "mode": mode,
-            "fixed": _fixed_block(fixed_at, days),
-            "interval": _interval_block(),
-            "wakeWhenAsleep": wake_when_asleep,
-        },
+        "settings": _own_schedule_settings(mode, fixed_at, days, wake_when_asleep),
     }
+    return resolve_connection(conn, load_config())
 
 
 def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_kind, model, mode, window, fixed_at, days, wake_when_asleep):
-    return {
+    conn = {
         "label": label,
         "kind": "subscription",
         "enabled": True,
@@ -244,15 +228,9 @@ def _plan_connection(conn_id, label, base_url, api_key_ref, plan_url, transport_
             "prompt": DEFAULT_PROMPT,
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
-        "catchup": _catchup_block(),
-        "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
-        "schedule": {
-            "mode": mode,
-            "fixed": _fixed_block(fixed_at, days),
-            "interval": _interval_block(),
-            "wakeWhenAsleep": wake_when_asleep,
-        },
+        "settings": _own_schedule_settings(mode, fixed_at, days, wake_when_asleep),
     }
+    return resolve_connection(conn, load_config())
 
 
 def _unknown_window():

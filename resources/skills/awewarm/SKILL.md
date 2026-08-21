@@ -20,12 +20,12 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Category | Commands |
 |---|---|
 | Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm remote status`, `awewarm update --check` |
-| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install [--wake]`, `awewarm scheduler uninstall`, `awewarm update` |
+| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake/--inherit-schedule`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install [--wake]`, `awewarm scheduler uninstall`, `awewarm update` |
 | Delegation — changes who ticks a connection; confirm intent first | `awewarm remote connect <url> [--token]` (single-user server) or `awewarm remote connect <url> --invite awi_...` (hub server), `awewarm config set <id> --remote` (only subscription connections; pushes config+key to the server), `awewarm config set <id> --local` (takeback: pulls server state), `awewarm remote disconnect` (refuses while delegations exist) |
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. On delegated connections it fires on the server. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 | Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
-| Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json), `awewarm hub list [--json]` (read-only), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
+| Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json), `awewarm hub list [--api/--json]` (read-only; --api adds each connection's API endpoint), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
 
 Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling — prefer the new names.
 

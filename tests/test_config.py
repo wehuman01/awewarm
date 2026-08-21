@@ -202,17 +202,18 @@ class V2FormatTests(IsolatedTestCase):
                          "interval": {"graceSeconds": 75, "jitterSeconds": 30}},
         }
 
-    def test_save_compacts_to_flat_v2(self):
+    def test_save_compacts_to_flat_v3(self):
         conf = config.empty_config()
         conf["connections"]["glm"] = self._v1_conn()
         config.save_config(conf)
         on_disk = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(on_disk["version"], 2)
+        self.assertEqual(on_disk["version"], 3)
+        # a runtime conn with no own settings pins the schedule it carries,
+        # minus fields that merely repeat the defaults
         self.assertEqual(on_disk["connections"]["glm"], {
             "label": "glm", "url": "https://x.example/v4", "protocol": "openai-chat",
             "apiKey": "file:glm", "model": "GLM-5-Turbo", "windowMinutes": 300,
-            "mode": "fixed", "times": ["06:00"], "days": "every-day",
-            "schedule": {"wakeWhenAsleep": True},
+            "settings": {"schedule": {"times": ["06:00"], "days": "every-day"}},
         })
 
     def test_load_expands_flat_v2(self):
@@ -247,7 +248,8 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(conn["schedule"]["mode"], "fixed")
         # the file is rewritten so the migration sticks
         on_disk = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(on_disk["connections"]["glm"]["mode"], "fixed")
+        self.assertEqual(on_disk["version"], 3)
+        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"]["mode"], "fixed")
 
     def test_hybrid_v1_nested_migrated_on_load(self):
         v1_conn = self._v1_conn()
@@ -263,8 +265,12 @@ class V2FormatTests(IsolatedTestCase):
         Path(config.config_path()).write_text(json.dumps(v1))
         conn = config.load_config()["connections"]["glm"]
         on_disk = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(on_disk["version"], 2)
+        self.assertEqual(on_disk["version"], 3)
         self.assertNotIn("transport", on_disk["connections"]["glm"])
+        # the schedule the v1 connection ran on is pinned as its own overrides
+        self.assertEqual(
+            on_disk["connections"]["glm"]["settings"]["schedule"]["times"], ["06:00"]
+        )
         self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm")
 
     def test_account_roundtrip_via_cli_flag(self):
@@ -292,7 +298,10 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 1441})
         self.assertEqual(loaded["degradeAfterNodes"], 5)
         file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["connections"]["glm"]["settings"], {"catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5})
+        self.assertEqual(file["connections"]["glm"]["settings"], {
+            "catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5,
+            "schedule": {"times": ["06:00"], "days": "every-day"},
+        })
 
     def test_global_settings_inherited_by_connections(self):
         conf = config.empty_config()
@@ -301,7 +310,9 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], {"catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6})
-        self.assertNotIn("settings", file["connections"]["glm"])
+        # no knob overrides pinned on the connection (its settings hold only
+        # the schedule pin every runtime conn carries)
+        self.assertFalse(set(file["connections"]["glm"]["settings"]) - {"schedule"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 45})
         self.assertEqual(loaded["degradeAfterNodes"], 6)
@@ -316,7 +327,8 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         # only the knob that actually differs from the global block persists on the connection
-        self.assertEqual(file["connections"]["glm"]["settings"], {"catchupMinutes": 60})
+        self.assertEqual(file["connections"]["glm"]["settings"]["catchupMinutes"], 60)
+        self.assertNotIn("catchupAttempts", file["connections"]["glm"]["settings"])
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 60})
 
@@ -336,9 +348,13 @@ class V2FormatTests(IsolatedTestCase):
         # per-connection, and the top-level block is materialized with its defaults
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], config.default_settings())
-        self.assertEqual(file["connections"]["glm"]["settings"], {"catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4})
+        self.assertEqual(file["connections"]["glm"]["settings"], {
+            "catchupMinutes": 60, "catchupAttempts": 2, "degradeAfterNodes": 4,
+            "schedule": {"mode": "fixed", "times": ["06:00"], "days": "every-day"},
+        })
         self.assertNotIn("catchupMinutes", file["connections"]["glm"])
         self.assertNotIn("degradeAfterNodes", file["connections"]["glm"])
+        self.assertNotIn("times", file["connections"]["glm"])
 
     def test_settings_block_always_written(self):
         conf = config.empty_config()
@@ -346,7 +362,7 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], config.default_settings())
-        self.assertNotIn("settings", file["connections"]["glm"])
+        self.assertFalse(set(file["connections"]["glm"]["settings"]) - {"schedule"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 5, "withinMinutes": 30})
         self.assertEqual(loaded["degradeAfterNodes"], 3)
@@ -359,6 +375,145 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["glm"]
         self.assertFalse(on_disk["enabled"])
+
+
+class SettingsLayerTests(IsolatedTestCase):
+    """The three settings layers (global → location → connection) and the
+    rule that a delegated connection never follows the global schedule."""
+
+    def _inherit_conn(self, **kwargs):
+        conn = plan_connection(**kwargs)
+        conn["settings"] = {"schedule": {}}  # explicitly nothing of its own
+        return conn
+
+    def _config_with(self, global_settings=None, defaults=None, **conns):
+        conf = config.empty_config()
+        if global_settings:
+            conf["settings"].update(global_settings)
+        if defaults:
+            conf["connectionDefaults"] = defaults
+        conf["connections"].update(conns)
+        config.save_config(conf)
+        return config.load_config()
+
+    def test_local_connection_inherits_global_schedule(self):
+        loaded = self._config_with(
+            global_settings={"schedule": {"times": ["09:00"], "days": "every-day", "wakeWhenAsleep": False}},
+            glm=self._inherit_conn(),
+        )
+        sched = loaded["connections"]["glm"]["schedule"]
+        self.assertEqual(sched["fixed"]["at"], ["09:00"])
+        self.assertEqual(sched["fixed"]["days"], "every-day")
+        self.assertFalse(sched["wakeWhenAsleep"])
+
+    def test_remote_connection_never_follows_the_global_schedule(self):
+        remote_conn = self._inherit_conn()
+        remote_conn["location"] = "remote"
+        loaded = self._config_with(
+            global_settings={"schedule": {"times": ["09:00"], "days": "every-day"}},
+            glm=remote_conn,
+        )
+        sched = loaded["connections"]["glm"]["schedule"]
+        self.assertEqual(sched["fixed"]["at"], ["06:35"])  # code defaults, not global
+        self.assertEqual(sched["fixed"]["days"], "weekday")
+
+    def test_remote_layer_schedule_reaches_remote_connections(self):
+        remote_conn = self._inherit_conn()
+        remote_conn["location"] = "remote"
+        loaded = self._config_with(
+            global_settings={"schedule": {"times": ["09:00"]}},
+            defaults={"remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}},
+            glm=remote_conn,
+        )
+        sched = loaded["connections"]["glm"]["schedule"]
+        self.assertEqual(sched["fixed"]["at"], ["08:00"])
+        self.assertEqual(sched["fixed"]["days"], "every-day")
+
+    def test_local_layer_overrides_global_for_local_connections(self):
+        loaded = self._config_with(
+            global_settings={"schedule": {"times": ["09:00"]}, "catchupMinutes": 45},
+            defaults={"local": {"schedule": {"times": ["07:30"]}, "catchupMinutes": 60}},
+            glm=self._inherit_conn(),
+        )
+        conn = loaded["connections"]["glm"]
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["07:30"])
+        self.assertEqual(conn["catchup"]["withinMinutes"], 60)
+
+    def test_profile_beats_location_beats_global(self):
+        own = plan_connection()
+        own["settings"] = {"schedule": {"times": ["05:00"]}}
+        loaded = self._config_with(
+            global_settings={"schedule": {"times": ["09:00"]}},
+            defaults={"local": {"schedule": {"times": ["07:30"]}}},
+            glm=own,
+        )
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["05:00"])
+
+    def test_global_knobs_still_reach_remote_connections(self):
+        remote_conn = self._inherit_conn()
+        remote_conn["location"] = "remote"
+        loaded = self._config_with(
+            global_settings={"catchupMinutes": 45},
+            glm=remote_conn,
+        )
+        self.assertEqual(loaded["connections"]["glm"]["catchup"]["withinMinutes"], 45)
+
+    def test_inherited_interval_falls_back_to_fixed_without_window(self):
+        loaded = self._config_with(
+            global_settings={"schedule": {"mode": "interval"}},
+            glm=self._inherit_conn(),  # plan with an unknown window
+            acct=self._inherit_conn(window_status="user-confirmed", duration=300),
+        )
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["mode"], "fixed")
+        self.assertEqual(loaded["connections"]["acct"]["schedule"]["mode"], "interval")
+
+    def test_own_interval_without_window_stays_interval_and_errors(self):
+        conn = self._inherit_conn()
+        conn["settings"]["schedule"]["mode"] = "interval"
+        loaded = self._config_with(glm=conn)
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["mode"], "interval")
+        self.assertTrue(config.connection_errors(loaded["connections"]["glm"], "glm"))
+
+    def test_connection_defaults_roundtrip(self):
+        conf = config.empty_config()
+        conf["settings"]["schedule"] = {"times": ["09:00"]}
+        conf["connectionDefaults"] = {
+            "local": {"catchupMinutes": 20},
+            "remote": {"schedule": {"times": ["08:00"]}, "degradeAfterNodes": 4},
+        }
+        conf["connections"]["glm"] = self._inherit_conn()
+        config.save_config(conf)
+        loaded = config.load_config()
+        self.assertEqual(loaded["connectionDefaults"]["remote"]["schedule"]["times"], ["08:00"])
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["09:00"])
+
+    def test_override_equal_to_inheritance_is_dropped(self):
+        conn = self._inherit_conn()
+        conn["settings"]["schedule"]["times"] = ["09:00"]  # same as global: follows it
+        loaded = self._config_with(
+            global_settings={"schedule": {"times": ["09:00"]}},
+            glm=conn,
+        )
+        self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["09:00"])
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        own = (on_disk["connections"]["glm"].get("settings") or {}).get("schedule") or {}
+        self.assertNotIn("times", own)  # nothing pinned: it follows the global times
+
+    def test_settings_block_errors_catch_typos_and_bad_values(self):
+        self.assertTrue(config.settings_block_errors({"bogus": 1}, "settings"))
+        self.assertTrue(config.settings_block_errors({"schedule": {"times": ["9:00"]}}, "settings"))
+        self.assertTrue(config.settings_block_errors({"schedule": {"mode": "whenever"}}, "settings"))
+        self.assertTrue(config.settings_block_errors({"catchupMinutes": 0}, "settings"))
+        self.assertEqual(config.settings_block_errors({"schedule": {"times": ["09:00"]}}, "settings"), [])
+
+    def test_invalid_settings_block_dies_on_load(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {"schedule": {"times": ["9:00"]}},
+            "connections": {},
+        }))
+        with self.assertRaises(SystemExit):
+            config.load_config()
 
 
 class LocationTests(IsolatedTestCase):

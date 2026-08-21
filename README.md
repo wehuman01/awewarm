@@ -196,7 +196,8 @@ Two pairing safety notes. An unclaimed server trusts the **first** token that re
 ```bash
 ssh my-server
 pip3 install awewarm
-awewarm serve --data-dir ~/awewarm-server    # listens on 127.0.0.1:8790
+awewarm serve                                 # listens on 127.0.0.1:8790, data at ~/.awewarm-server
+awewarm hub config --data-dir /data/awewarm   # ...or set the default data dir once, no flag needed
 ```
 
 Keep it running with a systemd user unit (`~/.config/systemd/user/awewarm.service`):
@@ -238,7 +239,7 @@ awewarm status                                    # merged view: local + delegat
 
 ```bash
 # on the hub machine (same cloudflared setup as above)
-awewarm serve --hub --data-dir ~/awewarm-server
+awewarm serve --hub                  # data at ~/.awewarm-server (or: hub config --data-dir)
 awewarm hub invite --note alice      # prints: awi_...  (one use, 48 h)
 
 # on each user's machine
@@ -249,8 +250,8 @@ awewarm config set glm --remote      # same delegation as single-user mode
 Each tenant gets a private workspace: connections, state, and keys are invisible to other tenants (their `glm` and yours never collide), and everything from single-user delegation works unchanged — edits push, `run` fires remotely, `--local` takes back, fixed times follow the *user's* timezone. Hub administration lives on the server:
 
 ```bash
-awewarm hub list                     # tenants, connections, activation usage, last seen
-awewarm hub revoke <tenant>          # drop a tenant: token, connections, state
+awewarm hub list [--api]               # tenant table: health, usage, last seen; --api adds each connection's endpoint
+awewarm hub revoke <tenant>            # drop a tenant: token, connections, state
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
@@ -264,16 +265,24 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 
 ```json
 {
-  "version": 2,
+  "version": 3,
+  "settings": {
+    "catchupMinutes": 30,
+    "catchupAttempts": 5,
+    "degradeAfterNodes": 3,
+    "schedule": {"times": ["06:35"], "days": "weekday"}
+  },
+  "connectionDefaults": {
+    "local": {"catchupMinutes": 20},
+    "remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}
+  },
   "connections": {
     "claude-code": {
       "label": "Claude Code",
       "cli": "/usr/local/bin/claude",
       "model": "haiku",
       "windowMinutes": 300,
-      "mode": "fixed",
-      "times": ["06:35"],
-      "days": "weekday"
+      "settings": {"schedule": {"times": ["06:35"]}}
     },
     "glm": {
       "label": "glm",
@@ -282,9 +291,6 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
       "apiKey": "file:glm",
       "model": "GLM-5-Turbo",
       "windowMinutes": 300,
-      "mode": "fixed",
-      "times": ["06:00"],
-      "days": "every-day",
       "location": "remote"
     }
   },
@@ -295,7 +301,15 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it. Tuning knobs (catch-up, grace, jitter) stay at code defaults unless changed. v1 config files upgrade to this format automatically on first load.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
+
+Settings are layered three deep — every level carries the same knobs and a `schedule` block, and each field resolves through them:
+
+1. **global** — the top-level `settings`: knobs every connection inherits, plus default schedule fields.
+2. **connections** — `connectionDefaults.local` / `.remote`: per-location overrides, one layer down.
+3. **profile** — a connection's own `settings` (written by `awewarm config set <id>`); it always wins, and `--inherit-schedule` drops it back to the layers above.
+
+One deliberate asymmetry: a delegated (`remote`) connection never follows the global schedule — it describes this machine's day. Remote connections resolve their schedule from their own settings and `connectionDefaults.remote` only (knobs still inherit globally). An inherited interval mode never breaks a connection whose window is unverified — such connections stay on fixed until their window is recorded. Delegating a connection freezes its then-effective schedule as its own settings, so handover never changes what fires. v1/v2 config files upgrade to this format automatically on first load (v2 per-connection schedule fields become that connection's own overrides, values unchanged).
 
 ## Commands
 
@@ -305,8 +319,11 @@ awewarm discover                      # read-only scan of local CLIs and logins
 awewarm config add                    # add a connection: a detected account or a subscription endpoint
 awewarm config set <id> [flags]       # show or change settings: --times, --days, --mode, --on/--off, --hide/--show,
                                        #   --anchor, --start, --window, --api-key, --wake/--no-wake, --remote/--local,
-                                       #   --catchup-minutes, --catchup-attempts, --degrade-after-nodes
-awewarm config settings [flags]       # show or change global defaults: --catchup-minutes, --catchup-attempts, --degrade-after-nodes
+                                       #   --catchup-minutes, --catchup-attempts, --degrade-after-nodes,
+                                       #   --inherit-schedule (drop own schedule overrides, follow the layers)
+awewarm config settings [scope] [flags]  # show or change the settings layers: scope is global (default), local,
+                                       #   or remote; flags: --catchup-*, --degrade-after-nodes, --times, --days,
+                                       #   --mode, --wake/--no-wake, --reset
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations
@@ -316,6 +333,7 @@ awewarm run <id> [--reset-due]        # fire one connection now (schedule untouc
 awewarm scheduler install [--wake] / uninstall # background scheduler (launchd / Task Scheduler / systemd); --wake also arms RTC wake-from-sleep
 awewarm serve                          # run the always-on server that ticks delegated connections
 awewarm serve --hub                    # multi-tenant server: users pair with one-time invites
+awewarm hub config [--data-dir /data]  # set/show the default data dir for serve + hub commands (~/.awewarm-server)
 awewarm hub invite / list / revoke     # hub administration (run on the hub machine)
 awewarm remote connect <url>           # pair with a server (token generated + stored locally)
 awewarm remote status                  # server view: uptime, last tick, delegated connections

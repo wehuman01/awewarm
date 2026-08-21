@@ -106,6 +106,54 @@ class ImpostorTests(IsolatedTestCase):
             remote.healthz(url)
         self.assertIn("not like an awewarm server", str(ctx.exception))
 
+    def test_requests_identify_themselves_not_as_python_urllib(self):
+        seen = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["user-agent"] = self.headers.get("User-Agent")
+                body = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        self.assertTrue(remote.healthz(url)["ok"])
+        # Cloudflare Bot Fight Mode bans the default "Python-urllib/3.x" UA
+        # outright (error 1010) — the client must name itself instead.
+        self.assertTrue(seen["user-agent"].startswith("awewarm/"))
+        self.assertNotIn("urllib", seen["user-agent"])
+
+    def test_403_without_detail_hints_at_a_proxy_not_the_server(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"error code: 1010"
+                self.send_response(403)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        with self.assertRaises(remote.RemoteError) as ctx:
+            remote.healthz(url)
+        self.assertIn("HTTP 403", str(ctx.exception))
+        self.assertIn("proxy or WAF", str(ctx.exception))
+
 
 class SessionTests(LiveServerCase):
     def test_ensure_session_returns_view(self):

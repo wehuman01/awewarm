@@ -24,17 +24,20 @@ from .config import (
     DEFAULT_CATCHUP_ATTEMPTS,
     DEFAULT_CATCHUP_MINUTES,
     DEFAULT_DEGRADE_AFTER_NODES,
-    DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
     SCHEDULE_MODES,
     SLOT_RE,
     append_log,
     config_path,
     conn_state,
     connection_errors,
+    default_schedule,
+    default_settings,
     die,
+    flatten_schedule,
     load_config,
     load_state,
     log_path,
+    resolve_connection,
     save_config,
     save_state,
     state_path,
@@ -296,17 +299,6 @@ def _fire_all():
     click.echo(f"{ok} of {len(enabled)} activated")
 
 
-def _ensure_fixed(conn):
-    fixed = conn["schedule"].setdefault("fixed", {})
-    fixed.setdefault("days", "weekday")
-    fixed.setdefault("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES)
-    return fixed
-
-
-def _ensure_catchup(conn):
-    return conn.setdefault("catchup", {})
-
-
 # --- remote delegation: the local machine stays the owner of every secret ---
 
 
@@ -400,7 +392,11 @@ def _delegate_remote(config, conn_id, conn):
     """Hand one connection to the remote server (`config set <id> --remote`).
 
     The flag only lands after the server accepted the push — otherwise neither
-    side would tick the connection.
+    side would tick the connection. The connection's effective schedule at
+    handover (its own overrides, or whatever it inherited as a local
+    connection) is pinned as its own settings: a delegated connection never
+    follows the global schedule, so this is the one moment those values may
+    carry over.
     """
     if conn.get("location") == "remote":
         return
@@ -414,6 +410,8 @@ def _delegate_remote(config, conn_id, conn):
     api_key = _resolve_api_key(conn)
     if api_key is None:
         die(f"{conn_id} has no stored API key\nfix: awewarm config set {conn_id} --api-key <key>")
+    conn.setdefault("settings", {})["schedule"] = flatten_schedule(conn.get("schedule"))
+    resolve_connection(conn, config)
     try:
         remote.ensure_session(config)
         remote.push_connection(
@@ -423,6 +421,7 @@ def _delegate_remote(config, conn_id, conn):
     except remote.RemoteError as exc:
         die(f"could not hand {conn_id} to the remote server — it stays local:\n{exc}")
     conn["location"] = "remote"
+    resolve_connection(conn, config)
     click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")
 
 
@@ -442,6 +441,7 @@ def _takeback_remote(config, state, conn_id, conn):
         local.clear()
         local.update(server_state)
     conn.pop("location", None)
+    resolve_connection(conn, config)  # local again: unpinned fields follow global/local defaults
     (state.get("pendingPush") or {}).pop(conn_id, None)
     click.echo(f"✓ {conn_id} back on local scheduling (server state pulled)")
 
@@ -453,12 +453,20 @@ def _show_settings(config, conn_id, conn):
     wake = conn["schedule"].get("wakeWhenAsleep", True)
     location = conn.get("location", "local")
     where = f" ({remote.remote_url(config)})" if location == "remote" else ""
+    own_schedule = (conn.get("settings") or {}).get("schedule") or {}
+    if own_schedule:
+        source = f"own overrides ({', '.join(sorted(own_schedule))})"
+    elif location == "remote":
+        source = "remote defaults (a delegated connection never follows the global schedule)"
+    else:
+        source = "local defaults → global"
     click.echo(f"Settings for {conn_id}:")
     click.echo(f"  enabled: {'true' if conn.get('enabled', True) else 'false'}")
     click.echo(f"  hidden from status: {'true' if conn.get('hide') else 'false'}")
     click.echo(f"  location: {location}{where}")
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
+    click.echo(f"  schedule source: {source}" + (f" — inherit everything with: awewarm config set {conn_id} --inherit-schedule" if own_schedule else ""))
     click.echo(f"  window: {duration}")
     catchup = conn.get("catchup") or {}
     click.echo(
@@ -551,6 +559,7 @@ class _SetOptions:
         "times", "days", "mode", "enabled", "hide", "anchor_hhmm", "start_hhmm",
         "window_minutes", "api_key", "wake", "catchup_minutes",
         "catchup_attempts", "degrade_after_nodes", "location",
+        "inherit_schedule",
     )
 
     def __init__(self, **kwargs):
@@ -562,6 +571,13 @@ class _SetOptions:
 
     def any(self):
         return any(getattr(self, field) is not None for field in self.FIELDS)
+
+    def overrides(self):
+        """Fields that land in the connection's own settings block."""
+        return (
+            self.times, self.days, self.mode, self.wake, self.inherit_schedule,
+            self.catchup_minutes, self.catchup_attempts, self.degrade_after_nodes,
+        )
 
 
 def _config_set(connection, opts):
@@ -591,17 +607,39 @@ def _config_set(connection, opts):
     anchor_now = None
     window_notice = None
 
+    # Schedule and knob edits land in the connection's own settings block,
+    # then the resolved fields are recomputed from it and the layers above.
+    own = conn.setdefault("settings", {})
+    own.setdefault("schedule", {})  # present-even-empty marks "no own overrides"
+    if opts.inherit_schedule:
+        own["schedule"] = {}
     if slots:
-        if conn["schedule"]["mode"] != "fixed":
-            click.echo(
-                f"note: {conn_id} is in {conn['schedule']['mode']} mode — "
-                f"these times apply after: awewarm config set {conn_id} --mode fixed"
-            )
-        _ensure_fixed(conn)["at"] = slots
+        own["schedule"]["times"] = slots
     if opts.days:
-        _ensure_fixed(conn)["days"] = opts.days
+        own["schedule"]["days"] = opts.days
     if opts.mode:
-        conn["schedule"]["mode"] = opts.mode
+        own["schedule"]["mode"] = opts.mode
+    if opts.wake is not None:
+        own["schedule"]["wakeWhenAsleep"] = opts.wake
+    if opts.catchup_minutes is not None:
+        if not 5 <= opts.catchup_minutes <= 240:
+            die("--catchup-minutes must be between 5 and 240")
+        own["catchupMinutes"] = opts.catchup_minutes
+    if opts.catchup_attempts is not None:
+        if not 1 <= opts.catchup_attempts <= 10:
+            die("--catchup-attempts must be between 1 and 10")
+        own["catchupAttempts"] = opts.catchup_attempts
+    if opts.degrade_after_nodes is not None:
+        if not 1 <= opts.degrade_after_nodes <= 10:
+            die("--degrade-after-nodes must be between 1 and 10")
+        own["degradeAfterNodes"] = opts.degrade_after_nodes
+    if any(value is not None for value in opts.overrides()):
+        resolve_connection(conn, config)
+    if slots and conn["schedule"]["mode"] != "fixed":
+        click.echo(
+            f"note: {conn_id} is in {conn['schedule']['mode']} mode — "
+            f"these times apply after: awewarm config set {conn_id} --mode fixed"
+        )
     if opts.enabled is not None:
         conn["enabled"] = opts.enabled
         if opts.enabled:
@@ -614,26 +652,6 @@ def _config_set(connection, opts):
         # Display-only: hidden connections keep their schedule and keep warming;
         # status listings omit them, asking by id still shows them.
         conn["hide"] = opts.hide
-    if opts.wake is not None:
-        conn["schedule"]["wakeWhenAsleep"] = opts.wake
-    if opts.catchup_minutes is not None or opts.catchup_attempts is not None:
-        block = _ensure_catchup(conn)
-        overrides = conn.setdefault("settings", {})
-        if opts.catchup_minutes is not None:
-            if not 5 <= opts.catchup_minutes <= 240:
-                die("--catchup-minutes must be between 5 and 240")
-            block["withinMinutes"] = opts.catchup_minutes
-            overrides["catchupMinutes"] = opts.catchup_minutes
-        if opts.catchup_attempts is not None:
-            if not 1 <= opts.catchup_attempts <= 10:
-                die("--catchup-attempts must be between 1 and 10")
-            block["attempts"] = opts.catchup_attempts
-            overrides["catchupAttempts"] = opts.catchup_attempts
-    if opts.degrade_after_nodes is not None:
-        if not 1 <= opts.degrade_after_nodes <= 10:
-            die("--degrade-after-nodes must be between 1 and 10")
-        conn["degradeAfterNodes"] = opts.degrade_after_nodes
-        conn.setdefault("settings", {})["degradeAfterNodes"] = opts.degrade_after_nodes
     if opts.anchor_hhmm is not None:
         window = conn["window"]
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
@@ -722,12 +740,16 @@ def _config_set(connection, opts):
                 click.echo("  note: this platform cannot wake a suspended machine — the flag has no effect here")
         else:
             click.echo(f"✓ {conn_id} will not wake a sleeping machine (missed slots catch up on next wake)")
+    if opts.inherit_schedule:
+        location = conn.get("location", "local")
+        layers = "remote defaults" if location == "remote" else ("local" if (config.get("connectionDefaults") or {}).get("local") else "global") + " defaults"
+        click.echo(f"✓ {conn_id} dropped its own schedule overrides — it follows {layers}")
     if conn.get("location") == "remote" and opts.location is not True and any(value is not None for value in (
-        opts.times, opts.days, opts.mode, opts.enabled, opts.window_minutes, opts.api_key,
-        opts.catchup_minutes, opts.catchup_attempts, opts.degrade_after_nodes,
+        opts.times, opts.days, opts.mode, opts.enabled, opts.window_minutes, opts.api_key, opts.wake,
+        opts.catchup_minutes, opts.catchup_attempts, opts.degrade_after_nodes, opts.inherit_schedule,
     )):
         _push_edits_to_remote(config, state, conn_id)
-    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake, opts.start_hhmm)):
+    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake, opts.start_hhmm, opts.inherit_schedule)):
         _refresh_wake_after_edit()
 
 
@@ -766,8 +788,9 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node — overrides the global default (5).")
 @click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled — overrides the global default (3).")
 @click.option("--remote/--local", "location", default=None, help="Delegate this connection to the remote server (--remote) or resume local scheduling (--local).")
+@click.option("--inherit-schedule", "inherit_schedule", is_flag=True, default=None, help="Drop this connection's own schedule overrides; it follows the location/global defaults instead.")
 def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-               catchup_minutes, catchup_attempts, degrade_after_nodes, location):
+               catchup_minutes, catchup_attempts, degrade_after_nodes, location, inherit_schedule):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
@@ -775,55 +798,176 @@ def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_
         times=times, days=days, mode=mode, enabled=enabled, hide=hide, anchor_hhmm=anchor_hhmm,
         start_hhmm=start_hhmm, window_minutes=window_minutes, api_key=api_key, wake=wake,
         catchup_minutes=catchup_minutes, catchup_attempts=catchup_attempts,
-        degrade_after_nodes=degrade_after_nodes, location=location,
+        degrade_after_nodes=degrade_after_nodes, location=location, inherit_schedule=inherit_schedule,
     ))
 
 
-def _config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes):
-    config = load_config()
-    settings = config.setdefault("settings", {})
-    if all(value is None for value in (catchup_minutes, catchup_attempts, degrade_after_nodes)):
-        click.echo(
-            f"catch-up: {settings.get('catchupAttempts', DEFAULT_CATCHUP_ATTEMPTS)} attempts within "
-            f"{settings.get('catchupMinutes', DEFAULT_CATCHUP_MINUTES)} minutes"
+def _settings_scope_block(config, scope):
+    """The settings block one scope edits: the global one, or a location's."""
+    if scope == "global":
+        return config["settings"]
+    return config.setdefault("connectionDefaults", {}).setdefault(scope, {})
+
+
+def _describe_schedule(block):
+    """One line describing a settings block's schedule (what it sets, defaults filled)."""
+    schedule = (block or {}).get("schedule") or {}
+    filled = {**default_schedule(), **schedule}
+    if filled["mode"] == "fixed":
+        core = f"fixed at {', '.join(filled['times'])} ({filled['days']})"
+    else:
+        core = f"interval (window + {filled['graceSeconds']}s grace, {filled['jitterSeconds']}s jitter)"
+    return f"{core}, wake when asleep: {'true' if filled['wakeWhenAsleep'] else 'false'}"
+
+
+def _show_settings_scope(config, scope):
+    """Print the settings layers: all three at once, or just the asked-for scope."""
+    defaults = config.get("connectionDefaults") or {}
+    knobs_line = (
+        f"catch-up: {config['settings']['catchupAttempts']} attempts within "
+        f"{config['settings']['catchupMinutes']} minutes, degrade after nodes: "
+        f"{config['settings']['degradeAfterNodes']}"
+    )
+
+    def show(name, block, note):
+        click.echo(f"{name}:")
+        click.echo(f"  {knobs_line if name == 'Global' else 'knobs: ' + (', '.join(f'{k}={v}' for k, v in (block or {}).items() if k != 'schedule') or 'none set (inherit global)')}")
+        schedule = (block or {}).get("schedule")
+        click.echo(f"  schedule: {_describe_schedule(block) if schedule else 'none set (code defaults: fixed at 06:35, weekday)'}")
+        click.echo(f"  {note}")
+
+    if scope in ("local", "remote"):
+        note = (
+            "applies to delegated connections; the schedule never falls back to the global block"
+            if scope == "remote"
+            else "overrides the global block for local connections"
         )
-        click.echo(
-            f"degrade after nodes: {settings.get('degradeAfterNodes', DEFAULT_DEGRADE_AFTER_NODES)} "
-            "(lost nodes before degraded, and again before auto-disabled)"
-        )
-        click.echo("defaults for every connection — override one with: awewarm config set <id> --catchup-minutes 45")
+        show(scope.capitalize(), defaults.get(scope), note)
         return
+    show("Global", config["settings"],
+         "every connection inherits the knobs; the schedule reaches local connections only — delegated ones never follow it")
+    show("Local", defaults.get("local"), "overrides global for local connections")
+    show("Remote", defaults.get("remote"), "delegated connections; the schedule never falls back to the global block")
+    click.echo("change with: awewarm config settings --times 06:35 11:40")
+    click.echo("            awewarm config settings local|remote --times 09:00 --catchup-minutes 45")
+
+
+def _after_settings_scope_edit(config, scope, schedule_edited, knobs_edited):
+    """Side effects a settings-layer edit may owe: re-push delegated
+    connections whose effective values changed, refresh the wake layer."""
+    if schedule_edited and scope in ("global", "local"):
+        _refresh_wake_after_edit()
+    # Knob edits reach delegated connections wherever they were made; schedule
+    # edits reach them only through the remote layer — the global schedule is
+    # deliberately not part of a delegated connection's chain.
+    if scope == "remote" or (scope == "global" and knobs_edited):
+        delegated = sorted(
+            cid for cid, conn in config["connections"].items() if conn.get("location") == "remote"
+        )
+        if delegated:
+            state = load_state()
+            now = datetime.now().astimezone()
+            state.setdefault("pendingPush", {}).update({cid: schedule.iso(now) for cid in delegated})
+            save_state(state)
+            click.echo(f"✓ Marked {', '.join(delegated)} for re-push: awewarm remote push")
+
+
+def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes,
+                     times, days, mode, wake, reset):
+    config = load_config()
+    scope = scope or "global"
+    if reset:
+        if scope == "global":
+            config["settings"] = default_settings()
+        else:
+            config.setdefault("connectionDefaults", {}).pop(scope, None)
+        save_config(config)
+        click.echo(f"✓ {scope} settings cleared (knobs back to code defaults)" if scope == "global"
+                   else f"✓ {scope} settings cleared — those connections inherit the global block")
+        _after_settings_scope_edit(config, scope, schedule_edited=True, knobs_edited=True)
+        return
+    slots = None
+    if times:
+        try:
+            slots = _slots_proc(times)
+        except ValueError as exc:
+            die(str(exc))
+    knobs = (catchup_minutes, catchup_attempts, degrade_after_nodes)
+    schedule_fields = (slots, days, mode, wake)
+    if all(value is None for value in knobs + schedule_fields):
+        _show_settings_scope(config, scope)
+        return
+    block = _settings_scope_block(config, scope)
     if catchup_minutes is not None:
         if not 5 <= catchup_minutes <= 240:
             die("--catchup-minutes must be between 5 and 240")
-        settings["catchupMinutes"] = catchup_minutes
+        block["catchupMinutes"] = catchup_minutes
     if catchup_attempts is not None:
         if not 1 <= catchup_attempts <= 10:
             die("--catchup-attempts must be between 1 and 10")
-        settings["catchupAttempts"] = catchup_attempts
+        block["catchupAttempts"] = catchup_attempts
     if degrade_after_nodes is not None:
         if not 1 <= degrade_after_nodes <= 10:
             die("--degrade-after-nodes must be between 1 and 10")
-        settings["degradeAfterNodes"] = degrade_after_nodes
+        block["degradeAfterNodes"] = degrade_after_nodes
+    if any(value is not None for value in schedule_fields):
+        sched = block.setdefault("schedule", {})
+        if slots is not None:
+            sched["times"] = slots
+        if days:
+            sched["days"] = days
+        if mode:
+            sched["mode"] = mode
+        if wake is not None:
+            sched["wakeWhenAsleep"] = wake
     save_config(config)
-    if catchup_minutes is not None or catchup_attempts is not None:
+    if any(value is not None for value in knobs):
         click.echo(
-            f"✓ Catch-up defaults: {settings['catchupAttempts']} attempts within "
-            f"{settings['catchupMinutes']} minutes (connections without their own override)"
+            f"✓ {scope} knob defaults: {config['settings']['catchupAttempts']} attempts within "
+            f"{config['settings']['catchupMinutes']} minutes, degrade after "
+            f"{config['settings']['degradeAfterNodes']} nodes"
+            if scope == "global" else
+            f"✓ {scope} knobs set ({', '.join(f'{k}={v}' for k, v in block.items() if k != 'schedule') or 'none'})"
         )
-    if degrade_after_nodes is not None:
-        click.echo(f"✓ Degrade after {settings['degradeAfterNodes']} consecutive lost nodes by default (both rungs)")
+    if any(value is not None for value in schedule_fields):
+        click.echo(f"✓ {scope} schedule: {_describe_schedule(block)}")
+        if scope == "global":
+            click.echo("  reaches local connections only — delegated ones never follow the global schedule")
+        if (block.get("schedule") or {}).get("mode") == "interval":
+            click.echo("  note: connections without a verified window stay on fixed")
+    _after_settings_scope_edit(
+        config, scope,
+        schedule_edited=any(value is not None for value in schedule_fields),
+        knobs_edited=any(value is not None for value in knobs),
+    )
 
 
 @config.command("settings")
+@click.argument("scope", required=False, type=click.Choice(["global", "local", "remote"]))
 @click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node (default 30).")
 @click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node (default 5).")
 @click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled (default 3).")
-def config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes):
-    """Show or change the tuning knobs every connection inherits.
+@click.option("--times", default=None, metavar="HH:MM,...", help="Default fixed activation times, comma- or space-separated.")
+@click.option("--days", type=click.Choice(["weekday", "every-day"]), default=None, help="Which days the default fixed times fire.")
+@click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Default schedule mode.")
+@click.option("--wake/--no-wake", "wake", default=None, help="Default wake-when-asleep behavior for fixed slots (macOS/Windows).")
+@click.option("--reset", is_flag=True, help="Clear this scope's settings (global falls back to code defaults).")
+def config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes, times, days, mode, wake, reset):
+    """Show or change the settings layers every connection inherits.
 
-    With no flags, prints the current defaults."""
-    _config_settings(catchup_minutes, catchup_attempts, degrade_after_nodes)
+    \b
+      awewarm config settings               # show all three layers
+      awewarm config settings --times 06:35 # the global layer (knobs reach every
+                                            #   connection; the schedule: local only)
+      awewarm config settings local ...     # defaults for local connections
+      awewarm config settings remote ...    # defaults for delegated connections
+                                            #   (their schedule never falls back
+                                            #   to the global layer)
+
+    A connection's own settings (`awewarm config set <id> ...`) still win over
+    every layer."""
+    _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes,
+                     times, days, mode, wake, reset)
 
 
 def _config_remove(connection):
@@ -1304,7 +1448,25 @@ def remote_disconnect_command():
 
 # --- hub administration: run on the machine that runs `awewarm serve --hub` ---
 
-HUB_DEFAULT_DATA_DIR = "~/.awewarm-server"  # mirrors the `serve --data-dir` default
+DEFAULT_SERVER_DATA_DIR = "~/.awewarm-server"
+
+
+def _persisted_server_data_dir():
+    """Data dir saved with `awewarm hub config --data-dir`, if any.
+
+    Best-effort on purpose: a serve process must start even when the local
+    config is unreadable — the flag and the default still work."""
+    try:
+        config = load_config()
+    except SystemExit:
+        return None
+    value = (config.get("global") or {}).get("serverDataDir")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _resolve_server_data_dir(flag):
+    """--data-dir flag > the dir saved with `hub config --data-dir` > default."""
+    return flag or _persisted_server_data_dir() or DEFAULT_SERVER_DATA_DIR
 
 
 def _load_hub(data_dir):
@@ -1320,15 +1482,48 @@ def hub():
     they pair with: awewarm remote connect <url> --invite awi_..."""
 
 
+@hub.command("config")
+@click.option("--data-dir", "data_dir", default=None, help="Set the data dir `serve` and hub commands use on this machine by default.")
+@click.option("--unset", "unset_dir", is_flag=True, help="Forget the setting; fall back to the default (~/.awewarm-server).")
+def hub_config_command(data_dir, unset_dir):
+    """Show or set the default data dir for serve and hub commands.
+
+    \b
+      awewarm hub config                    # show the resolved data dir
+      awewarm hub config --data-dir /data   # persist it (a --data-dir flag
+                                             #   still overrides once)
+    """
+    if data_dir and unset_dir:
+        die("pass either --data-dir or --unset, not both")
+    if unset_dir:
+        config = load_config()
+        (config.get("global") or {}).pop("serverDataDir", None)
+        save_config(config)
+        click.echo(f"✓ Server data dir reset to the default: {DEFAULT_SERVER_DATA_DIR}")
+        return
+    if data_dir:
+        resolved = str(Path(data_dir).expanduser())
+        config = load_config()
+        config.setdefault("global", {})["serverDataDir"] = resolved
+        save_config(config)
+        click.echo(f"✓ Server data dir set to {resolved}")
+        click.echo("  awewarm serve and awewarm hub commands on this machine use it unless --data-dir is passed")
+        return
+    persisted = _persisted_server_data_dir()
+    click.echo(f"data dir: {_resolve_server_data_dir(None)} "
+               f"({'set with: awewarm hub config --data-dir' if persisted else 'the default'})")
+    click.echo("  used by awewarm serve and awewarm hub commands; override once with --data-dir")
+
+
 @hub.command("invite")
-@click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+@click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 @click.option("--note", default=None, help="Who this invite is for (shown in hub list).")
 @click.option("--expires-hours", "expires_hours", type=int, default=48, show_default=True, help="How long the invite stays usable.")
 def hub_invite_command(data_dir, note, expires_hours):
     """Mint a one-time pairing invite (printed once; stored only as a hash)."""
     if expires_hours <= 0:
         die("--expires-hours must be greater than 0")
-    engine = _load_hub(data_dir)
+    engine = _load_hub(_resolve_server_data_dir(data_dir))
     code = engine.mint_invite(note, expires_hours)
     click.echo(f"✓ Invite minted{f' for {note}' if note else ''} — one use, expires in {expires_hours} h")
     click.echo(f"  {code}")
@@ -1347,12 +1542,12 @@ def _print_table(headers, rows):
 
 
 def _hub_tenant_status(conns):
-    """Worst health rung across a tenant's connections; key-missing surfaces too."""
+    """Worst health rung across a tenant's connections. Key presence is
+    deliberately absent: RAM keys are only knowable inside the serve process,
+    not from this one — tenants see it via their own `remote status`."""
     for word in ("invalid", "auto-disabled", "degraded", "failing"):
         if any(c["status"] == word for c in conns):
             return word
-    if any(c["keyMissing"] for c in conns):
-        return "key missing"
     return "connected" if conns else "—"
 
 
@@ -1368,11 +1563,12 @@ def _hub_conn_moment(entry, now):
 
 
 @hub.command("list")
-@click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+@click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 @click.option("--api", "show_api", is_flag=True, help="Also list each connection's API endpoint, protocol, and model.")
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
 def hub_list_command(data_dir, show_api, as_json):
     """Show tenants: pairing, connections, and activation usage."""
+    data_dir = _resolve_server_data_dir(data_dir)
     engine = _load_hub(data_dir)
     rows = engine.summarize()
     pending = len(engine.registry["invites"])
@@ -1416,7 +1612,7 @@ def hub_list_command(data_dir, show_api, as_json):
                 api_rows.append([
                     row["tenant"],
                     entry["id"],
-                    entry["status"] + (" (key missing)" if entry["keyMissing"] else ""),
+                    entry["status"],
                     entry["protocol"] or "—",
                     entry["model"] or "—",
                     _hub_conn_moment(entry, now),
@@ -1438,10 +1634,10 @@ def hub_list_command(data_dir, show_api, as_json):
 
 @hub.command("revoke")
 @click.argument("tenant")
-@click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+@click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 def hub_revoke_command(tenant, data_dir):
     """Drop a tenant: its token, connections, and their state."""
-    engine = _load_hub(data_dir)
+    engine = _load_hub(_resolve_server_data_dir(data_dir))
     known = {row["tenant"]: row for row in engine.summarize()}
     if tenant not in known:
         die(f"no such tenant: {tenant}\nknown tenants: {', '.join(sorted(known)) or 'none'}")
@@ -1456,7 +1652,7 @@ def hub_revoke_command(tenant, data_dir):
 
 
 @cli.command("serve")
-@click.option("--data-dir", default="~/.awewarm-server", show_default=True, help="Directory for server config/state/log (never secrets).")
+@click.option("--data-dir", default=None, show_default="~/.awewarm-server", help="Directory for server config/state/log (never secrets). Defaults to ~/.awewarm-server, or the dir saved with: awewarm hub config --data-dir.")
 @click.option("--bind", default="127.0.0.1", show_default=True, help="Address to listen on.")
 @click.option("--port", default=8790, show_default=True, type=int, help="Port to listen on (0 picks a free one).")
 @click.option("--token", "fixed_token", default=None, help="Require exactly this token instead of the first-connect claim.")
@@ -1472,6 +1668,7 @@ def serve_command(data_dir, bind, port, fixed_token, hub, max_tenants, max_conns
   awewarm serve --token awt_...    # fixed token (RAM only)
   awewarm serve --hub              # many users, one-time invites to pair
   awewarm serve --data-dir /data   # keep config/state/log in one place
+  awewarm hub config --data-dir /data   # ...or set the default once, no flag
 
 Expose it safely with a cloudflared tunnel (README → Remote server).
 Nothing secret is ever written to disk: API keys live in server RAM and are
@@ -1484,8 +1681,9 @@ invite hashes reach disk (tenants.json) so pairings survive a restart.
         die("--max-tenants and --max-conns-per-tenant must be greater than 0")
     from . import server
     server.run(
-        data_dir, bind=bind, port=port, fixed_token=fixed_token, tick_seconds=tick_seconds,
-        hub=hub, max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
+        _resolve_server_data_dir(data_dir), bind=bind, port=port, fixed_token=fixed_token,
+        tick_seconds=tick_seconds, hub=hub, max_tenants=max_tenants,
+        max_conns_per_tenant=max_conns_per_tenant,
     )
 
 

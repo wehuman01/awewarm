@@ -196,7 +196,8 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 ```bash
 ssh my-server
 pip3 install awewarm
-awewarm serve --data-dir ~/awewarm-server    # 监听 127.0.0.1:8790
+awewarm serve                                 # 监听 127.0.0.1:8790，数据在 ~/.awewarm-server
+awewarm hub config --data-dir /data/awewarm   # ……或一次性设置默认数据目录，之后无需再传 flag
 ```
 
 用 systemd user unit 常驻（`~/.config/systemd/user/awewarm.service`）：
@@ -238,7 +239,7 @@ awewarm status                                    # 合并视图：本地 + 委�
 
 ```bash
 # hub 机器上（cloudflared 隧道配置与上文相同）
-awewarm serve --hub --data-dir ~/awewarm-server
+awewarm serve --hub                  # 数据在 ~/.awewarm-server（或先 hub config --data-dir 设置）
 awewarm hub invite --note alice      # 打印: awi_... （一次性，48 小时有效）
 
 # 每个用户自己的机器上
@@ -249,7 +250,7 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
 每个租户有独立的工作区：连接、状态、密钥对其他租户不可见（别人的 `glm` 和你的互不干扰），单用户模式的一切照常——改动自动推送、`run` 远程执行、`--local` 收回、fixed 时间跟随**用户自己**的时区。管理命令在服务器上运行：
 
 ```bash
-awewarm hub list                     # 租户、连接数、激活用量、最近在线
+awewarm hub list [--api]               # 租户表格：健康状态、用量、最近在线；--api 追加每个连接的 API 端点
 awewarm hub revoke <tenant>          # 吊销租户：token、连接、状态一并删除
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
@@ -264,16 +265,24 @@ awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 
 ```json
 {
-  "version": 2,
+  "version": 3,
+  "settings": {
+    "catchupMinutes": 30,
+    "catchupAttempts": 5,
+    "degradeAfterNodes": 3,
+    "schedule": {"times": ["06:35"], "days": "weekday"}
+  },
+  "connectionDefaults": {
+    "local": {"catchupMinutes": 20},
+    "remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}
+  },
   "connections": {
     "claude-code": {
       "label": "Claude Code",
       "cli": "/usr/local/bin/claude",
       "model": "haiku",
       "windowMinutes": 300,
-      "mode": "fixed",
-      "times": ["06:35"],
-      "days": "weekday"
+      "settings": {"schedule": {"times": ["06:35"]}}
     },
     "glm": {
       "label": "glm",
@@ -282,9 +291,6 @@ awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
       "apiKey": "file:glm",
       "model": "GLM-5-Turbo",
       "windowMinutes": 300,
-      "mode": "fixed",
-      "times": ["06:00"],
-      "days": "every-day",
       "location": "remote"
     }
   },
@@ -295,7 +301,15 @@ awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。微调参数（catch-up、grace、jitter）默认不落盘，改动过才写入。v1 配置文件在首次加载时自动升级为本格式。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
+
+settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每个字段按层解析：
+
+1. **global** —— 顶层 `settings`：所有连接继承的 knobs，以及默认的 schedule 字段。
+2. **connections** —— `connectionDefaults.local` / `.remote`：按 local / remote 区分的中间层。
+3. **profile** —— 连接自己的 `settings`（由 `awewarm config set <id>` 写入）；永远优先，`--inherit-schedule` 可丢弃它、回落到上层。
+
+一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connectionDefaults.remote`（knobs 仍全局继承）。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。v1/v2 配置文件在首次加载时自动升级为本格式（v2 连接上的调度字段原值变为其自身 overrides）。
 
 ## 命令
 
@@ -305,8 +319,11 @@ awewarm discover                      # 纯读扫描本机 CLI 与登录态
 awewarm config add                    # 添加连接：本机账号或订阅 endpoint
 awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--hide/--show、
                                        #   --anchor、--start、--window、--api-key、--wake/--no-wake、--remote/--local、
-                                       #   --catchup-minutes、--catchup-attempts、--degrade-after-nodes
-awewarm config settings [flags]       # 查看或修改全局默认值：--catchup-minutes、--catchup-attempts、--degrade-after-nodes
+                                       #   --catchup-minutes、--catchup-attempts、--degrade-after-nodes、
+                                       #   --inherit-schedule（丢弃自身调度覆盖，改为跟随上层）
+awewarm config settings [scope] [flags]  # 查看或修改 settings 层：scope 为 global（默认）、local 或 remote；
+                                       #   flags：--catchup-*、--degrade-after-nodes、--times、--days、--mode、
+                                       #   --wake/--no-wake、--reset
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径
@@ -316,6 +333,7 @@ awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动�
 awewarm scheduler install [--wake] / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）；--wake 额外启用合盖睡眠 RTC 唤醒
 awewarm serve                          # 运行常驻服务器，调度已委托的连接
 awewarm serve --hub                    # 多租户服务器：用户凭一次性邀请码配对
+awewarm hub config [--data-dir /data]  # 设置/查看 serve 与 hub 命令的默认数据目录（~/.awewarm-server）
 awewarm hub invite / list / revoke     # hub 管理（在 hub 机器上运行）
 awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
 awewarm remote status                  # 服务器视角：运行时长、上次 tick、委托连接
