@@ -1676,7 +1676,7 @@ def hub_list_invites_command(data_dir, show_codes, as_json):
         used = schedule.parse_ts(row["usedAt"]) if row["usedAt"] else None
         table_rows.append([
             row["note"] or "—",
-            row["code"] if show_codes else _mask_invite(row["code"]),
+            (row["code"] or "—") if show_codes else _mask_invite(row["code"]),
             row["status"],
             expires.strftime("%m-%d %H:%M") if expires else "—",
             row["usedBy"] or "—",
@@ -1686,6 +1686,8 @@ def hub_list_invites_command(data_dir, show_codes, as_json):
     _print_table(["NOTE", "CODE", "STATUS", "EXPIRES", "USED BY", "USED AT", "MINTED"], table_rows)
     if not show_codes:
         click.echo("codes are masked — pass --token to reveal them (a pending code still pairs)")
+    elif any(row["code"] is None for row in rows):
+        click.echo("codes shown as — were minted before codes were kept on disk; mint a fresh invite for those")
 
 
 @hub.command("revoke")

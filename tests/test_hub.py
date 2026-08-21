@@ -210,6 +210,34 @@ class LifecycleTests(HubCase):
         self.assertIn("429", str(ctx.exception))
 
 
+class CrossProcessTests(HubCase):
+    """A serve that outlives operator commands: invites minted and tenants
+    revoked by separate one-shot processes (the hub CLI) must be honored
+    without a restart."""
+
+    def test_join_honors_an_invite_minted_by_another_process(self):
+        operator = server.Hub(self.data_dir)  # what `awewarm hub invite` runs as
+        code = operator.mint_invite("alice")
+        joined = remote_client.join(self.url, code)  # against the long-lived serve
+        self.assertTrue(joined["token"].startswith("awt_"))
+
+    def test_revoked_token_stops_working_without_a_restart(self):
+        token, tenant_id = self.join("alice")
+        server.Hub(self.data_dir).revoke(tenant_id)  # `awewarm hub revoke` in another process
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.fetch_state(self.url, token)
+        self.assertIn("401", str(ctx.exception))
+
+    def test_reload_keeps_the_served_tenants_newer_state(self):
+        token, tenant_id = self.join("alice")
+        self.hub.tenants[tenant_id].record.setdefault("usage", {})["total"] = 7  # newer than disk
+        code = server.Hub(self.data_dir).mint_invite("bob")  # operator writes tenants.json
+        self.hub._refresh()
+        # the operator's invite became visible and alice's in-memory usage survived the graft
+        self.assertIn(server._hash_secret(code), self.hub.registry["invites"])
+        self.assertEqual(self.hub.registry["tenants"][tenant_id]["usage"]["total"], 7)
+
+
 class UsageTests(HubCase):
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
     def test_tick_counts_activations_per_tenant(self, send):
@@ -337,6 +365,18 @@ class HubCliTests(IsolatedTestCase):
         rows = json.loads(revealed.output)
         self.assertEqual(rows[0]["code"], code)
         self.assertEqual(rows[0]["status"], "pending")
+
+    def test_invites_token_shows_a_dash_for_codes_never_stored(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        path = Path(self.data_dir, "tenants.json")
+        registry = json.loads(path.read_text())
+        registry["invites"][server._hash_secret(code)].pop("code")  # older versions never stored it
+        path.write_text(json.dumps(registry))
+        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--token"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("Traceback", result.output)
+        self.assertIn("minted before codes were kept", result.output)
 
     def test_revoke_unknown_tenant_lists_known_ones(self):
         result = invoke(["hub", "revoke", "t_nope"] + self.dir_opt, input="y\n")

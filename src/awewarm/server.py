@@ -382,6 +382,7 @@ class Hub:
         self.max_tenants = max_tenants
         self.max_conns_per_tenant = max_conns_per_tenant
         self.registry = self._load()
+        self._registry_stamp = self._stamp()
         self.tenants = {
             tenant_id: Tenant(tenant_id, record, self.data_dir / "tenants")
             for tenant_id, record in self.registry["tenants"].items()
@@ -407,8 +408,48 @@ class Hub:
         data.setdefault("invites", {})
         return data
 
+    def _stamp(self):
+        """Identity of tenants.json on disk; any write — ours or another
+        process's — changes it."""
+        try:
+            stat = self.registry_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def _save(self):
         _write_json(self.registry_path, self.registry)
+        self._registry_stamp = self._stamp()
+
+    def _refresh(self):
+        """Adopt tenants.json changes made by other processes since our last look.
+
+        `hub invite` and `hub revoke` are one-shot CLI processes writing the
+        same file; without this a long-lived serve would 403 every join with
+        an invite minted after it started and keep honoring revoked tokens.
+        Records of tenants we already serve win over disk — their in-memory
+        usage and lastSeen are newer than anything another process wrote."""
+        with self.lock:
+            stamp = self._stamp()
+            if stamp is None or stamp == self._registry_stamp:
+                return
+            try:
+                fresh = self._load()
+            except SystemExit as exc:
+                # a bad file mid-request must not kill the serve thread;
+                # keep answering with what we have and say so in the log
+                self.log(f"registry reload skipped: {exc}")
+                return
+            self.registry = fresh
+            for tenant_id in list(self.tenants):
+                if tenant_id in fresh["tenants"]:
+                    fresh["tenants"][tenant_id] = self.tenants[tenant_id].record
+                else:  # revoked by the operator in another process
+                    self.tenants.pop(tenant_id, None)
+            for tenant_id, record in fresh["tenants"].items():
+                if tenant_id not in self.tenants:
+                    self.tenants[tenant_id] = Tenant(tenant_id, record, self.data_dir / "tenants")
+            self._registry_stamp = stamp
 
     def log(self, message):
         append_log(self.log_path, message)
@@ -459,6 +500,7 @@ class Hub:
     def join(self, invite):
         """Burn one invite, create the tenant, and return its token exactly once."""
         with self.lock:
+            self._refresh()  # invites are minted by other processes (awewarm hub invite)
             if not INVITE_RE.match(invite or ""):
                 raise ApiError(400, "invite must look like awi_<code> — get one from the hub operator")
             digest = _hash_secret(invite)
@@ -506,6 +548,7 @@ class Hub:
     def auth(self, bearer):
         """Bearer token → tenant, behind the per-tenant rate-limit gate."""
         with self.lock:
+            self._refresh()  # revocations happen in other processes (awewarm hub revoke)
             digest = _hash_secret(bearer)
             tenant = next(
                 (t for t in self.tenants.values() if hmac.compare_digest(t.token_hash, digest)),
