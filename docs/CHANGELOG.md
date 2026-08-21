@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.4.2
+
 `config set` gains `--hide/--show`: a hidden connection disappears from `awewarm status` listings (text and `--json`) while its schedule keeps firing — hiding is display-only, unlike `--off` which stops the warm-ups. Asking for it by id (`status <id>`) still shows it, and `config set <id>` with no flags prints its hidden state.
 
 Remote delegation fixes, pairing and firing. `remote disconnect` now releases the server's claim through a new `/v1/release` endpoint and keeps the pairing token in `secrets.json` — previously it deleted the token locally while the server kept the claim in RAM, so a later `remote connect` died on 403 "already claimed by another token" until the server process was restarted. The token also moved to a namespaced `remote:token` secrets key (old `remote-token` entries migrate on first read), so a connection literally named `remote-token` can no longer clobber it. And a 200 answer that is not awewarm's JSON — a tunnel pointed at the wrong origin — fails as a clear RemoteError instead of a raw `JSONDecodeError` traceback.
