@@ -127,6 +127,8 @@ def _tick():
 
     This is the body of `awewarm tick`, called by the scheduler every minute.
     Distinct from `_fire_all`, which fires unconditionally regardless of due.
+    The tail converges the RTC wake layer so lid-closed sleep still wakes at
+    the next slot/renewal moment.
     """
     config = load_config()
     install._maybe_self_heal_job(config)
@@ -165,6 +167,7 @@ def _tick():
         skipped += skipped_conn
     _maybe_sync_remote(config, state)
     save_state(state)
+    _maybe_sync_wake(config, state)
     if activated or skipped:
         click.echo(f"{sum(activated)} activated, {len(activated) - sum(activated)} failed, {skipped} slots skipped")
     else:
@@ -957,17 +960,34 @@ Use --force to skip the prompt (for scripting).
     _fire_all()
 
 
+def _maybe_sync_wake(config, state=None):
+    """Converge the RTC wake layer (tick tail & post-edit); never fatal.
+
+    A broken wake layer must not break scheduling — the same contract as
+    install._maybe_self_heal_job; the next tick retries.
+    """
+    try:
+        install.sync_wake_events(
+            config, state if state is not None else load_state(), _now(config)
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, SystemExit):
+        return
+
+
 def _refresh_wake_after_edit():
     """Keep the installed wake schedule in sync after schedule edits.
 
     Rewrites the launchd calendar entries / Windows wake tasks when they
-    drifted.
+    drifted, then converges the RTC wake layer so new times arm before the
+    next sleep.
     """
     if sys.platform not in ("darwin", "win32") or not install.scheduler_installed():
         return
-    if install.refresh_wake(load_config()):
+    config = load_config()
+    if install.refresh_wake(config):
         where = "launchd" if sys.platform == "darwin" else "Task Scheduler"
         click.echo(f"✓ Wake schedule updated ({where})")
+    _maybe_sync_wake(config)
 
 
 def _legacy_pmset_cleanup():
@@ -990,18 +1010,32 @@ def _legacy_pmset_cleanup():
         )
 
 
-def _scheduler_install():
+def _scheduler_install(wake=False):
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
     entries = install.calendar_entries(load_config())
     if sys.platform == "darwin":
         if entries:
             times = ", ".join(f"{e['Hour']:02d}:{e['Minute']:02d}" for e in entries)
-            click.echo(f"  Calendar wake at {times} — fires with the lid closed, no sudo")
+            click.echo(f"  Calendar wake at {times} — exact-time fire while awake, no sudo")
+        if wake:
+            install.install_wake_grant()
+            _maybe_sync_wake(load_config())
+            armed = install.armed_wake_moments(load_state())
+            next_note = f", next {armed[0].strftime('%m-%d %H:%M')}" if armed else ""
+            click.echo(
+                f"  ✓ RTC wakes enabled — the lid-closed machine wakes at every "
+                f"slot/renewal ({len(armed)} armed{next_note})"
+            )
+        elif not install.wake_grant_installed():
+            click.echo("  lid-closed sleep: not covered — rerun with --wake (one sudo) to arm RTC wakes")
     elif sys.platform == "win32":
         if entries:
             times = ", ".join(f"{e['Hour']:02d}:{e['Minute']:02d}" for e in entries)
             click.echo(f"  Wake tasks at {times} — fire with the lid closed (Task Scheduler)")
+        if wake:
+            _maybe_sync_wake(load_config())
+            click.echo("  ✓ interval renewals now wake the machine too (one-shot wake tasks)")
     elif sys.platform.startswith("linux"):
         click.echo("  note: Linux cannot wake a suspended machine — missed slots catch up on the next wake")
     click.echo(f"  Tick: every {install.TICK_SECONDS}s — log: {log_path()}")
@@ -1013,6 +1047,15 @@ def _scheduler_uninstall():
         click.echo("✓ Scheduler removed")
     else:
         click.echo("Scheduler was not installed")
+    if sys.platform == "darwin":
+        cancelled, total, grant = install.teardown_wake_layer()
+        if total:
+            mark = "✓" if cancelled == total else "⚠"
+            click.echo(f"{mark} RTC wake events cancelled ({cancelled}/{total})")
+        if grant:
+            click.echo("✓ Wake grant removed (/etc/sudoers.d/awewarm)")
+        elif install.wake_grant_installed():
+            click.echo("⚠ could not remove the wake grant — run: sudo rm /etc/sudoers.d/awewarm")
     _legacy_pmset_cleanup()
 
 
@@ -1024,9 +1067,14 @@ The installed agent ticks once a minute."""
 
 
 @scheduler.command("install")
-def scheduler_install():
+@click.option(
+    "--wake/--no-wake", default=False,
+    help="Also wake the lid-closed machine at slot/renewal moments "
+         "(macOS: one sudo to grant pmset wake arming; Windows: needs no grant).",
+)
+def scheduler_install(wake):
     """Install the background scheduler agent."""
-    _scheduler_install()
+    _scheduler_install(wake)
 
 
 @scheduler.command("uninstall")

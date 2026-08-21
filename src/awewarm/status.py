@@ -6,6 +6,7 @@ import-order-safe and tests can keep patching `awewarm.cli._now` — the same
 seam the command bodies use.
 """
 import json
+import sys
 from datetime import datetime
 
 import click
@@ -136,7 +137,16 @@ def _show_status(connection, as_json):
         view = {
             "config": {"version": config["version"], "connections": conns},
             "state": {"connections": {k: state["connections"].get(k) for k in conns}},
-            "scheduler": {"installed": install.scheduler_installed()},
+            "scheduler": {
+                "installed": install.scheduler_installed(),
+                "wake": {
+                    "granted": sys.platform == "darwin" and install.wake_grant_installed(),
+                    "events": [
+                        moment.strftime("%Y-%m-%d %H:%M")
+                        for moment in install.armed_wake_moments(state)
+                    ],
+                },
+            },
             "remote": {"url": remote.remote_url(config), "server": remote_view, "note": remote_note},
         }
         click.echo(json.dumps(transport.redact(view), indent=2))
@@ -175,6 +185,13 @@ def _show_status(connection, as_json):
             continue
         _status_block(conn_id, conn, state, now, detailed=bool(connection))
     footer = f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}"
+    if sys.platform == "darwin":
+        if install.wake_grant_installed():
+            moments = install.armed_wake_moments(state)
+            next_note = f", next {moments[0].strftime('%m-%d %H:%M')}" if moments else ""
+            footer += f"\nWake layer: enabled — {len(moments)} RTC wake(s) armed{next_note}"
+        else:
+            footer += "\nWake layer: off — lid-closed sleep fires late (enable: awewarm scheduler install --wake)"
     if remote.remote_url(config):
         delegated = sum(1 for c in config["connections"].values() if c.get("location") == "remote")
         cached = state.get("remoteCache") or {}

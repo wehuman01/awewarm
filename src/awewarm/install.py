@@ -24,22 +24,44 @@ import csv
 import io
 import os
 import plistlib
+import pwd
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import SLOT_RE, die, load_config, load_state, save_state, state_path
+from . import schedule
+from .config import (
+    SLOT_RE,
+    append_log,
+    conn_state,
+    connection_errors,
+    die,
+    load_config,
+    load_state,
+    log_path,
+    save_state,
+    state_path,
+)
 
 LABEL = "com.awewarm.scheduler"
 WAKE_TASK_PREFIX = f"{LABEL}.wake-"
+IWAKE_TASK_PREFIX = f"{LABEL}.iwake-"
 TICK_SECONDS = 60
 
-# macOS-only: legacy pmset repeat events registered by awewarm < 0.4 are
-# cancelled on scheduler install/uninstall; wake-from-sleep itself is handled
-# by the launchd StartCalendarInterval entries below.
+# macOS-only: wake-from-sleep is layered. StartCalendarInterval fires the tick
+# at the exact slot time while the machine is awake; the RTC wake layer
+# (pmset one-shot events, armed by the tick through a scoped sudoers grant)
+# wakes the lid-closed machine first. Legacy pmset repeat events registered
+# by awewarm < 0.4 are cancelled on scheduler install/uninstall.
 WAKE_TYPE = "wakeorpoweron"
+SUDOERS_PATH = Path("/etc/sudoers.d/awewarm")
+PMSET_BIN = "/usr/bin/pmset"
+WAKE_EVENT_LIMIT = 16  # one-shot RTC events kept armed at once
+WAKE_HORIZON = timedelta(days=2)  # far enough to survive an overnight sleep
 
 
 def plist_path():
@@ -239,12 +261,13 @@ def calendar_entries(config):
     """Fixed-slot wake schedule, shared by platform wake mechanisms.
 
     launchd consumes them as StartCalendarInterval entries; Windows registers
-    one WakeToRun task per entry (see build_wake_ps1). Calendar triggers wake
-    the machine from sleep and run the tick at the exact slot time — every
-    slot is covered, unlike pmset repeat, which held a single event. Entries
-    fire every day regardless of the slot's day rule: the tick itself decides
-    whether today is an active day, so a weekend wake for a weekday-only slot
-    is a harmless no-op.
+    one WakeToRun task per entry (see build_wake_ps1). These fire the tick at
+    the exact slot time whenever the machine is awake — every slot is covered,
+    unlike pmset repeat, which held a single event. Entries fire every day
+    regardless of the slot's day rule: the tick itself decides whether today
+    is an active day, so a weekend wake for a weekday-only slot is a harmless
+    no-op. Waking a lid-closed sleeping machine first is the RTC wake layer's
+    job (see sync_wake_events).
     """
     entries = {}
     for conn in (config.get("connections") or {}).values():
@@ -298,17 +321,21 @@ def refresh_wake(config):
     return False
 
 
-def _sudo_pmset(args, interactive=True):
-    """Run pmset with sudo; -n first so scripted installs fail fast instead of
-    hanging, plain sudo second so interactive installs can prompt."""
+def _sudo_cmd(argv, interactive=True):
+    """Run argv with sudo; -n first so scripted calls fail fast instead of
+    hanging, plain sudo second so interactive calls can prompt."""
     prefixes = (["sudo", "-n"], ["sudo"]) if interactive else (["sudo", "-n"],)
     for prefix in prefixes:
         result = subprocess.run(
-            [*prefix, "pmset", *args], capture_output=True, text=True, timeout=60
+            [*prefix, *argv], capture_output=True, text=True, timeout=60
         )
         if result.returncode == 0:
             return True
     return False
+
+
+def _sudo_pmset(args, interactive=True):
+    return _sudo_cmd([PMSET_BIN, *args], interactive=interactive)
 
 
 def _current_repeat_line():
@@ -386,6 +413,268 @@ def cancel_wake_schedule(interactive=True):
     return "cancelled", spec
 
 
+# --- RTC wake layer -------------------------------------------------------
+#
+# StartCalendarInterval runs jobs only while the machine is awake (a job whose
+# moment passes during sleep fires, coalesced, at whatever wake happens next).
+# The only user-controllable way to wake a lid-closed sleeping Mac on schedule
+# is an RTC power event: `pmset schedule wakeorpoweron`. Those one-shot events
+# stack, but arming them needs root, so the layer has two halves:
+#
+#   * a scoped sudoers grant (install_wake_grant) letting this user arm and
+#     cancel wake events without a password — no other root capability;
+#   * sync_wake_events, run at the tail of every tick: it recomputes the
+#     moments the schedules next need the machine awake for and converges the
+#     armed events to them. Interval chains drift by design (each renewal
+#     re-anchors on its success), so re-deriving every tick follows the drift
+#     with no pre-computed table to go stale. Windows needs no grant: the
+#     same sync registers one-shot WakeToRun tasks for interval moments.
+
+
+def wake_specs(config, state, now):
+    """(moment, kind) pairs the machine must be awake for, soonest first.
+
+    Fixed slots expand to today and tomorrow, day-rule-agnostic — the tick
+    decides whether a day is active, so a weekend wake for a weekday-only
+    slot is a harmless no-op dark wake (same trade-off as the calendar
+    entries). Interval contributes only its governing next_due moment: the
+    chain cannot be pre-computed past one node anyway. Remote, disabled,
+    opted-out and invalid connections contribute nothing.
+    """
+    moments = set()
+    connections = config.get("connections") or {}
+    for conn_id in sorted(connections):
+        conn = connections[conn_id]
+        if not conn.get("enabled", True) or conn.get("location") == "remote":
+            continue
+        sched = conn.get("schedule") or {}
+        if not sched.get("wakeWhenAsleep", True):
+            continue
+        if connection_errors(conn, conn_id):
+            continue
+        if sched.get("mode") == "fixed":
+            at_times = (sched.get("fixed") or {}).get("at") or []
+            for offset in range(2):
+                day = now.date() + timedelta(days=offset)
+                for hhmm in at_times:
+                    if not SLOT_RE.match(hhmm):
+                        continue
+                    moment = schedule.slot_datetime(day, hhmm, now.tzinfo)
+                    if moment is not None:
+                        moments.add((moment, "fixed"))
+        elif sched.get("mode") == "interval":
+            moment, _kind = schedule.next_due(
+                conn, conn_state(state, conn_id), now
+            )
+            if moment is not None:
+                moments.add((moment, "interval"))
+    horizon = now + WAKE_HORIZON
+    return sorted(
+        (moment, kind) for moment, kind in moments if now < moment <= horizon
+    )[:WAKE_EVENT_LIMIT]
+
+
+def _wake_wire_spec(moment):
+    """pmset wire format: 'MM/DD/YY HH:MM:SS' local wall time (man pmset)."""
+    return moment.strftime("%m/%d/%y %H:%M:%S")
+
+
+def _canonical_spec(text):
+    """Normalize a pmset date-time (2- or 4-digit year) for set comparison."""
+    match = re.search(
+        r"(\d{1,2})/(\d{1,2})/(\d{2,4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?", str(text)
+    )
+    if not match:
+        return None
+    year = match.group(3)
+    if len(year) == 2:
+        year = f"20{year}"
+    return (
+        f"{int(match.group(1)):02d}/{int(match.group(2)):02d}/{year} "
+        f"{int(match.group(4)):02d}:{match.group(5)}:{match.group(6) or '00'}"
+    )
+
+
+def _live_wake_canonicals():
+    """Wake-type entries currently armed, from `pmset -g sched`; None on error."""
+    result = subprocess.run(
+        ["pmset", "-g", "sched"], capture_output=True, text=True, timeout=30
+    )
+    if result.returncode != 0:
+        return None
+    found = set()
+    for match in re.finditer(
+        r"(?:wake|wakepoweron|poweron) at "
+        r"(\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?)",
+        result.stdout or "",
+    ):
+        canon = _canonical_spec(match.group(1))
+        if canon:
+            found.add(canon)
+    return found
+
+
+def sync_wake_events(config, state, now):
+    """Converge armed RTC wake events with what the schedules need now.
+
+    macOS mirrors the desired moments into pmset one-shot events through the
+    sudoers grant; the ledger in state['wakeEvents'] is reconciled against
+    `pmset -g sched` so fired events drop out and lost-ledger events are
+    re-tracked instead of double-armed. Returns True when pmset was touched.
+    Saves state only when the ledger or the blocked flag changed.
+    """
+    if sys.platform == "win32":
+        return _sync_windows_interval_wake(config, state, now)
+    if sys.platform != "darwin":
+        return False
+    if not wake_grant_installed() or not scheduler_installed():
+        return False
+    desired = {
+        _canonical_spec(_wake_wire_spec(moment)): _wake_wire_spec(moment)
+        for moment, _kind in wake_specs(config, state, now)
+    }
+    ledger = list(state.get("wakeEvents") or [])
+    if {_canonical_spec(spec) or spec for spec in ledger} == set(desired):
+        return False  # in sync — skip the pmset read entirely
+    live = _live_wake_canonicals()
+    kept, blocked, touched = [], False, False
+    for spec in ledger:
+        canon = _canonical_spec(spec) or spec
+        if live is not None and canon not in live:
+            continue  # already fired or cancelled — stop tracking it
+        if canon not in desired:
+            if _sudo_pmset(["schedule", "cancel", WAKE_TYPE, spec], interactive=False):
+                touched = True
+                continue
+            blocked = True  # cancel refused (grant broken?) — keep tracking
+        kept.append(spec)
+    for canon, wire in sorted(desired.items()):
+        if any((_canonical_spec(spec) or spec) == canon for spec in kept):
+            continue
+        if live is not None and canon in live:
+            kept.append(wire)  # already armed, just lost from the ledger
+            continue
+        if _sudo_pmset(["schedule", WAKE_TYPE, wire], interactive=False):
+            kept.append(wire)
+            touched = True
+        else:
+            blocked = True
+    _record_sync(state, kept, blocked)
+    return touched
+
+
+def _record_sync(state, kept, blocked):
+    """Persist the ledger, and the once-per-episode blocked warning."""
+    before_events = list(state.get("wakeEvents") or [])
+    before_blocked = bool(state.get("wakeSyncBlocked"))
+    changed = sorted(kept) != sorted(before_events) or blocked != before_blocked
+    if sorted(kept) != sorted(before_events):
+        state["wakeEvents"] = sorted(kept)
+    if blocked != before_blocked:
+        if blocked:
+            state["wakeSyncBlocked"] = True
+            append_log(
+                log_path(),
+                "wake sync: sudo pmset rejected — check /etc/sudoers.d/awewarm "
+                "(retry: awewarm scheduler install --wake)",
+            )
+        else:
+            state.pop("wakeSyncBlocked", None)
+    if changed:
+        save_state(state)
+
+
+def sudoers_rule(user):
+    """The one-line grant: arm and cancel RTC wake events, nothing else."""
+    return (
+        f"{user} ALL=(root) NOPASSWD: {PMSET_BIN} schedule {WAKE_TYPE} *, "
+        f"{PMSET_BIN} schedule cancel {WAKE_TYPE} *\n"
+    )
+
+
+def wake_grant_installed():
+    try:
+        return SUDOERS_PATH.is_file()
+    except OSError:
+        return False
+
+
+def install_wake_grant():
+    """Write /etc/sudoers.d/awewarm so the tick can arm wakes unattended.
+
+    The rule is validated with visudo before the file is moved into place
+    (root-owned, 0440); a failure leaves the system untouched. Needs one
+    interactive sudo.
+    """
+    if sys.platform != "darwin":
+        die(
+            "the wake grant supports macOS only\n"
+            "Windows arms wake tasks without a grant; Linux cannot wake a suspended machine"
+        )
+    user = pwd.getpwuid(os.getuid()).pw_name
+    handle = tempfile.NamedTemporaryFile("w", prefix="awewarm-sudoers-", delete=False)
+    staged = Path(handle.name)
+    try:
+        with handle:
+            handle.write(sudoers_rule(user))
+        os.chmod(staged, 0o600)
+        if not _sudo_cmd(["visudo", "-cf", str(staged)]):
+            die("visudo rejected the wake rule — this should not happen; please report it")
+        if not _sudo_cmd(
+            [
+                "install", "-m", "0440", "-o", "root", "-g", "wheel",
+                str(staged), str(SUDOERS_PATH),
+            ]
+        ):
+            die(
+                "could not write /etc/sudoers.d/awewarm\n"
+                "fix: resolve the sudo error; wakes can also be armed per slot with:\n"
+                f'  sudo pmset schedule {WAKE_TYPE} "MM/DD/YY HH:MM:SS"'
+            )
+    finally:
+        staged.unlink(missing_ok=True)
+    return True
+
+
+def uninstall_wake_grant(interactive=True):
+    if not wake_grant_installed():
+        return False
+    return _sudo_cmd(["rm", "-f", str(SUDOERS_PATH)], interactive=interactive)
+
+
+def teardown_wake_layer(interactive=True):
+    """Scheduler-uninstall path: cancel armed RTC wakes, drop the grant.
+
+    Returns (cancelled, total, grant_removed); failures keep their ledger
+    entries so a later uninstall retries and converges.
+    """
+    state = load_state()
+    armed = state.get("wakeEvents") or []
+    cancelled = 0
+    for spec in armed:
+        if _sudo_pmset(["schedule", "cancel", WAKE_TYPE, spec], interactive=interactive):
+            cancelled += 1
+    if cancelled == len(armed):
+        state.pop("wakeEvents", None)
+        state.pop("wakeSyncBlocked", None)
+        save_state(state)
+    return cancelled, len(armed), uninstall_wake_grant(interactive=interactive)
+
+
+def armed_wake_moments(state):
+    """Ledger specs as naive datetimes, sorted — for status display."""
+    moments = []
+    for spec in state.get("wakeEvents") or []:
+        canon = _canonical_spec(spec)
+        if not canon:
+            continue
+        try:
+            moments.append(datetime.strptime(canon, "%m/%d/%Y %H:%M:%S"))
+        except ValueError:
+            continue
+    return sorted(moments)
+
+
 def _schtasks(argv):
     return subprocess.run(
         ["schtasks", "/NH", *argv], capture_output=True, text=True, timeout=30
@@ -411,8 +700,10 @@ def _install_windows():
 
 def _uninstall_windows():
     ok = _schtasks(["/Delete", "/F", "/TN", LABEL]).returncode == 0
-    for key in sorted(wake_task_times() or ()):
+    for key in sorted(_task_keys(WAKE_TASK_PREFIX) or ()):
         _schtasks(["/Delete", "/F", "/TN", WAKE_TASK_PREFIX + key])
+    for key in sorted(_task_keys(IWAKE_TASK_PREFIX) or ()):
+        _schtasks(["/Delete", "/F", "/TN", IWAKE_TASK_PREFIX + key])
     return ok
 
 
@@ -459,6 +750,11 @@ def build_wake_ps1(exe, entries):
 
 def wake_task_times():
     """Time keys of the installed Windows wake tasks; None when the query fails."""
+    return _task_keys(WAKE_TASK_PREFIX)
+
+
+def _task_keys(prefix):
+    """Keys of installed Windows tasks under prefix; None when the query fails."""
     try:
         result = _schtasks(["/Query", "/FO", "/CSV", "/NH"])
     except (OSError, subprocess.SubprocessError):
@@ -467,8 +763,8 @@ def wake_task_times():
         return set()
     found = set()
     for row in csv.reader(io.StringIO(result.stdout or "")):
-        if row and row[0].lstrip("\\").startswith(WAKE_TASK_PREFIX):
-            found.add(row[0].lstrip("\\")[len(WAKE_TASK_PREFIX):])
+        if row and row[0].lstrip("\\").startswith(prefix):
+            found.add(row[0].lstrip("\\")[len(prefix):])
     return found
 
 
@@ -489,6 +785,56 @@ def sync_windows_wake(config):
             )
     for extra in sorted(installed - desired):
         _schtasks(["/Delete", "/F", "/TN", WAKE_TASK_PREFIX + extra])
+    return True
+
+
+def build_iwake_ps1(exe, moments):
+    """PowerShell registering one -Once WakeToRun task per interval moment.
+
+    The dynamic twin of the static daily wake tasks: fixed slots repeat daily
+    on their own, interval renewals drift, so each gets a one-shot task named
+    after its moment (keys match _task_keys). ParseExact keeps the timestamp
+    culture-invariant; schtasks.exe cannot set WakeToRun, hence PowerShell.
+    """
+    stamps = ", ".join(
+        "'{}'".format(moment.strftime("%Y-%m-%dT%H:%M:%S")) for moment in moments
+    )
+    lines = [
+        f"$action = New-ScheduledTaskAction -Execute '{exe.replace(chr(39), chr(39) * 2)}' -Argument 'tick'",
+        "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable"
+        " -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+        f"foreach ($t in @({stamps})) {{",
+        "  $at = [datetime]::ParseExact($t, 'yyyy-MM-ddTHH:mm:ss', $null)",
+        "  $name = '" + IWAKE_TASK_PREFIX + "' + $t.Replace('-', '').Replace(':', '').Replace('T', '')",
+        "  Register-ScheduledTask -TaskName $name -Action $action"
+        " -Trigger (New-ScheduledTaskTrigger -Once -At $at) -Settings $settings -Force | Out-Null",
+        "}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _sync_windows_interval_wake(config, state, now):
+    """Arm one-shot WakeToRun tasks for interval moments (fixed slots keep
+    their static daily tasks). Task names embed the moment, so the schtasks
+    query is the ledger — nothing lives in state."""
+    moments = sorted(
+        moment for moment, kind in wake_specs(config, state, now) if kind == "interval"
+    )
+    desired = {moment.strftime("%Y%m%d%H%M%S") for moment in moments}
+    installed = _task_keys(IWAKE_TASK_PREFIX)
+    if installed is None or installed == desired:
+        return False
+    if desired:
+        result = _run_powershell(build_iwake_ps1(resolve_exe(), moments))
+        if result.returncode != 0:
+            append_log(
+                log_path(),
+                "wake sync: interval wake task registration failed: "
+                f"{(result.stderr or result.stdout or '').strip()[:200]}",
+            )
+            return False
+    for extra in sorted(installed - desired):
+        _schtasks(["/Delete", "/F", "/TN", IWAKE_TASK_PREFIX + extra])
     return True
 
 

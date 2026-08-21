@@ -162,15 +162,21 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 - 任何成功 —— 节点尝试、补跑重试、手动 run —— 都会重置整条阶梯。手动尝试不计入节点，机器睡眠错过的时间点（零次尝试）不算丢失节点。
 - `status` 显示当前层级和详情（`Health: failing — 1/3 nodes lost, catch-up attempt 2/5`），并在最近一次激活下方打印最后一次失败的完整错误信息。
 
-### Sleeping Macs — calendar wake (macOS)
+### Sleeping Macs — 日历触发 + RTC 唤醒（macOS）
 
-`scheduler install` 会在 launchd agent 里为每个 fixed 时间点写一条 `StartCalendarInterval` 日历条目。launchd 能把 Mac 从睡眠中唤醒 —— 合盖、深睡都能命中并准时执行 tick，无需 sudo，且每个时间点都受保护。条目每天都会触发，不受时间点的日期规则限制：tick 自身会判断今天是否该执行，因此周末触发一个仅工作日的条目是无害的空操作。修改时间或模式后条目立即更新，修改后的第一个 tick 会自动修复漂移。
+两层机制，按各自真实能力分工：
 
-每个连接可以设置 `schedule.wakeWhenAsleep: false` 选择退出（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 45 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
+- **日历触发（默认，无需 sudo）。** `scheduler install` 会在 launchd agent 里为每个 fixed 时间点写一条 `StartCalendarInterval` 日历条目。条目在**机器醒着**时于时间点当刻精确执行 tick —— launchd 并不会唤醒睡眠中的 Mac；睡眠中错过的时间点会在下一次唤醒（无论何种原因）时合并补跑（系统维护性 dark wake 让迟到是分钟级而非小时级）。条目每天都会触发，不受时间点的日期规则限制：tick 自身会判断今天是否该执行，因此周末触发一个仅工作日的条目是无害的空操作。修改时间或模式后条目立即更新，修改后的第一个 tick 会自动修复漂移。
+
+- **RTC 唤醒（可选，一次 sudo）。** `awewarm scheduler install --wake` 为调度需要的**每个**时刻排入真正的睡眠唤醒事件（`pmset schedule wakeorpoweron`）—— 今天与明天的全部 fixed 时间点，加上每个 interval 连接的下一个续期时刻，包括漂移后的续期：tick 尾部每分钟重算所需时刻并把已排事件收敛过去，因此续期链发生偏移（唤醒迟到、手动 `--reset-due`）会被自动跟随。一行 sudoers 授权（`/etc/sudoers.d/awewarm`，仅限排定/取消唤醒事件，无其他任何 root 能力）让无人值守的 tick 免密码完成这件事；机器被唤醒进入无屏幕的 dark wake，几秒内触发 tick 后继续睡。非激活时间的睡眠完全不受影响 —— 整套方案里没有任何阻止睡眠的断言。
+
+  覆盖边界：正常睡眠（插电合盖，以及电池合盖进入 standby 之前）下 RTC 唤醒可靠；电池长时间睡眠进入 standby（RAM 断电）后，Apple 的设计不允许定时唤醒 —— 这种场景请委托给常开服务器（见下）。`awewarm status` 显示该层状态；`scheduler uninstall` 会取消全部已排事件并移除授权。
+
+每个连接可以设置 `schedule.wakeWhenAsleep: false` 同时退出两层（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 45 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
 
 ### Sleeping PCs — wake tasks (Windows)
 
-macOS 设计的镜像版本：`scheduler install` 为每个 fixed 时间点注册一个额外的 Task Scheduler 任务 —— 在时间点触发日任务并启用 *Wake to run*，执行 `awewarm tick`。每分钟的 tick 任务本身不会唤醒机器（否则机器永远无法入睡）；只有时间点会唤醒。`schtasks.exe` 无法设置 *Wake to run*，因此这些任务通过 PowerShell 的 `Register-ScheduledTask` 注册。添加流程会询问 fixed 时间点是否允许唤醒机器（默认允许，与 macOS 相同），`awewarm config set <id> --no-wake` 可以让单个连接退出唤醒，install / uninstall / refresh / self-heal 都会保持任务集与配置同步。
+日历触发/唤醒的镜像分工：`scheduler install` 为每个 fixed 时间点注册一个额外的 Task Scheduler 任务 —— 在时间点触发日任务并启用 *Wake to run*，执行 `awewarm tick`。interval 续期的唤醒走一次性 `-Once` 任务，由与 macOS 相同的 tick 尾部收敛排定（无需任何授权 —— 普通用户即可注册唤醒任务）。每分钟的 tick 任务本身不会唤醒机器（否则机器永远无法入睡）；只有时间点和续期时刻会唤醒。`schtasks.exe` 无法设置 *Wake to run*，因此这些任务通过 PowerShell 的 `Register-ScheduledTask` 注册。添加流程会询问 fixed 时间点是否允许唤醒机器（默认允许，与 macOS 相同），`awewarm config set <id> --no-wake` 可以让单个连接退出唤醒，install / uninstall / refresh / self-heal 都会保持任务集与配置同步。
 
 ### Always-on servers (Linux)
 
@@ -178,7 +184,7 @@ macOS 设计的镜像版本：`scheduler install` 为每个 fixed 时间点注�
 
 ## 远程服务器 —— 委托给一台 24/7 在线的机器
 
-合盖的笔记本只为 fixed 时间点醒来；interval 续期链在合盖期间会漂移。要全天候保温，把订阅连接委托给任意常开机器（VPS、NAS、树莓派）上的 `awewarm serve` 进程。CLI 账号连接无法委托 —— 登录态在你本机上，继续由本地调度。
+合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把订阅连接委托给任意常开机器（VPS、NAS、树莓派）上的 `awewarm serve` 进程。CLI 账号连接无法委托 —— 登录态在你本机上，继续由本地调度。
 
 服务器**磁盘上不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
 
@@ -277,7 +283,7 @@ awewarm config path                   # 配置 / 状态 / 日志路径
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
 awewarm run                           # 立即触发所有启用的连接（无视调度计划）
 awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动原计划，--reset-due 才重算下次到期）
-awewarm scheduler install / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）
+awewarm scheduler install [--wake] / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）；--wake 额外启用合盖睡眠 RTC 唤醒
 awewarm serve                          # 运行常驻服务器，调度已委托的连接
 awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
 awewarm remote status                  # 服务器视角：运行时长、上次 tick、委托连接

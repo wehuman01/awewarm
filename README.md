@@ -162,15 +162,21 @@ connected ──first failure──▶ failing ──N consecutive lost──▶
 - Any success — node attempt, catch-up retry, manual run — resets the whole ladder. Manual attempts never count as nodes, and a slot the machine slept through (zero attempts) is not a lost node.
 - `status` shows the rung plus details (`Health: failing — 1/3 nodes lost, catch-up attempt 2/5`), and prints the last failure with its error right under the last activation.
 
-### Sleeping Macs — calendar wake (macOS)
+### Sleeping Macs — calendar fire + RTC wakes (macOS)
 
-`scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the launchd agent. launchd wakes the Mac from sleep — lid closed and deep sleep included — and runs the tick at the exact slot time. No sudo, and *every* slot is protected. Entries fire every day regardless of the slot's day rule: the tick itself decides whether today is an active day, so a weekend wake for a weekday-only slot is a harmless no-op. Editing times/mode updates the entries immediately; the first tick after any edit heals drift automatically.
+Two layers, honestly split by what each can do:
 
-Per connection, `schedule.wakeWhenAsleep: false` opts out (asked during setup; change later with `awewarm config set <id> --no-wake`). Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
+- **Calendar fire (default, no sudo).** `scheduler install` writes one `StartCalendarInterval` entry per fixed slot into the launchd agent. Those entries run the tick at the exact slot time *whenever the machine is awake* — launchd does not wake a sleeping Mac; a job whose slot passes during sleep fires, coalesced, at whatever wake happens next (system maintenance dark wakes make this minutes, not hours). Entries fire every day regardless of the slot's day rule: the tick itself decides whether today is an active day, so a weekend entry for a weekday-only slot is a harmless no-op. Editing times/mode updates the entries immediately; the first tick after any edit heals drift automatically.
+
+- **RTC wakes (opt-in, one sudo).** `awewarm scheduler install --wake` arms real wake-from-sleep events (`pmset schedule wakeorpoweron`) for *every* moment the schedules need the machine — all fixed slots for today and tomorrow, plus each interval connection's next renewal, including renewals that drift: every minute, the tail of the tick recomputes the needed moments and converges the armed events to them, so a renewal chain that shifts (late wake, manual `--reset-due`) is followed automatically. A one-line sudoers grant (`/etc/sudoers.d/awewarm`, scoped to arming/cancelling wake events only — nothing else) lets the unattended tick do this without prompts; the machine wakes into a screen-off dark wake, the tick fires within seconds, and it sleeps again. Non-activation sleep is untouched — there is no prevent-sleep assertion anywhere.
+
+  Coverage boundary: RTC wakes are reliable while the Mac sleeps normally (lid closed on power, and lid-closed on battery before standby kicks in). After hours on battery the Mac enters standby (RAM powered off) and Apple will not wake it on schedule — for that regime, delegate to an always-on server (below). `awewarm status` shows the layer's state, and `scheduler uninstall` cancels every armed event and removes the grant.
+
+Per connection, `schedule.wakeWhenAsleep: false` opts out of both layers (asked during setup; change later with `awewarm config set <id> --no-wake`). Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
 
 ### Sleeping PCs — wake tasks (Windows)
 
-The macOS design, mirrored: `scheduler install` registers one extra Task Scheduler task per fixed slot — a daily trigger at the slot time with *Wake to run* enabled, running `awewarm tick`. The per-minute tick task itself never wakes the machine (a waking tick would keep it from ever staying asleep); only slot times do. `schtasks.exe` cannot set *Wake to run*, so the tasks are registered through PowerShell's `Register-ScheduledTask`. The setup flow asks whether fixed slots may wake the machine (same prompt as macOS), `awewarm config set <id> --no-wake` opts a connection out, and install/uninstall/refresh/self-heal keep the task set in sync with the config.
+The calendar-fire/wake split, mirrored: `scheduler install` registers one extra Task Scheduler task per fixed slot — a daily trigger at the slot time with *Wake to run* enabled, running `awewarm tick`. Interval renewals get their wake coverage through one-shot `-Once` tasks armed by the same tick-tail convergence as on macOS (no grant needed — users may register wake tasks). The per-minute tick task itself never wakes the machine (a waking tick would keep it from ever staying asleep); only slot and renewal moments do. `schtasks.exe` cannot set *Wake to run*, so the tasks are registered through PowerShell's `Register-ScheduledTask`. The setup flow asks whether fixed slots may wake the machine (same prompt as macOS), `awewarm config set <id> --no-wake` opts a connection out, and install/uninstall/refresh/self-heal keep the task set in sync with the config.
 
 ### Always-on servers (Linux)
 
@@ -178,7 +184,7 @@ No wake machinery exists or is needed on a machine that never sleeps — `awewar
 
 ## Remote Server — delegation to a 24/7 box
 
-A sleeping laptop only wakes for fixed slots; an interval chain drifts while it is closed. For around-the-clock warmth, delegate subscription connections to an `awewarm serve` process on any always-on machine (VPS, NAS, Raspberry Pi). CLI-account connections cannot be delegated — their login lives on your machine and keeps ticking locally.
+A lid-closed laptop on battery eventually enters standby, where no scheduled wake can reach it — and an off machine fires nothing at all. For around-the-clock warmth regardless of power state, delegate subscription connections to an `awewarm serve` process on any always-on machine (VPS, NAS, Raspberry Pi). CLI-account connections cannot be delegated — their login lives on your machine and keeps ticking locally.
 
 The server holds **no secrets on disk**. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
 
@@ -277,7 +283,7 @@ awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
 awewarm run                           # fire every enabled connection now, ignoring the schedule
 awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
-awewarm scheduler install / uninstall # background scheduler (launchd / Task Scheduler / systemd)
+awewarm scheduler install [--wake] / uninstall # background scheduler (launchd / Task Scheduler / systemd); --wake also arms RTC wake-from-sleep
 awewarm serve                          # run the always-on server that ticks delegated connections
 awewarm remote connect <url>           # pair with a server (token generated + stored locally)
 awewarm remote status                  # server view: uptime, last tick, delegated connections
