@@ -431,9 +431,7 @@ class CalendarEntriesTests(IsolatedTestCase):
         }, "interval": {
             "graceSeconds": cfg.DEFAULT_GRACE_SECONDS,
             "jitterSeconds": cfg.DEFAULT_JITTER_SECONDS,
-        }}
-        if wake is not None:
-            schedule["wakeWhenAsleep"] = wake
+        }, "wakeWhenAsleep": True if wake is None else wake}
         window = ({"status": "user-confirmed", "startRule": "unknown",
                    "durationMinutes": 300, "evidence": "user-confirmed"}
                   if mode == "interval" else

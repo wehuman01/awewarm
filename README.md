@@ -272,26 +272,31 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
     "degradeAfterNodes": 3,
     "schedule": {"times": ["06:35"], "days": "weekday"}
   },
-  "connectionDefaults": {
-    "local": {"catchupMinutes": 20},
-    "remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}
-  },
   "connections": {
-    "claude-code": {
-      "label": "Claude Code",
-      "cli": "/usr/local/bin/claude",
-      "model": "haiku",
-      "windowMinutes": 300,
-      "settings": {"schedule": {"times": ["06:35"]}}
+    "local": {
+      "settings": {
+        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+      },
+      "claude-code": {
+        "label": "Claude Code",
+        "cli": "/usr/local/bin/claude",
+        "model": "haiku",
+        "windowMinutes": 300,
+        "settings": {"schedule": {"times": ["06:35"]}}
+      }
     },
-    "glm": {
-      "label": "glm",
-      "url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "protocol": "openai-chat",
-      "apiKey": "file:glm",
-      "model": "GLM-5-Turbo",
-      "windowMinutes": 300,
-      "location": "remote"
+    "remote": {
+      "settings": {
+        "schedule": {"times": ["08:00"], "days": "every-day"}
+      },
+      "glm": {
+        "label": "glm",
+        "url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "protocol": "openai-chat",
+        "apiKey": "file:glm",
+        "model": "GLM-5-Turbo",
+        "windowMinutes": 300
+      }
     }
   },
   "remote": {
@@ -306,10 +311,10 @@ A connection with `url` + `apiKey` is a subscription; one with `cli` is a local 
 Settings are layered three deep — every level carries the same knobs and a `schedule` block, and each field resolves through them:
 
 1. **global** — the top-level `settings`: knobs every connection inherits, plus default schedule fields.
-2. **connections** — `connectionDefaults.local` / `.remote`: per-location overrides, one layer down.
+2. **connections.local / connections.remote** — per-location overrides nested under each location group.
 3. **profile** — a connection's own `settings` (written by `awewarm config set <id>`); it always wins, and `--inherit-schedule` drops it back to the layers above.
 
-One deliberate asymmetry: a delegated (`remote`) connection never follows the global schedule — it describes this machine's day. Remote connections resolve their schedule from their own settings and `connectionDefaults.remote` only (knobs still inherit globally). An inherited interval mode never breaks a connection whose window is unverified — such connections stay on fixed until their window is recorded. Delegating a connection freezes its then-effective schedule as its own settings, so handover never changes what fires. v1/v2 config files upgrade to this format automatically on first load (v2 per-connection schedule fields become that connection's own overrides, values unchanged).
+One deliberate asymmetry: a delegated (`remote`) connection never follows the global schedule — it describes this machine's day. Remote connections resolve their schedule from their own settings and `connections.remote.settings` only (knobs still inherit globally). An inherited interval mode never breaks a connection whose window is unverified — such connections stay on fixed until their window is recorded. Delegating a connection freezes its then-effective schedule as its own settings, so handover never changes what fires. v1/v2 config files upgrade to this format automatically on first load (v2 per-connection schedule fields become that connection's own overrides, values unchanged).
 
 ## Commands
 

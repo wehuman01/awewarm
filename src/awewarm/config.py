@@ -4,20 +4,20 @@ Everything on disk is JSON written by the tool itself; users interact through
 commands, never by hand-editing. Path env overrides (AWEWARM_CONFIG etc.) are
 also the primary test seam.
 
-On-disk format (v3) is flat — one level of connection fields — with settings
-layered three deep. Every settings block (the top-level `settings`, one per
-location under `connectionDefaults`, and each connection's own `settings`)
-carries the tuning knobs and a `schedule` block. A connection resolves each
-field own-overrides-first, then its location's defaults, then the global
-block; knobs follow that chain everywhere, while a schedule inherited from the
-global block never reaches a delegated (`remote`) connection — the global
-schedule describes this machine's day, and a server must only fire times
-written for remote (or the connection's own). An inherited interval mode never
-breaks a connection whose window is unverified (it stays fixed); an explicit
-own override surfaces the gating error instead. load_config expands everything
-into the richer runtime shape the rest of the code reads (resolved schedule,
-catch-up, degrade knobs); save_config compacts back, dropping any override
-that merely repeats what the connection would inherit anyway.
+On-disk format (v3) groups connections under `connections.local` and
+`connections.remote`, each carrying a `settings` block with the tuning knobs
+and a `schedule` block. The top-level `settings` block is the global layer.
+A connection resolves each field own-overrides-first, then its location's
+defaults, then the global block; knobs follow that chain everywhere, while a
+schedule inherited from the global block never reaches a delegated (`remote`)
+connection — the global schedule describes this machine's day, and a server
+must only fire times written for remote (or the connection's own). An inherited
+interval mode never breaks a connection whose window is unverified (it stays
+fixed); an explicit own override surfaces the gating error instead. load_config
+expands everything into the richer runtime shape the rest of the code reads
+(resolved schedule, catch-up, degrade knobs); save_config compacts back,
+dropping any override that merely repeats what the connection would inherit
+anyway.
 
 There is no upgrade path: a file older than v3 is refused with a pointer to
 `awewarm config template` (the same shape as resources/config.template.json),
@@ -105,25 +105,30 @@ CONFIG_TEMPLATE = """\
     "degradeAfterNodes": 3,
     "schedule": {"times": ["06:35"], "days": "weekday"}
   },
-  "connectionDefaults": {
-    "local": {"catchupMinutes": 20},
-    "remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}
-  },
   "connections": {
-    "claude-code": {
-      "label": "Claude Code",
-      "cli": "/usr/local/bin/claude",
-      "windowMinutes": 300,
-      "settings": {"schedule": {"times": ["06:35"]}}
+    "local": {
+      "settings": {
+        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+      },
+      "claude-code": {
+        "label": "Claude Code",
+        "cli": "/usr/local/bin/claude",
+        "windowMinutes": 300,
+        "settings": {"schedule": {"times": ["06:35"]}}
+      }
     },
-    "glm": {
-      "label": "glm",
-      "url": "https://open.bigmodel.cn/api/anthropic",
-      "protocol": "anthropic-messages",
-      "apiKey": "file:glm",
-      "model": "GLM-5-Turbo",
-      "windowMinutes": 300,
-      "location": "remote"
+    "remote": {
+      "settings": {
+        "schedule": {"times": ["08:00"], "days": "every-day"}
+      },
+      "glm": {
+        "label": "glm",
+        "url": "https://open.bigmodel.cn/api/anthropic",
+        "protocol": "anthropic-messages",
+        "apiKey": "file:glm",
+        "model": "GLM-5-Turbo",
+        "windowMinutes": 300
+      }
     }
   }
 }
@@ -180,7 +185,6 @@ def empty_config():
         "version": CONFIG_VERSION,
         "global": {},
         "settings": {},
-        "connectionDefaults": {},
         "connections": {},
     }
 
@@ -202,7 +206,7 @@ def default_schedule():
         "skipIfActivatedMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
         "graceSeconds": DEFAULT_GRACE_SECONDS,
         "jitterSeconds": DEFAULT_JITTER_SECONDS,
-        "wakeWhenAsleep": True,
+        "wakeWhenAsleep": False,
     }
 
 
@@ -330,7 +334,7 @@ def flatten_schedule(schedule):
         "skipIfActivatedMinutes": fixed.get("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES),
         "graceSeconds": interval.get("graceSeconds", DEFAULT_GRACE_SECONDS),
         "jitterSeconds": interval.get("jitterSeconds", DEFAULT_JITTER_SECONDS),
-        "wakeWhenAsleep": (schedule or {}).get("wakeWhenAsleep", True),
+        "wakeWhenAsleep": (schedule or {}).get("wakeWhenAsleep", False),
     }
 
 
@@ -416,35 +420,59 @@ def load_config(path=None):
             + _template_fix(path or config_path())
         )
 
-    for conn_id, flat in data["connections"].items():
-        if not isinstance(flat, dict):
-            die(f"connection '{conn_id}' must be a JSON object\n" + _template_fix(path or config_path()))
-        unknown = sorted(set(flat) - KNOWN_CONN_KEYS)
-        if unknown:
+    raw_location_blocks = data.get("connections") or {}
+    if not isinstance(raw_location_blocks, dict):
+        die("config is malformed (connections must be an object)\n"
+            + _template_fix(path or config_path()))
+
+    connection_defaults = {}
+    flat_connections = {}
+
+    for location_block_id, location_block in raw_location_blocks.items():
+        if location_block_id not in LOCATIONS:
             die(
-                f"connection '{conn_id}' has unknown field(s): {', '.join(unknown)}\n"
-                "  (schedule fields live under settings.schedule since version 3)\n"
+                f"connections has unknown key '{location_block_id}'\n"
                 + _template_fix(path or config_path())
             )
+        if not isinstance(location_block, dict):
+            die(f"connections.{location_block_id} must be a JSON object\n" + _template_fix(path or config_path()))
 
-    connection_defaults = data.get("connectionDefaults") or {}
-    if not isinstance(connection_defaults, dict):
-        die("config is malformed (connectionDefaults must be an object)\n"
-            "fix: fix the file per: awewarm config template")
-    blocks = [("settings", data.get("settings"))]
-    blocks.extend(
-        (f"connectionDefaults.{loc}", connection_defaults[loc])
-        for loc in LOCATIONS if loc in connection_defaults
-    )
-    for name, block in blocks:
-        errors = settings_block_errors(block, name)
+        settings_block = location_block.get("settings")
+        if settings_block is not None:
+            errors = settings_block_errors(settings_block, f"connections.{location_block_id}.settings")
+            if errors:
+                die(
+                    f"config has invalid connections.{location_block_id}.settings:\n  " + "\n  ".join(errors)
+                    + "\nfix: fix the file, or reset the block: awewarm config settings --reset"
+                )
+            connection_defaults[location_block_id] = _resolve_settings(settings_block)
+
+        for conn_id, flat in location_block.items():
+            if conn_id == "settings":
+                continue
+            if conn_id in LOCATIONS:
+                continue
+            if not isinstance(flat, dict):
+                die(f"connection '{conn_id}' must be a JSON object\n" + _template_fix(path or config_path()))
+            unknown = sorted(set(flat) - KNOWN_CONN_KEYS)
+            if unknown:
+                die(
+                    f"connection '{conn_id}' has unknown field(s): {', '.join(unknown)}\n"
+                    "  (schedule fields live under settings.schedule since version 3)\n"
+                    + _template_fix(path or config_path())
+                )
+            flat_connections[conn_id] = flat
+
+    global_settings_raw = data.get("settings")
+    if global_settings_raw is not None:
+        errors = settings_block_errors(global_settings_raw, "settings")
         if errors:
             die(
-                "config has invalid " + name + ":\n  " + "\n  ".join(errors)
+                "config has invalid settings:\n  " + "\n  ".join(errors)
                 + "\nfix: fix the file, or reset the block: awewarm config settings --reset"
             )
+    global_settings = _resolve_settings(global_settings_raw)
 
-    global_settings = _resolve_settings(data.get("settings"))
     return {
         "version": CONFIG_VERSION,
         "global": data.get("global") or {},
@@ -453,7 +481,7 @@ def load_config(path=None):
         "remote": data.get("remote") or {},
         "connections": {
             conn_id: _expand_conn(conn_id, conn, global_settings, connection_defaults)
-            for conn_id, conn in data["connections"].items()
+            for conn_id, conn in flat_connections.items()
         },
     }
 
@@ -577,17 +605,48 @@ def _compact_conn(conn, global_settings, connection_defaults):
 
 def _compact_config(config):
     settings = _resolve_settings(config.get("settings"))
-    defaults = config.get("connectionDefaults") or {}
+
+    connection_defaults = {}
+    for loc in LOCATIONS:
+        loc_block = (config.get("connections") or {}).get(loc, {})
+        loc_settings = loc_block.get("settings")
+        if loc_settings is not None:
+            connection_defaults[loc] = loc_settings
+
+    by_location = {}
+    for conn_id, conn in config["connections"].items():
+        if conn_id in LOCATIONS:
+            continue
+        location = conn.get("location") or "local"
+        by_location.setdefault(location, {})[conn_id] = conn
+
+    nested = {}
+    for loc in LOCATIONS:
+        location_conns = by_location.get(loc, {})
+        loc_block = (config.get("connections") or {}).get(loc, {})
+        loc_settings = loc_block.get("settings")
+
+        if not location_conns and loc_settings is None:
+            continue
+
+        block = {}
+        if loc_settings is not None:
+            block["settings"] = loc_settings
+
+        for conn_id, conn in location_conns.items():
+            flat = _compact_conn(conn, config.get("settings") or {}, connection_defaults)
+            if flat:
+                block[conn_id] = flat
+
+        if block:
+            nested[loc] = block
+
     return {
         "version": CONFIG_VERSION,
         **({"global": config["global"]} if config.get("global") else {}),
         **({"remote": config["remote"]} if config.get("remote") else {}),
         "settings": settings,
-        **({"connectionDefaults": defaults} if defaults else {}),
-        "connections": {
-            conn_id: _compact_conn(conn, config.get("settings") or {}, defaults)
-            for conn_id, conn in config["connections"].items()
-        },
+        "connections": nested,
     }
 
 
@@ -654,15 +713,19 @@ def remote_errors(remote):
 
 
 def save_config(config, path=None):
-    for name, block in (
-        ("settings", config.get("settings")),
-        ("connectionDefaults.local", (config.get("connectionDefaults") or {}).get("local")),
-        ("connectionDefaults.remote", (config.get("connectionDefaults") or {}).get("remote")),
-    ):
+    blocks = [("settings", config.get("settings"))]
+    for loc in LOCATIONS:
+        loc_block = (config.get("connections") or {}).get(loc, {})
+        loc_settings = loc_block.get("settings")
+        if loc_settings is not None:
+            blocks.append((f"connections.{loc}.settings", loc_settings))
+    for name, block in blocks:
         errors = settings_block_errors(block, name)
         if errors:
             die(f"refusing to save invalid {name}:\n  " + "\n  ".join(errors))
     for conn_id, conn in config["connections"].items():
+        if conn_id in LOCATIONS:
+            continue
         errors = connection_errors(conn, conn_id)
         if errors:
             die(f"refusing to save invalid connection {conn_id}:\n  " + "\n  ".join(errors))
@@ -753,7 +816,7 @@ def connection_errors(conn, conn_id="<connection>"):
             value = fixed.get("skipIfActivatedWithinMinutes")
             if not isinstance(value, int) or value < 0:
                 errors.append(f"{conn_id}: schedule.fixed.skipIfActivatedWithinMinutes must be an integer >= 0")
-            if not isinstance(schedule.get("wakeWhenAsleep", True), bool):
+            if not isinstance(schedule.get("wakeWhenAsleep", False), bool):
                 errors.append(f"{conn_id}: schedule.wakeWhenAsleep must be a boolean")
     catchup = conn.get("catchup")
     if catchup is not None:

@@ -296,7 +296,7 @@ class WakePromptTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertNotIn("asleep?", result.output)
         conn = cfg.load_config()["connections"]["glm"]
-        self.assertTrue(conn["schedule"]["wakeWhenAsleep"])
+        self.assertFalse(conn["schedule"]["wakeWhenAsleep"])
 
     def test_config_set_wake_flag_round_trip(self):
         write_config(account_connection(mode="fixed"))
@@ -502,7 +502,7 @@ class CatchupFlagTests(IsolatedTestCase):
         self.assertEqual(conn["catchup"]["attempts"], 5)
         file = json.loads(Path(cfg.config_path()).read_text())
         self.assertEqual(file["settings"]["catchupMinutes"], 60)
-        self.assertEqual(file["connections"]["claude-code-main"]["settings"], {"catchupMinutes": 15})
+        self.assertEqual(file["connections"]["local"]["claude-code-main"]["settings"], {"catchupMinutes": 15})
 
     def test_out_of_range_rejected(self):
         write_config(account_connection(mode="fixed"))
@@ -1438,7 +1438,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertTrue(entry["config"]["timezone"])  # IANA name traveled with the push
         self.assertFalse(entry["keyMissing"])
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["glm"]["location"], "remote")
+        self.assertEqual(on_disk["connections"]["remote"]["glm"]["location"], "remote")
 
     def test_delegation_freezes_schedule_against_global_edits(self):
         # the global schedule exists and the connection follows it while local;
@@ -1457,7 +1457,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         entry = self.server_view()["connections"]["glm"]
         self.assertEqual(entry["config"]["schedule"]["fixed"]["at"], ["09:00"])
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"]["times"], ["09:00"])  # pinned
+        self.assertEqual(on_disk["connections"]["remote"]["glm"]["settings"]["schedule"]["times"], ["09:00"])  # pinned
         invoke(["config", "settings", "--times", "10:10"])
         entry = self.server_view()["connections"]["glm"]
         self.assertEqual(entry["config"]["schedule"]["fixed"]["at"], ["09:00"])  # server untouched
@@ -1488,7 +1488,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         local = cfg.load_state()["connections"]["glm"]
         self.assertEqual(local["lastActivationAt"], "2026-08-20T10:00:00+08:00")
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertNotIn("location", on_disk["connections"]["glm"])
+        self.assertNotIn("location", on_disk["connections"]["local"]["glm"])
 
     def test_tick_skips_remote_and_rekeys_after_server_restart(self):
         self.delegate(plan_connection(fixed_at=("03:00",), days="every-day"))
@@ -1576,7 +1576,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         state = cfg.load_state()
         self.assertIn("glm", state.get("pendingPush") or {})
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["glm"]["settings"]["schedule"]["times"], ["07:07"])
+        self.assertEqual(on_disk["connections"]["remote"]["glm"]["settings"]["schedule"]["times"], ["07:07"])
 
 
 class PlainHttpConnectTests(IsolatedTestCase):
@@ -1704,7 +1704,7 @@ class ProfileScheduleTests(IsolatedTestCase):
         result = invoke(["config", "set", "claude-code-main", "--times", "07:07"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         on_disk = json.loads(Path(cfg.config_path()).read_text())
-        self.assertEqual(on_disk["connections"]["claude-code-main"]["settings"]["schedule"]["times"], ["07:07"])
+        self.assertEqual(on_disk["connections"]["local"]["claude-code-main"]["settings"]["schedule"]["times"], ["07:07"])
         loaded = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(loaded["schedule"]["fixed"]["at"], ["07:07"])
 

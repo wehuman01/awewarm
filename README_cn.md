@@ -272,26 +272,31 @@ awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
     "degradeAfterNodes": 3,
     "schedule": {"times": ["06:35"], "days": "weekday"}
   },
-  "connectionDefaults": {
-    "local": {"catchupMinutes": 20},
-    "remote": {"schedule": {"times": ["08:00"], "days": "every-day"}}
-  },
   "connections": {
-    "claude-code": {
-      "label": "Claude Code",
-      "cli": "/usr/local/bin/claude",
-      "model": "haiku",
-      "windowMinutes": 300,
-      "settings": {"schedule": {"times": ["06:35"]}}
+    "local": {
+      "settings": {
+        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+      },
+      "claude-code": {
+        "label": "Claude Code",
+        "cli": "/usr/local/bin/claude",
+        "model": "haiku",
+        "windowMinutes": 300,
+        "settings": {"schedule": {"times": ["06:35"]}}
+      }
     },
-    "glm": {
-      "label": "glm",
-      "url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "protocol": "openai-chat",
-      "apiKey": "file:glm",
-      "model": "GLM-5-Turbo",
-      "windowMinutes": 300,
-      "location": "remote"
+    "remote": {
+      "settings": {
+        "schedule": {"times": ["08:00"], "days": "every-day"}
+      },
+      "glm": {
+        "label": "glm",
+        "url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "protocol": "openai-chat",
+        "apiKey": "file:glm",
+        "model": "GLM-5-Turbo",
+        "windowMinutes": 300
+      }
     }
   },
   "remote": {
@@ -306,10 +311,10 @@ awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每个字段按层解析：
 
 1. **global** —— 顶层 `settings`：所有连接继承的 knobs，以及默认的 schedule 字段。
-2. **connections** —— `connectionDefaults.local` / `.remote`：按 local / remote 区分的中间层。
+2. **connections.local / connections.remote** —— 按 local / remote 嵌套在各自位置组下的中间层。
 3. **profile** —— 连接自己的 `settings`（由 `awewarm config set <id>` 写入）；永远优先，`--inherit-schedule` 可丢弃它、回落到上层。
 
-一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connectionDefaults.remote`（knobs 仍全局继承）。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。v1/v2 配置文件在首次加载时自动升级为本格式（v2 连接上的调度字段原值变为其自身 overrides）。
+一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connections.remote.settings`（knobs 仍全局继承）。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。v1/v2 配置文件在首次加载时自动升级为本格式（v2 连接上的调度字段原值变为其自身 overrides）。
 
 ## 命令
 
