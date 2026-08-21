@@ -164,6 +164,15 @@ def _show_status(connection, as_json):
                 if entry.get("keyMissing"):
                     click.echo("  ⚠ the server lost its key (restarted?) — rerun: awewarm remote push")
                 continue
+            # Reachable server, but the connection is missing from its view
+            # (wiped data dir, never-healed pending push): show the local copy
+            # labeled as delegated, with the warning that nothing fires it now.
+            _status_block(
+                conn_id, conn, state, now,
+                detailed=bool(connection), where=remote.remote_url(config),
+            )
+            click.echo("  ⚠ missing on the server — rerun: awewarm remote push")
+            continue
         _status_block(conn_id, conn, state, now, detailed=bool(connection))
     footer = f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}"
     if remote.remote_url(config):

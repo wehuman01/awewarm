@@ -13,8 +13,15 @@ import urllib.request
 
 from . import keystore
 
-TOKEN_SECRET_ID = "remote-token"
+# Namespaced so no connection id can collide with it (slugify never emits ":").
+TOKEN_SECRET_ID = "remote:token"
+LEGACY_TOKEN_SECRET_ID = "remote-token"
 TIMEOUT_SECONDS = 5
+# The server fires the real request while holding its lock before answering a
+# run (its own cap: ACTIVATION_TIMEOUT_SECONDS per activation) — the client
+# must outwait it, or a slow endpoint reports failure here while the request
+# actually went out, inviting a duplicate retry.
+RUN_TIMEOUT_SECONDS = 30
 
 
 class RemoteError(Exception):
@@ -30,15 +37,18 @@ def remote_url(config):
 
 
 def load_token():
-    return keystore.load_api_key(f"file:{TOKEN_SECRET_ID}")
+    token = keystore.load_api_key(f"file:{TOKEN_SECRET_ID}")
+    if token:
+        return token
+    legacy = keystore.load_api_key(f"file:{LEGACY_TOKEN_SECRET_ID}")
+    if legacy:
+        store_token(legacy)
+    return legacy
 
 
 def store_token(token):
-    return keystore.store_api_key(TOKEN_SECRET_ID, token)
-
-
-def delete_token():
-    keystore.delete_api_key(TOKEN_SECRET_ID)
+    keystore.store_api_key(TOKEN_SECRET_ID, token)
+    keystore.delete_api_key(LEGACY_TOKEN_SECRET_ID)
 
 
 def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
@@ -50,7 +60,7 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
     request = urllib.request.Request(target, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode() or "{}")
+            raw = response.read().decode()
     except urllib.error.HTTPError as exc:
         try:
             detail = json.loads(exc.read().decode()).get("error", "")
@@ -60,6 +70,10 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", None) or exc
         raise RemoteError(f"cannot reach the awewarm server at {url}: {reason}")
+    try:
+        return json.loads(raw or "{}")
+    except ValueError:
+        raise RemoteError(f"{url} answered, but not like an awewarm server (invalid JSON)")
 
 
 def healthz(url):
@@ -68,6 +82,10 @@ def healthz(url):
 
 def claim(url, token):
     return _request(url, "POST", "/v1/claim", {"token": token})
+
+
+def release(url, token):
+    return _request(url, "POST", "/v1/release", {}, token)
 
 
 def push_connection(url, token, conn_id, conn, api_key, timezone):
@@ -87,10 +105,14 @@ def delete_connection(url, token, conn_id):
     return _request(url, "DELETE", f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}", token=token)
 
 
-def run_connection(url, token, conn_id, reset_due=False):
+def run_connection(url, token, conn_id, reset_due=False, allow_auto_disabled=False):
+    """Fire one connection on the server. allow_auto_disabled mirrors the local
+    split: an explicit `run <id>` fires (and on success clears) an auto-disabled
+    ladder, `run` (no id) skips those connections."""
     return _request(
         url, "POST", f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}/run",
-        {"resetDue": reset_due}, token,
+        {"resetDue": reset_due, "allowAutoDisabled": allow_auto_disabled},
+        token, timeout=RUN_TIMEOUT_SECONDS,
     )
 
 

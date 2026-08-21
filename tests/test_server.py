@@ -89,6 +89,26 @@ class AuthTests(ServerCase):
         self.assertTrue(remote_client.fetch_state(self.url, "awt_" + "f" * 40)["connections"] == {})
 
 
+class ReleaseTests(ServerCase):
+    def test_release_opens_the_server_for_a_new_claim(self):
+        remote_client.release(self.url, self.token)
+        self.assertFalse(self.warm.claimed)
+        remote_client.claim(self.url, "awt_" + "n" * 40)  # a different machine can pair
+        self.assertTrue(self.warm.claimed)
+
+    def test_release_requires_the_claiming_token(self):
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.release(self.url, "awt_" + "x" * 40)
+        self.assertIn("401", str(ctx.exception))
+        self.assertTrue(self.warm.claimed)
+
+    def test_release_on_a_fixed_token_server_is_a_no_op(self):
+        self.make_server(fixed_token="awt_" + "f" * 40, claim=False)
+        remote_client.claim(self.url, "awt_" + "f" * 40)
+        self.assertFalse(remote_client.release(self.url, "awt_" + "f" * 40)["released"])
+        self.assertTrue(self.warm.claimed)  # the claim is pinned by --token
+
+
 class ConnectionTests(ServerCase):
     def test_push_stores_connection_and_key_without_secrets_on_disk(self):
         result = self.push_plan()
@@ -113,6 +133,13 @@ class ConnectionTests(ServerCase):
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.push_connection(self.url, self.token, "glm", conn, "sk", "Mars/Olympus")
         self.assertIn("timezone", str(ctx.exception))
+
+    def test_push_accepts_a_fixed_offset_timezone(self):
+        conn = plan_connection()
+        result = remote_client.push_connection(self.url, self.token, "glm", conn, "sk-test", "UTC+08:00")
+        self.assertTrue(result["ok"])
+        now = self.warm._now(self.warm.config["connections"]["glm"])
+        self.assertEqual(now.utcoffset(), timedelta(hours=8))
 
     def test_push_resets_state_and_reports_next_due(self):
         self.push_plan()
@@ -208,6 +235,26 @@ class TickTests(ServerCase):
         send.assert_called_once()
         history = self.warm.state["connections"]["glm"]["history"]
         self.assertEqual(history[-1]["kind"], "manual")
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_explicit_run_fires_and_clears_auto_disabled(self, send):
+        # Same contract as the local CLI: a successful manual run of one
+        # connection clears the auto-disabled ladder.
+        self.push_plan()
+        self.warm.state["connections"]["glm"]["autoDisabledAt"] = "2026-08-20T00:00:00+08:00"
+        result = remote_client.run_connection(self.url, self.token, "glm", allow_auto_disabled=True)
+        self.assertTrue(result["ok"])
+        send.assert_called_once()
+        self.assertIsNone(self.warm.state["connections"]["glm"]["autoDisabledAt"])
+
+    def test_bulk_run_still_refuses_auto_disabled(self):
+        # `run` (no id) skips auto-disabled connections locally; the server
+        # keeps that refusal for the bulk path.
+        self.push_plan()
+        self.warm.state["connections"]["glm"]["autoDisabledAt"] = "2026-08-20T00:00:00+08:00"
+        result = remote_client.run_connection(self.url, self.token, "glm")
+        self.assertFalse(result["ok"])
+        self.assertIn("auto-disabled", result["detail"])
 
     def test_run_unknown_connection_is_404(self):
         with self.assertRaises(remote_client.RemoteError) as ctx:

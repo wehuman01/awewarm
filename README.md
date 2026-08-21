@@ -223,7 +223,7 @@ awewarm config set glm --remote                   # the server takes over this c
 awewarm status                                    # merged view: local + delegated truth
 ```
 
-`--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back, and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` forgets the server and refuses while anything is still delegated. Fixed times run in the delegating machine's timezone (it travels with the push); wake-from-sleep does not apply on a server that never sleeps.
+`--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back — and, same as locally, a successful manual run clears an auto-disabled ladder — and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` refuses while anything is still delegated, then forgets the server and releases its claim (another machine can pair immediately); the pairing token stays in `secrets.json`, so reconnecting later is instant even against a server that kept the old claim. Fixed times run in the delegating machine's timezone (it travels with the push; machines whose zone has no IANA name, e.g. Windows, push a fixed `UTC±HH:MM` offset instead); wake-from-sleep does not apply on a server that never sleeps.
 
 ## Config
 
@@ -257,7 +257,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
   },
   "remote": {
     "url": "https://warm.example.com",
-    "tokenRef": "file:remote-token"
+    "tokenRef": "file:remote:token"
   }
 }
 ```
@@ -282,7 +282,7 @@ awewarm serve                          # run the always-on server that ticks del
 awewarm remote connect <url>           # pair with a server (token generated + stored locally)
 awewarm remote status                  # server view: uptime, last tick, delegated connections
 awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)
-awewarm remote disconnect              # forget the server (refuses while delegations exist)
+awewarm remote disconnect              # forget the server + release its claim (refuses while delegations exist)
 awewarm update [--check]              # upgrade to the latest PyPI release
 ```
 

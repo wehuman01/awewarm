@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from pathlib import Path
 import unittest
 
@@ -144,6 +145,25 @@ class ValidationTests(unittest.TestCase):
     def test_user_confirmed_duration_unlocks_interval(self):
         conn = plan_connection(mode="interval", window_status="user-confirmed", duration=300)
         self.assertEqual(config.connection_errors(conn, "plan"), [])
+
+
+class TimezoneForTests(unittest.TestCase):
+    """timezone_for: IANA names, fixed "UTC±HH:MM" offsets, honest rejection."""
+
+    def test_iana_names(self):
+        self.assertEqual(config.timezone_for("Asia/Shanghai").key, "Asia/Shanghai")
+
+    def test_fixed_offsets(self):
+        self.assertEqual(config.timezone_for("UTC+08:00").utcoffset(None), timedelta(hours=8))
+        self.assertEqual(
+            config.timezone_for("UTC-05:30").utcoffset(None), -timedelta(hours=5, minutes=30)
+        )
+        self.assertEqual(config.timezone_for("UTC+00:00").utcoffset(None), timedelta(0))
+
+    def test_rejects_malformed_names(self):
+        for name in ("Mars/Olympus", "UTC+25:00", "UTC+8", "UTC+08:60", "", None, 8):
+            with self.assertRaises(ValueError):
+                config.timezone_for(name)
 
 
 class NamingTests(unittest.TestCase):

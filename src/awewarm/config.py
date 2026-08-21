@@ -17,8 +17,9 @@ the connection's `settings` the same way.
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .discover import BUILTIN_WINDOWS
 
@@ -558,6 +559,27 @@ def connection_errors(conn, conn_id="<connection>"):
 
 def timezone_name(config):
     return (config.get("global") or {}).get("timezone")
+
+
+OFFSET_TZ_RE = re.compile(r"^UTC([+-])([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def timezone_for(name):
+    """tzinfo for an IANA zone name or a fixed offset ("UTC+08:00"); ValueError otherwise.
+
+    Fixed-offset names carry delegation from machines whose local zone has no
+    IANA name (Windows): their fixed slots still fire at the right wall-clock
+    times, they just never follow DST rules a named zone would.
+    """
+    if isinstance(name, str):
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            match = OFFSET_TZ_RE.match(name)
+            if match:
+                sign = 1 if match.group(1) == "+" else -1
+                return timezone(sign * timedelta(hours=int(match.group(2)), minutes=int(match.group(3))))
+    raise ValueError(f"not a timezone: {name!r}")
 
 
 def slugify(label):

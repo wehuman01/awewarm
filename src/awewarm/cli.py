@@ -37,6 +37,7 @@ from .config import (
     save_config,
     save_state,
     state_path,
+    timezone_for,
     timezone_name,
 )
 
@@ -202,7 +203,8 @@ def _activate_now(target, reset_due=False):
     if conn.get("location") == "remote":
         try:
             result = remote.run_connection(
-                remote.remote_url(config), remote.load_token(), conn_id, reset_due=reset_due
+                remote.remote_url(config), remote.load_token(), conn_id,
+                reset_due=reset_due, allow_auto_disabled=True,
             )
         except remote.RemoteError as exc:
             die(f"remote activation failed:\n{exc}")
@@ -308,12 +310,21 @@ REMOTE_SYNC_EVERY = timedelta(minutes=30)
 
 
 def _push_timezone(config):
-    """IANA name of this machine's zone — fixed slots are wall-clock times."""
+    """This machine's zone as an IANA name — or a fixed UTC offset when the
+    system offers no IANA name (Windows), which still runs fixed slots at the
+    right wall-clock times, just without DST rules."""
     name = timezone_name(config)
     if name:
         return name
     tz = datetime.now().astimezone().tzinfo
-    return getattr(tz, "key", "UTC")
+    key = getattr(tz, "key", None)
+    if key:
+        return key
+    offset = datetime.now(tz).utcoffset() or timedelta(0)
+    minutes = int(offset.total_seconds()) // 60
+    sign = "+" if minutes >= 0 else "-"
+    minutes = abs(minutes)
+    return f"UTC{sign}{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def _require_api_key(conn, conn_id):
@@ -1120,7 +1131,7 @@ def _remote_status():
         mode = (conn.get("schedule") or {}).get("mode", "fixed")
         tz_name = conn.get("timezone")
         try:
-            conn_now = datetime.now(ZoneInfo(tz_name)) if tz_name else now
+            conn_now = datetime.now(timezone_for(tz_name)) if tz_name else now
         except Exception:
             conn_now = now
         due_at, _ = schedule.next_due(conn, cs, conn_now)
@@ -1179,10 +1190,26 @@ def _remote_disconnect():
     if not config.get("remote"):
         click.echo("No remote server connected")
         return
+    url = remote.remote_url(config)
+    token = remote.load_token()
     config.pop("remote", None)
     save_config(config)
-    remote.delete_token()
-    click.echo("✓ Remote server forgotten (it keeps nothing secret — its keyring was RAM-only)")
+    # Best-effort: release the server's claim so another machine can pair. The
+    # token stays in secrets.json — it is this machine's pairing identity and
+    # makes reconnect work even against a server that kept the old claim.
+    released = False
+    if url and token:
+        try:
+            released = bool(remote.release(url, token).get("released"))
+        except remote.RemoteError:
+            released = False
+    if released:
+        click.echo("✓ Remote server disconnected — claim released, the pairing token kept for reconnect")
+    else:
+        click.echo(
+            "✓ Remote server disconnected — it kept its claim (offline or an older awewarm),\n"
+            "  but the kept pairing token re-pairs it on reconnect"
+        )
 
 
 @remote_group.command("disconnect")

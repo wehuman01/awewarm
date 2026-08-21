@@ -1,14 +1,16 @@
 """The client half: pairing, auto re-claim after a server restart, and the
-honest failure modes (unreachable server, unconfigured remote).
+honest failure modes (unreachable server, unconfigured remote, impostor 200s).
 """
 import tempfile
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 
 from helpers import IsolatedTestCase, plan_connection
 
-from awewarm import remote
+from awewarm import keystore, remote, server
 
 
 class LiveServerCase(IsolatedTestCase):
@@ -45,8 +47,8 @@ class PairingTests(LiveServerCase):
     def test_token_round_trips_through_secrets_file(self):
         remote.store_token("awt_" + "a" * 40)
         self.assertEqual(remote.load_token(), "awt_" + "a" * 40)
-        remote.delete_token()
-        self.assertIsNone(remote.load_token())
+        remote.store_token("awt_" + "c" * 40)
+        self.assertEqual(remote.load_token(), "awt_" + "c" * 40)
 
     def test_unreachable_server_raises_remote_error(self):
         with self.assertRaises(remote.RemoteError) as ctx:
@@ -57,6 +59,52 @@ class PairingTests(LiveServerCase):
         with self.assertRaises(remote.RemoteError) as ctx:
             remote.ensure_session({"remote": {}})
         self.assertIn("awewarm remote connect", str(ctx.exception))
+
+    def test_token_survives_a_connection_named_like_the_legacy_key(self):
+        remote.store_token("awt_" + "a" * 40)
+        keystore.store_api_key("remote-token", "sk-test")  # a legit connection id
+        self.assertEqual(remote.load_token(), "awt_" + "a" * 40)
+
+    def test_legacy_token_key_migrates_on_load(self):
+        keystore.store_api_key(remote.LEGACY_TOKEN_SECRET_ID, "awt_" + "b" * 40)
+        self.assertEqual(remote.load_token(), "awt_" + "b" * 40)
+        self.assertIsNone(keystore.load_api_key(f"file:{remote.LEGACY_TOKEN_SECRET_ID}"))
+        self.assertEqual(keystore.load_api_key(f"file:{remote.TOKEN_SECRET_ID}"), "awt_" + "b" * 40)
+
+
+class RunTimeoutTests(LiveServerCase):
+    def test_run_connection_waits_out_the_server_activation_cap(self):
+        # The server fires the real request before answering a run (its cap is
+        # ACTIVATION_TIMEOUT_SECONDS); a client that gives up sooner reports
+        # "unreachable" while the request actually went out, inviting a retry.
+        self.assertGreaterEqual(remote.RUN_TIMEOUT_SECONDS, server.ACTIVATION_TIMEOUT_SECONDS)
+        with mock.patch.object(remote, "_request") as request:
+            remote.run_connection(self.url, "awt_" + "t" * 40, "glm")
+        self.assertEqual(request.call_args.kwargs["timeout"], remote.RUN_TIMEOUT_SECONDS)
+
+
+class ImpostorTests(IsolatedTestCase):
+    """A 200 answer that is not awewarm's protocol must fail as a RemoteError."""
+
+    def test_non_json_answer_raises_remote_error_not_a_traceback(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html>welcome page</html>"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        with self.assertRaises(remote.RemoteError) as ctx:
+            remote.healthz(url)
+        self.assertIn("not like an awewarm server", str(ctx.exception))
 
 
 class SessionTests(LiveServerCase):

@@ -15,6 +15,7 @@ That is exactly how the local tick already treats a machine that was asleep.
 Wire protocol (JSON over HTTP, Bearer token):
   GET    /healthz                    no auth; {ok, version, claimed}
   POST   /v1/claim                   {token} → claim an unclaimed server
+  POST   /v1/release                 give up the claim (authed; disconnect)
   PUT    /v1/connections/<id>        {connection, apiKey, timezone} → take over
   DELETE /v1/connections/<id>        drop a connection (takeback)
   PUT    /v1/keys                    {id: key, ...} → re-key after a restart
@@ -30,10 +31,9 @@ import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import __version__, schedule, transport
-from .config import append_log, conn_state, connection_errors, default_conn_state
+from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
 BODY_LIMIT_BYTES = 256 * 1024
@@ -112,7 +112,22 @@ class WarmServer:
                 return {"ok": True, "claimed": True}
             if hmac.compare_digest(token or "", self.claimed_token):
                 return {"ok": True, "claimed": True}  # re-claim after the local side restarted
-            raise ApiError(403, "this server is already claimed by another token")
+            raise ApiError(
+                403,
+                "this server is already claimed by another token "
+                "(disconnect from the machine that claimed it, or restart the server)",
+            )
+
+    def release(self):
+        """Give up the claim so a different token can pair (authed by the old one)."""
+        with self.lock:
+            if self.fixed_token is not None:
+                return {"ok": True, "released": False}  # claim pinned by --token
+            if self.claimed_token is None:
+                return {"ok": True, "released": False}
+            self.claimed_token = None
+            self.log("server released")
+            return {"ok": True, "released": True}
 
     # --- connections ---
 
@@ -135,7 +150,7 @@ class WarmServer:
         if not isinstance(tz_name, str):
             raise ApiError(400, "timezone is required (an IANA name, e.g. Asia/Shanghai)")
         try:
-            ZoneInfo(tz_name)
+            timezone_for(tz_name)
         except Exception:
             raise ApiError(400, f"unknown timezone: {tz_name}")
         with self.lock:
@@ -207,14 +222,20 @@ class WarmServer:
                 },
             }
 
-    def run_now(self, conn_id, reset_due=False):
+    def run_now(self, conn_id, reset_due=False, allow_auto_disabled=False):
         with self.lock:
             conn = self.config["connections"].get(conn_id)
             if conn is None:
                 raise ApiError(404, f"no such connection: {conn_id}")
             cs = conn_state(self.state, conn_id)
-            if cs.get("autoDisabledAt"):
-                return {"ok": False, "detail": "auto-disabled after repeated failures (resume: awewarm config set --on)"}
+            if cs.get("autoDisabledAt") and not allow_auto_disabled:
+                # Bulk `run` skips auto-disabled connections, same as the local
+                # fire-all; an explicit `run <id>` passes allow_auto_disabled
+                # and a success clears the ladder, same as the local single run.
+                return {
+                    "ok": False,
+                    "detail": "auto-disabled after repeated failures (resume: awewarm config set --on, or fire one: awewarm run <id>)",
+                }
             now = self._now(conn)
             key = self.keys.get(conn_id)
             if not key:
@@ -231,7 +252,7 @@ class WarmServer:
         name = conn.get("timezone")
         if name:
             try:
-                return datetime.now(ZoneInfo(name))
+                return datetime.now(timezone_for(name))
             except Exception:
                 pass
         return datetime.now().astimezone()
@@ -333,6 +354,10 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ApiError(405, "POST only")
                 return self._send(200, self.warm.claim(self._body().get("token")))
             self._authed()
+            if path == "/v1/release":
+                if method != "POST":
+                    raise ApiError(405, "POST only")
+                return self._send(200, self.warm.release())
             parts = [urllib.parse.unquote(part) for part in path.split("/") if part]
             if parts[:2] == ["v1", "state"] and len(parts) == 2:
                 if method != "GET":
@@ -347,7 +372,9 @@ class _Handler(BaseHTTPRequestHandler):
                 verb = parts[3] if len(parts) == 4 else None
                 if verb == "run" and method == "POST":
                     body = self._body()
-                    return self._send(200, self.warm.run_now(conn_id, bool(body.get("resetDue"))))
+                    return self._send(200, self.warm.run_now(
+                        conn_id, bool(body.get("resetDue")), bool(body.get("allowAutoDisabled"))
+                    ))
                 if verb is not None:
                     raise ApiError(404, f"no such endpoint: {path}")
                 if method == "PUT":

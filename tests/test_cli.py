@@ -3,7 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -1464,6 +1464,15 @@ class RemoteDelegationTests(IsolatedTestCase):
         send.assert_called_once()
         self.assertEqual(self.warm.state["connections"]["glm"]["history"][-1]["kind"], "manual")
 
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_run_clears_auto_disabled_on_the_server(self, send):
+        self.delegate()
+        self.warm.state["connections"]["glm"]["autoDisabledAt"] = "2026-08-20T00:00:00+08:00"
+        result = invoke(["run", "glm", "--force"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("on the remote server", output_of(result))
+        self.assertIsNone(self.warm.state["connections"]["glm"]["autoDisabledAt"])
+
     def test_status_merges_server_truth(self):
         self.delegate()
         self.warm.state["connections"]["glm"]["lastActivationAt"] = "2026-08-20T10:00:00+08:00"
@@ -1471,6 +1480,13 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn(f"· {self.url}", output_of(result))
         self.assertIn(f"Remote: {self.url} (1 delegated", output_of(result))
+
+    def test_status_warns_when_the_server_lost_a_delegated_connection(self):
+        self.delegate()
+        remote.delete_connection(self.url, self.token, "glm")
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("missing on the server", output_of(result))
 
     def test_status_offline_falls_back_to_last_sync(self):
         self.delegate()
@@ -1485,6 +1501,15 @@ class RemoteDelegationTests(IsolatedTestCase):
         result = invoke(["remote", "disconnect"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("still delegated", output_of(result))
+
+    def test_disconnect_then_reconnect_pairs_again(self):
+        self.assertEqual(invoke(["remote", "connect", self.url]).exit_code, 0)
+        result = invoke(["remote", "disconnect"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertFalse(remote.healthz(self.url)["claimed"])  # the claim was released
+        result = invoke(["remote", "connect", self.url])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Connected to awewarm", output_of(result))
 
     def test_edits_to_delegated_connection_push_through(self):
         self.delegate()
@@ -1536,3 +1561,31 @@ class PlainHttpConnectTests(IsolatedTestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("cannot reach the awewarm server", output_of(result))
         self.assertNotIn("plain HTTP", output_of(result))
+
+
+class PushTimezoneTests(IsolatedTestCase):
+    """Delegation pushes the machine's zone with every connection."""
+
+    def test_configured_timezone_wins(self):
+        self.assertEqual(
+            awewarm.cli._push_timezone({"global": {"timezone": "Asia/Taipei"}}), "Asia/Taipei"
+        )
+
+    def test_windows_style_zone_pushes_a_fixed_offset(self):
+        # datetime.timezone has no .key (a Windows-style local zone): the push
+        # must carry the offset, never silently fall back to UTC.
+        moment = datetime(2026, 8, 21, 12, 0, tzinfo=timezone(timedelta(hours=8), "CST"))
+        with mock.patch("awewarm.cli.datetime") as dt_cls:
+            dt_cls.now.return_value = moment
+            self.assertEqual(awewarm.cli._push_timezone({"global": {}}), "UTC+08:00")
+
+    def test_negative_half_hour_offset_formats_with_sign(self):
+        moment = datetime(2026, 8, 21, 12, 0, tzinfo=timezone(-timedelta(hours=5, minutes=30)))
+        with mock.patch("awewarm.cli.datetime") as dt_cls:
+            dt_cls.now.return_value = moment
+            self.assertEqual(awewarm.cli._push_timezone({"global": {}}), "UTC-05:30")
+
+    def test_pushed_offset_is_a_timezone_the_server_accepts(self):
+        pushed = "UTC-05:30"
+        tz = cfg.timezone_for(pushed)
+        self.assertEqual(datetime(2026, 8, 21, tzinfo=tz).utcoffset(), -timedelta(hours=5, minutes=30))
