@@ -653,9 +653,6 @@ def _config_set(connection, opts):
     if opts.start_hhmm is not None:
         if not SLOT_RE.match(opts.start_hhmm):
             die("use HH:MM, e.g. 08:00")
-        if conn["schedule"]["mode"] != "interval":
-            die(f"{conn_id}: --start only defers interval activation\n"
-                f"  fix: run: awewarm config set {conn_id} --mode interval --start {opts.start_hhmm}")
         start_now = _now(config)
         conn_state(state, conn_id)["deferUntil"] = schedule.iso(
             _next_occurrence(opts.start_hhmm, start_now)
@@ -709,7 +706,8 @@ def _config_set(connection, opts):
         click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, anchor_now)} (interval)")
     if opts.start_hhmm is not None:
         defer = schedule.parse_ts(conn_state(state, conn_id)["deferUntil"])
-        click.echo(f"✓ {conn_id} interval deferred until {_fmt_moment(defer, start_now)} — no request fires before then")
+        scope = "interval activation" if conn["schedule"]["mode"] == "interval" else "fixed slots"
+        click.echo(f"✓ {conn_id} deferred until {_fmt_moment(defer, start_now)} — no {scope} fire before then (clears on first success)")
     if opts.window_minutes is not None:
         click.echo(f"✓ Window recorded as {opts.window_minutes} minutes, user-confirmed.")
         if window_notice:
@@ -729,7 +727,7 @@ def _config_set(connection, opts):
         opts.catchup_minutes, opts.catchup_attempts, opts.degrade_after_nodes,
     )):
         _push_edits_to_remote(config, state, conn_id)
-    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake)):
+    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake, opts.start_hhmm)):
         _refresh_wake_after_edit()
 
 
@@ -760,7 +758,7 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection (--on also resets failure counters).")
 @click.option("--hide/--show", "hide", default=None, help="Hide this connection from status listings (its warm-ups continue).")
 @click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
-@click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer interval activation until this time (today, or tomorrow if passed).")
+@click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer activation until this time — today, or tomorrow if passed (fixed and interval).")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
 @click.option("--wake/--no-wake", "wake", default=None, help="Let fixed slots wake a sleeping machine (macOS/Windows).")
@@ -1337,32 +1335,102 @@ def hub_invite_command(data_dir, note, expires_hours):
     click.echo("  The user runs: awewarm remote connect <hub-url> --invite " + code)
 
 
+def _print_table(headers, rows):
+    """Left-aligned table, two-space gutters, widths from the content."""
+    widths = [
+        max(len(header), *(len(row[i]) for row in rows)) if rows else len(header)
+        for i, header in enumerate(headers)
+    ]
+    click.echo("  ".join(header.ljust(w) for header, w in zip(headers, widths)))
+    for row in rows:
+        click.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths)))
+
+
+def _hub_tenant_status(conns):
+    """Worst health rung across a tenant's connections; key-missing surfaces too."""
+    for word in ("invalid", "auto-disabled", "degraded", "failing"):
+        if any(c["status"] == word for c in conns):
+            return word
+    if any(c["keyMissing"] for c in conns):
+        return "key missing"
+    return "connected" if conns else "—"
+
+
+def _hub_conn_moment(entry, now):
+    due_at = schedule.parse_ts(entry.get("nextDueAt"))
+    if due_at is None:
+        return "—"
+    try:
+        conn_now = datetime.now(timezone_for(entry.get("timezone"))) if entry.get("timezone") else now
+    except Exception:
+        conn_now = now
+    return _fmt_moment(due_at, conn_now)
+
+
 @hub.command("list")
 @click.option("--data-dir", default=HUB_DEFAULT_DATA_DIR, show_default=True, help="The hub's data directory (the one `serve --hub` uses).")
+@click.option("--api", "show_api", is_flag=True, help="Also list each connection's API endpoint, protocol, and model.")
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
-def hub_list_command(data_dir, as_json):
+def hub_list_command(data_dir, show_api, as_json):
     """Show tenants: pairing, connections, and activation usage."""
     engine = _load_hub(data_dir)
     rows = engine.summarize()
+    pending = len(engine.registry["invites"])
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
     if not rows:
-        click.echo(f"No tenants paired yet — mint invites with: awewarm hub invite --data-dir {data_dir}")
+        if pending:
+            click.echo(
+                f"No tenants paired yet — {pending} invite(s) minted and unused\n"
+                "  (invite codes are shown only once, at mint time; mint another to see a new one)"
+            )
+        else:
+            click.echo(f"No tenants paired yet — mint invites with: awewarm hub invite --data-dir {data_dir}")
         return
     now = datetime.now().astimezone()
+    tenant_rows = []
     for row in rows:
-        note = f" ({row['note']})" if row["note"] else ""
-        conns = ", ".join(row["connections"]) or "none"
+        conns = row["connections"]
         usage = row["usage"] or {}
         seen = _fmt_moment(schedule.parse_ts(row["lastSeenAt"]), now) if row["lastSeenAt"] else "never"
-        click.echo(
-            f"{row['tenant']}{note} — {len(row['connections'])} connection(s): {conns}\n"
-            f"  paired {_fmt_moment(schedule.parse_ts(row['createdAt']), now)}, last seen {seen}, "
-            f"activations {usage.get('today', 0)} today / {usage.get('total', 0)} total"
-        )
-    pending = len(engine.registry["invites"])
-    footer = f"{len(rows)} tenant(s)"
+        paired = schedule.parse_ts(row["createdAt"])
+        tenant_rows.append([
+            row["tenant"],
+            row["note"] or "—",
+            str(len(conns)),
+            _hub_tenant_status(conns),
+            str(usage.get("today", 0)),
+            str(usage.get("total", 0)),
+            seen,
+            paired.strftime("%Y-%m-%d") if paired else "—",
+        ])
+    _print_table(
+        ["TENANT", "NOTE", "CONNS", "STATUS", "TODAY", "TOTAL", "LAST SEEN", "PAIRED"],
+        tenant_rows,
+    )
+    if show_api:
+        api_rows = []
+        for row in rows:
+            for entry in row["connections"]:
+                api_rows.append([
+                    row["tenant"],
+                    entry["id"],
+                    entry["status"] + (" (key missing)" if entry["keyMissing"] else ""),
+                    entry["protocol"] or "—",
+                    entry["model"] or "—",
+                    _hub_conn_moment(entry, now),
+                    entry["api"] or "—",
+                ])
+        if api_rows:
+            click.echo()
+            _print_table(
+                ["TENANT", "CONNECTION", "STATUS", "PROTOCOL", "MODEL", "NEXT DUE", "API"],
+                api_rows,
+            )
+        else:
+            click.echo("\nNo delegated connections yet")
+    footer = f"\n{len(rows)} tenant(s)"
     if pending:
         footer += f", {pending} unused invite(s) pending"
     click.echo(footer)
@@ -1379,7 +1447,7 @@ def hub_revoke_command(tenant, data_dir):
         die(f"no such tenant: {tenant}\nknown tenants: {', '.join(sorted(known)) or 'none'}")
     row = known[tenant]
     label = f" ({row['note']})" if row["note"] else ""
-    conns = ", ".join(row["connections"]) or "no connections"
+    conns = ", ".join(entry["id"] for entry in row["connections"]) or "no connections"
     if not click.confirm(f"Revoke {tenant}{label}? Its delegated connections stop being ticked: {conns}", default=False):
         click.echo("aborted — nothing revoked")
         return

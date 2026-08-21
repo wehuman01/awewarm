@@ -142,13 +142,13 @@ awewarm config set <id> --anchor HH:MM
 
 Tells awewarm when the current window closes; renewal starts right after it instead of firing inside it. No request is sent.
 
-### Defer interval's first fire
+### Defer the next fire (both modes)
 
 ```bash
 awewarm config set <id> --start HH:MM
 ```
 
-One-time gate: no request fires before that moment (today, or tomorrow if it has passed) — covers the first anchor and any stale chain due. The first tick past it opens the chain; the gate clears on the first success (`--anchor` clears it too). Requires interval mode; combine with the switch: `awewarm config set <id> --mode interval --start HH:MM`.
+One-time gate: no request fires before that moment (today, or tomorrow if it has passed). In interval mode it covers the first anchor and any stale chain due; in fixed mode a held slot fires right after the gate lifts while still inside its catch-up window — `--start 16:05` turns today's 16:00 slot into 16:05 without touching the times list (a gate past a slot's catch-up end skips that slot). The gate clears on the first success (`--anchor` clears it too).
 
 ### Enable RTC wake for lid-closed sleep
 

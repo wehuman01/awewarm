@@ -26,7 +26,25 @@ from .config import (
     DEFAULT_JITTER_SECONDS,
     DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
     SLOT_RE,
+    connection_errors,
 )
+
+
+def status_word(conn_id, conn, cs):
+    """The one-word health rung: disabled / invalid / auto-disabled /
+    degraded / failing / connected. Shared by status rendering and the hub's
+    tenant table so the ladder can never read differently in the two places."""
+    if not conn.get("enabled", True):
+        return "disabled"
+    if connection_errors(conn, conn_id):
+        return "invalid"
+    if cs.get("autoDisabledAt"):
+        return "auto-disabled"
+    if cs.get("degradedAt"):
+        return "degraded"
+    if cs.get("nodeKey") or cs.get("failedNodes", 0) > 0:
+        return "failing"
+    return "connected"
 
 RETRY_THROTTLE = timedelta(minutes=5)
 SLOT_KEEP_DAYS = 7
@@ -181,6 +199,9 @@ def _due_fixed(connection, conn_state, now):
     fixed = connection["schedule"].get("fixed") or {}
     if not is_active_day(now.date(), fixed.get("days", "weekday")):
         return [], None
+    defer = parse_ts(conn_state.get("deferUntil"))
+    if defer is not None and now < defer:
+        return [], None  # --start gate: slots fire late within catch-up once it lifts
     at_times = fixed.get("at") or []
     catchup = _catchup(connection)[1]
     skip_window = timedelta(
@@ -488,6 +509,7 @@ def next_due(connection, conn_state, now):
         return None, None
     mode = connection["schedule"]["mode"]
     candidates = []
+    defer = parse_ts(conn_state.get("deferUntil"))
     if mode == "fixed":
         fixed = connection["schedule"].get("fixed") or {}
         catchup = _catchup(connection)[1]
@@ -505,13 +527,15 @@ def next_due(connection, conn_state, now):
                         continue
                     if slot_at + catchup <= now and day == now.date():
                         continue  # today's slot is already past its catch-up
-                    candidates.append((slot_at, "fixed (single-shot)" if conn_state.get("degradedAt") else "fixed"))
+                    moment, kind = slot_at, "fixed"
+                    if defer is not None and defer > moment:
+                        moment, kind = defer, "fixed (deferred)"
+                    candidates.append((moment, "fixed (single-shot)" if conn_state.get("degradedAt") else kind))
                     break
                 if candidates:
                     break
             day += timedelta(days=1)
     if mode == "interval":
-        defer = parse_ts(conn_state.get("deferUntil"))
         if conn_state.get("degradedAt"):
             probe_at = _probe_at(conn_state, connection)
             if probe_at is not None and now < probe_at:

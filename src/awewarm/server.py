@@ -533,12 +533,29 @@ class Hub:
         rows = []
         for tenant_id in sorted(self.tenants):
             tenant = self.tenants[tenant_id]
+            warm = tenant.warm
+            connections = []
+            for cid in sorted(warm.config["connections"]):
+                conn = warm.config["connections"][cid]
+                cs = conn_state(warm.state, cid)
+                transport = conn.get("transport") or {}
+                connections.append({
+                    "id": cid,
+                    "status": schedule.status_word(cid, conn, cs),
+                    "api": transport.get("baseUrl"),
+                    "protocol": transport.get("kind"),
+                    "model": (conn.get("activation") or {}).get("model"),
+                    "enabled": conn.get("enabled", True),
+                    "keyMissing": conn.get("kind") == "subscription" and not warm.keys.get(cid),
+                    "timezone": conn.get("timezone"),
+                    "nextDueAt": cs.get("nextDueAt"),
+                })
             rows.append({
                 "tenant": tenant_id,
                 "note": tenant.note,
                 "createdAt": tenant.record.get("createdAt"),
                 "lastSeenAt": tenant.record.get("lastSeenAt"),
-                "connections": sorted(tenant.warm.config["connections"]),
+                "connections": connections,
                 "usage": dict(tenant.record.get("usage") or {}),
             })
         return rows

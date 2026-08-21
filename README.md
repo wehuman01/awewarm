@@ -98,6 +98,7 @@ One request at each fixed local time (`weekday` or `every-day`); each hit opens 
 
 - If the machine was asleep at the slot time, the slot still fires late within the catch-up window (default 30 min); past that it is recorded as skipped.
 - A slot landing within 30 min of a previous success is skipped — never pay for two windows at once.
+- `--start HH:MM` is a one-time gate that shifts today's schedule: no slot fires before that moment, and a held slot fires right after the gate lifts while still inside its catch-up window (`--start 16:05` turns today's 16:00 slot into 16:05) — the times list itself is untouched. A gate past a slot's catch-up end skips that slot; the gate clears on the first success.
 - The only mode that works while window semantics are unknown, which is why unverified plans start here.
 - During setup, when the window duration is known, awewarm asks for the plan's daily quota reset time and offers a full-day grid anchored on it — one slot per window, spaced window + 5 min apart (e.g. reset 01:14 + a 5 h window → 01:14, 06:19, 11:24, 16:29, 21:34). Declining keeps just the time you entered. Plans added in fixed mode are asked for the window duration first (default 300) — it spaces the grid and is recorded as a user-confirmed window that unlocks interval mode.
 
@@ -110,7 +111,7 @@ awewarm config set claude-code --mode fixed
 
 ### `interval` — rolling renewal
 
-After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor — unless you defer that start with `--start HH:MM`: no request fires before that moment (today, or tomorrow if it has passed), the first tick after it opens the chain, and the gate clears on the first success.
+After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor — unless you defer that start with `--start HH:MM`: no request fires before that moment (today, or tomorrow if it has passed), the first tick after it opens the chain, and the gate clears on the first success. The same gate also works in fixed mode (see above).
 
 ```bash
 awewarm run my-plan                        # 1. one minimal request, timestamped

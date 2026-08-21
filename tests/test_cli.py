@@ -1229,11 +1229,27 @@ class StartTests(IsolatedTestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("HH:MM", result.output)
 
-    def test_start_requires_interval_mode(self):
-        write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
-        result = invoke(["config", "set", "claude-code-main", "--start", "23:00"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("--mode interval", result.output)
+    def test_start_defers_fixed_slots(self):
+        write_config(plan_connection(mode="fixed", fixed_at=("16:00",)))
+        with mock.patch("awewarm.cli._now") as now:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now.return_value = datetime(2026, 8, 19, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--start", "16:05"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("deferred until today 16:05", result.output)
+        self.assertIn("fixed slots", result.output)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(schedule.parse_ts(cs["deferUntil"]).strftime("%H:%M"), "16:05")
+
+    def test_start_keeps_fixed_mode(self):
+        write_config(plan_connection(mode="fixed", fixed_at=("23:00",), window_status="user-confirmed", duration=300))
+        result = invoke(["config", "set", "claude-code-main", "--start", "23:30"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("fixed slots", result.output)
+        conn = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(conn["schedule"]["mode"], "fixed")
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["23:00"])
 
     def test_mode_and_start_combine_in_one_call(self):
         write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))

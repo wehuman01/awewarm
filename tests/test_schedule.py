@@ -101,6 +101,37 @@ class FixedTests(unittest.TestCase):
         self.assertEqual(len(activates), 1)
         self.assertEqual(activates[0]["slot"], "06:35")
 
+    def test_start_gate_holds_slot_then_fires_within_catchup(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        conn = account_connection()  # slot 06:35
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:36")), [])
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "07:00"))
+        self.assertEqual(actions[0]["type"], "activate")
+        self.assertEqual(actions[0]["slot"], "06:35")
+
+    def test_start_gate_beyond_catchup_skips_slot_after_lift(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        actions = self.plan(conn_state, at(WEDNESDAY, "09:00"))  # 06:35 is 145 min past
+        self.assertEqual(
+            actions,
+            [{"type": "skip-slot", "slot": "06:35", "why": "past-catchup"}],
+        )
+
+    def test_start_gate_clears_on_fixed_success(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        schedule.record_success(conn_state, account_connection(), at(WEDNESDAY, "07:00"), "fixed", slot="06:35")
+        self.assertIsNone(conn_state.get("deferUntil"))
+
+    def test_next_due_fixed_capped_by_gate(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        moment, kind = schedule.next_due(account_connection(), conn_state, at(WEDNESDAY, "06:00"))
+        self.assertEqual(moment, at(WEDNESDAY, "07:00"))
+        self.assertEqual(kind, "fixed (deferred)")
+
 
 class IntervalTests(unittest.TestCase):
     def interval_conn(self, **kwargs):

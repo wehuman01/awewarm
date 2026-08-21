@@ -259,7 +259,23 @@ class HubCliTests(IsolatedTestCase):
         result = invoke(["hub", "list"] + self.dir_opt)
         self.assertEqual(result.exit_code, 0)
         self.assertIn("alice", result.output)
-        self.assertIn("0 connection(s)", result.output)
+        self.assertIn("TENANT", result.output)
+        self.assertIn("LAST SEEN", result.output)
+        self.assertNotIn("https://", result.output)  # the API table needs --api
+
+    def test_list_api_shows_each_connection_endpoint(self):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite("alice"))
+        engine.tenants[joined["tenantId"]].warm.put_connection("glm", {
+            "connection": plan_connection(), "apiKey": "sk-test", "timezone": TZ,
+        })
+        result = invoke(["hub", "list"] + self.dir_opt + ["--api"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("API", result.output)
+        self.assertIn("glm", result.output)
+        self.assertIn("https://open.bigmodel.cn/api/anthropic", result.output)
+        self.assertIn("anthropic-messages", result.output)
+        self.assertIn("connected", result.output)
 
     def test_list_json_is_redacted(self):
         engine = server.Hub(self.data_dir)
@@ -277,6 +293,15 @@ class HubCliTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
         self.assertNotIn(joined["tenantId"], registry["tenants"])
+
+    def test_list_with_no_tenants_still_shows_pending_invites(self):
+        engine = server.Hub(self.data_dir)
+        engine.mint_invite("alice")
+        result = invoke(["hub", "list"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("No tenants paired yet", result.output)
+        self.assertIn("1 invite(s) minted and unused", result.output)
+        self.assertIn("shown only once", result.output)
 
     def test_revoke_unknown_tenant_lists_known_ones(self):
         result = invoke(["hub", "revoke", "t_nope"] + self.dir_opt, input="y\n")

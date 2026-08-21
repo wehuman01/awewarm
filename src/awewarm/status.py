@@ -25,22 +25,11 @@ from .config import (
 
 def _status_block(conn_id, conn, state, now, detailed, where=None):
     from . import cli
-    enabled = conn.get("enabled", True)
     errors = connection_errors(conn, conn_id)
     cs = conn_state(state, conn_id)
     schedule.migrate_state(cs)
-    if not enabled:
-        word = "disabled"
-    elif errors:
-        word = "invalid"
-    elif cs.get("autoDisabledAt"):
-        word = "auto-disabled"
-    elif cs.get("degradedAt"):
-        word = "degraded"
-    elif cs.get("nodeKey") or cs.get("failedNodes", 0) > 0:
-        word = "failing"
-    else:
-        word = "connected"
+    enabled = conn.get("enabled", True)
+    word = schedule.status_word(conn_id, conn, cs)
     click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}" + (f" · {where}" if where else ""))
     if errors:
         click.echo(f"  Problem: {errors[0]}")
