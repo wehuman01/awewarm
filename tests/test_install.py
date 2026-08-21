@@ -183,6 +183,10 @@ class WindowsWakeTests(IsolatedTestCase):
         self.assertIn(install.WAKE_TASK_PREFIX, script)
         self.assertIn("'C:\\Program Files\\awewarm.exe'", script)
 
+    def test_wake_defaults_off_when_the_key_is_absent(self):
+        # wake is opt-in: a schedule without wakeWhenAsleep never arms a wake
+        self.assertEqual(install.calendar_entries(self._fixed_config(("06:35",), wake=None)), [])
+
     @mock.patch("awewarm.install._schtasks")
     def test_wake_task_times_parses_csv(self, schtasks):
         schtasks.return_value = ok_run(
@@ -424,14 +428,16 @@ class LegacyPmsetCleanupTests(IsolatedTestCase):
 
 class CalendarEntriesTests(IsolatedTestCase):
     @staticmethod
-    def _conn(times, days="weekday", mode="fixed", enabled=True, wake=None):
+    def _conn(times, days="weekday", mode="fixed", enabled=True, wake=True):
         schedule = {"mode": mode, "fixed": {
             "at": times, "days": days,
             "skipIfActivatedWithinMinutes": cfg.DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
         }, "interval": {
             "graceSeconds": cfg.DEFAULT_GRACE_SECONDS,
             "jitterSeconds": cfg.DEFAULT_JITTER_SECONDS,
-        }, "wakeWhenAsleep": True if wake is None else wake}
+        }}
+        if wake is not None:
+            schedule["wakeWhenAsleep"] = wake
         window = ({"status": "user-confirmed", "startRule": "unknown",
                    "durationMinutes": 300, "evidence": "user-confirmed"}
                   if mode == "interval" else

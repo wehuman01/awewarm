@@ -26,6 +26,10 @@ def ok_run(returncode=0, stderr="", stdout=""):
 
 
 def _config(**connections):
+    # these tests exercise the wake layer, so connections opt in here unless
+    # one explicitly opted out (wake is off by default since 0.4.5)
+    for conn in connections.values():
+        conn["schedule"].setdefault("wakeWhenAsleep", True)
     return {"version": 2, "connections": connections}
 
 

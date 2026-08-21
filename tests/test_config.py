@@ -176,6 +176,13 @@ class NamingTests(unittest.TestCase):
         data["connections"]["glm-coding-plan"] = plan_connection()
         self.assertEqual(config.unique_connection_id(data, "GLM Coding Plan"), "glm-coding-plan-2")
 
+    def test_unique_connection_id_never_yields_a_location_name(self):
+        # "local"/"remote" are the on-disk location groups; a connection named
+        # after one would be swallowed by the grouping on save
+        data = config.empty_config()
+        self.assertEqual(config.unique_connection_id(data, "Local"), "local-2")
+        self.assertEqual(config.unique_connection_id(data, "remote"), "remote-2")
+
 
 class VersionTests(unittest.TestCase):
     def test_version_string_present(self):
@@ -345,9 +352,9 @@ class SettingsLayerTests(IsolatedTestCase):
         if global_settings:
             conf["settings"].update(global_settings)
         if local_settings:
-            conf.setdefault("connections", {})["local"] = {"settings": local_settings}
+            conf["connectionDefaults"]["local"] = local_settings
         if remote_settings:
-            conf.setdefault("connections", {})["remote"] = {"settings": remote_settings}
+            conf["connectionDefaults"]["remote"] = remote_settings
         conf["connections"].update(conns)
         config.save_config(conf)
         return config.load_config()
@@ -433,12 +440,8 @@ class SettingsLayerTests(IsolatedTestCase):
     def test_connection_defaults_roundtrip(self):
         conf = config.empty_config()
         conf["settings"]["schedule"] = {"times": ["09:00"]}
-        conf["connections"]["local"] = {
-            "settings": {"catchupMinutes": 20}
-        }
-        conf["connections"]["remote"] = {
-            "settings": {"schedule": {"times": ["08:00"]}, "degradeAfterNodes": 4}
-        }
+        conf["connectionDefaults"]["local"] = {"catchupMinutes": 20}
+        conf["connectionDefaults"]["remote"] = {"schedule": {"times": ["08:00"]}, "degradeAfterNodes": 4}
         conf["connections"]["glm"] = self._inherit_conn()
         config.save_config(conf)
         loaded = config.load_config()
@@ -448,6 +451,24 @@ class SettingsLayerTests(IsolatedTestCase):
         self.assertEqual(on_disk["connections"]["remote"]["settings"]["schedule"]["times"], ["08:00"])
         self.assertEqual(on_disk["connections"]["remote"]["settings"]["degradeAfterNodes"], 4)
         self.assertEqual(on_disk["connections"]["local"]["settings"]["catchupMinutes"], 20)
+
+    def test_location_settings_survive_a_load_save_roundtrip(self):
+        # the regression the nested on-disk format introduced: any
+        # load → edit → save (config set, config remove, ...) must keep the
+        # location layers instead of silently dropping them
+        conf = config.empty_config()
+        conf["connectionDefaults"]["local"] = {"schedule": {"wakeWhenAsleep": True}}
+        conf["connections"]["glm"] = self._inherit_conn()
+        config.save_config(conf)
+        loaded = config.load_config()
+        self.assertTrue(loaded["connections"]["glm"]["schedule"]["wakeWhenAsleep"])
+        loaded["connections"]["glm"]["label"] = "renamed"  # any edit
+        config.save_config(loaded)
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        self.assertEqual(on_disk["connections"]["local"]["settings"],
+                         {"schedule": {"wakeWhenAsleep": True}})
+        reloaded = config.load_config()
+        self.assertTrue(reloaded["connections"]["glm"]["schedule"]["wakeWhenAsleep"])
 
     def test_override_equal_to_inheritance_is_dropped(self):
         conn = self._inherit_conn()

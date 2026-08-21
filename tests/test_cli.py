@@ -262,11 +262,23 @@ class WakePromptTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.sys.platform", "darwin")
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
     @mock.patch("awewarm.transport.send_activation")
-    def test_plan_fixed_wake_confirm_default_yes(self, send, _discover):
+    def test_plan_fixed_wake_prompt_defaults_to_no(self, send, _discover):
         send.return_value = {"ok": True, "detail": "ok"}
-        # mode 1 / window / times / reset / grid declined / days / wake default
+        # mode 1 / window / times / reset / grid declined / days / wake default (Enter)
         result = invoke(["config", "add"], input=(
             "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\n\n"
+        ))
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        conn = cfg.load_config()["connections"]["glm"]
+        self.assertFalse(conn["schedule"]["wakeWhenAsleep"])
+
+    @mock.patch("awewarm.cli.sys.platform", "darwin")
+    @mock.patch("awewarm.discover.discover_accounts", return_value=[])
+    @mock.patch("awewarm.transport.send_activation")
+    def test_plan_fixed_wake_confirmed_records_true(self, send, _discover):
+        send.return_value = {"ok": True, "detail": "ok"}
+        result = invoke(["config", "add"], input=(
+            "GLM\n1\nhttp://x/v4\nk\nglm-4.7\n1\n\n06:00\n\nn\n\ny\n"
         ))
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["glm"]
@@ -1685,6 +1697,27 @@ class SettingsScopeTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         for word in ("Global", "Local", "Remote", "never follow"):
             self.assertIn(word, output_of(result))
+
+    def test_show_prints_the_local_layer(self):
+        # regression: the show path must read the same runtime shape load builds
+        self._write_two_conns()
+        invoke(["config", "settings", "local", "--wake"])
+        result = invoke(["config", "settings"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("wake when asleep: true", output_of(result))
+
+    def test_config_set_edit_keeps_the_local_layer_on_disk(self):
+        # regression: a load → edit → save must not drop connections.local.settings
+        self._write_two_conns()
+        invoke(["config", "settings", "local", "--wake"])
+        result = invoke(["config", "set", "claude-code-main", "--times", "07:07"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        on_disk = json.loads(Path(cfg.config_path()).read_text())
+        self.assertEqual(on_disk["connections"]["local"]["settings"],
+                         {"schedule": {"wakeWhenAsleep": True}})
+        self.assertEqual(
+            on_disk["connections"]["local"]["claude-code-main"]["settings"]["schedule"]["times"],
+            ["07:07"])
 
     def test_reset_clears_a_scope(self):
         self._write_two_conns()

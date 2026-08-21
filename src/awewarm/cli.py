@@ -451,7 +451,7 @@ def _show_settings(config, conn_id, conn):
     fixed = conn["schedule"].get("fixed") or {}
     window = conn["window"]
     duration = f"{window['durationMinutes']} minutes, {window['status']}" if window.get("durationMinutes") else "unknown"
-    wake = conn["schedule"].get("wakeWhenAsleep", True)
+    wake = conn["schedule"].get("wakeWhenAsleep", False)
     location = conn.get("location", "local")
     where = f" ({remote.remote_url(config)})" if location == "remote" else ""
     own_schedule = (conn.get("settings") or {}).get("schedule") or {}
@@ -743,7 +743,7 @@ def _config_set(connection, opts):
             click.echo(f"✓ {conn_id} will not wake a sleeping machine (missed slots catch up on next wake)")
     if opts.inherit_schedule:
         location = conn.get("location", "local")
-        layers = "remote defaults" if location == "remote" else ("local" if (config.get("connections") or {}).get("local", {}).get("settings") else "global") + " defaults"
+        layers = "remote defaults" if location == "remote" else ("local" if (config.get("connectionDefaults") or {}).get("local") else "global") + " defaults"
         click.echo(f"✓ {conn_id} dropped its own schedule overrides — it follows {layers}")
     if conn.get("location") == "remote" and opts.location is not True and any(value is not None for value in (
         opts.times, opts.days, opts.mode, opts.enabled, opts.window_minutes, opts.api_key, opts.wake,
@@ -807,7 +807,7 @@ def _settings_scope_block(config, scope):
     """The settings block one scope edits: the global one, or a location's."""
     if scope == "global":
         return config["settings"]
-    return config.setdefault("connections", {}).setdefault(scope, {}).setdefault("settings", {})
+    return config.setdefault("connectionDefaults", {}).setdefault(scope, {})
 
 
 def _describe_schedule(block):
@@ -823,7 +823,7 @@ def _describe_schedule(block):
 
 def _show_settings_scope(config, scope):
     """Print the settings layers: all three at once, or just the asked-for scope."""
-    defaults = config.get("connections") or {}
+    defaults = config.get("connectionDefaults") or {}
     knobs_line = (
         f"catch-up: {config['settings']['catchupAttempts']} attempts within "
         f"{config['settings']['catchupMinutes']} minutes, degrade after nodes: "
@@ -843,12 +843,12 @@ def _show_settings_scope(config, scope):
             if scope == "remote"
             else "overrides the global block for local connections"
         )
-        show(scope.capitalize(), defaults.get(scope, {}).get("settings"), note)
+        show(scope.capitalize(), defaults.get(scope), note)
         return
     show("Global", config["settings"],
          "every connection inherits the knobs; the schedule reaches local connections only — delegated ones never follow it")
-    show("Local", defaults.get("local", {}).get("settings"), "overrides global for local connections")
-    show("Remote", defaults.get("remote", {}).get("settings"), "delegated connections; the schedule never falls back to the global block")
+    show("Local", defaults.get("local"), "overrides global for local connections")
+    show("Remote", defaults.get("remote"), "delegated connections; the schedule never falls back to the global block")
     click.echo("change with: awewarm config settings --times 06:35,11:40")
     click.echo("            awewarm config settings local|remote --times 09:00 --catchup-minutes 45")
 
@@ -881,7 +881,7 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
         if scope == "global":
             config["settings"] = default_settings()
         else:
-            config.setdefault("connections", {}).setdefault(scope, {}).pop("settings", None)
+            config.setdefault("connectionDefaults", {}).pop(scope, None)
         save_config(config)
         click.echo(f"✓ {scope} settings cleared (knobs back to code defaults)" if scope == "global"
                    else f"✓ {scope} settings cleared — those connections inherit the global block")

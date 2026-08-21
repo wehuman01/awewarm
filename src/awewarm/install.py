@@ -279,7 +279,7 @@ def calendar_entries(config):
         if schedule.get("mode") != "fixed":
             continue
         fixed = schedule.get("fixed") or {}
-        if not fixed.get("wakeWhenAsleep", schedule.get("wakeWhenAsleep", True)):
+        if not schedule.get("wakeWhenAsleep", False):
             continue
         for slot in fixed.get("at") or []:
             if not SLOT_RE.match(slot):
@@ -448,7 +448,7 @@ def wake_specs(config, state, now):
         if not conn.get("enabled", True) or conn.get("location") == "remote":
             continue
         sched = conn.get("schedule") or {}
-        if not sched.get("wakeWhenAsleep", True):
+        if not sched.get("wakeWhenAsleep", False):
             continue
         if connection_errors(conn, conn_id):
             continue

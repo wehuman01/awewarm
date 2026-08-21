@@ -127,11 +127,14 @@ def _prompt_fixed_settings(window_minutes=None):
 
 
 def _prompt_wake_when_asleep():
-    """Offer wake-from-sleep for fixed slots where the OS supports it (None elsewhere)."""
+    """Offer wake-from-sleep for fixed slots where the OS supports it (None elsewhere).
+
+    Off by default: waking a sleeping machine is opt-in, usually via the
+    local settings layer (`awewarm config settings local --wake`)."""
     if sys.platform == "darwin":
-        return click.confirm("Wake the Mac at these times even when it's asleep?", default=True)
+        return click.confirm("Wake the Mac at these times even when it's asleep?", default=False)
     if sys.platform == "win32":
-        return click.confirm("Wake the PC at these times even when it's asleep?", default=True)
+        return click.confirm("Wake the PC at these times even when it's asleep?", default=False)
     return None  # Linux: nothing can wake a suspended machine
 
 

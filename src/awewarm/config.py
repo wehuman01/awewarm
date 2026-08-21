@@ -7,6 +7,8 @@ also the primary test seam.
 On-disk format (v3) groups connections under `connections.local` and
 `connections.remote`, each carrying a `settings` block with the tuning knobs
 and a `schedule` block. The top-level `settings` block is the global layer.
+In memory the shape differs: `connections` is flat (conn_id → connection)
+and the location settings layers ride under `connectionDefaults`.
 A connection resolves each field own-overrides-first, then its location's
 defaults, then the global block; knobs follow that chain everywhere, while a
 schedule inherited from the global block never reaches a delegated (`remote`)
@@ -185,6 +187,7 @@ def empty_config():
         "version": CONFIG_VERSION,
         "global": {},
         "settings": {},
+        "connectionDefaults": {},
         "connections": {},
     }
 
@@ -431,7 +434,8 @@ def load_config(path=None):
     for location_block_id, location_block in raw_location_blocks.items():
         if location_block_id not in LOCATIONS:
             die(
-                f"connections has unknown key '{location_block_id}'\n"
+                f"connections must group connections under 'local' and 'remote' — "
+                f"found unexpected key '{location_block_id}'\n"
                 + _template_fix(path or config_path())
             )
         if not isinstance(location_block, dict):
@@ -445,7 +449,9 @@ def load_config(path=None):
                     f"config has invalid connections.{location_block_id}.settings:\n  " + "\n  ".join(errors)
                     + "\nfix: fix the file, or reset the block: awewarm config settings --reset"
                 )
-            connection_defaults[location_block_id] = _resolve_settings(settings_block)
+            # kept raw (unlike the resolved global block): missing knobs fall to
+            # code defaults per field, and save writes back only what was set
+            connection_defaults[location_block_id] = settings_block
 
         for conn_id, flat in location_block.items():
             if conn_id == "settings":
@@ -604,14 +610,13 @@ def _compact_conn(conn, global_settings, connection_defaults):
 
 
 def _compact_config(config):
-    settings = _resolve_settings(config.get("settings"))
+    """Runtime shape → the nested on-disk one.
 
-    connection_defaults = {}
-    for loc in LOCATIONS:
-        loc_block = (config.get("connections") or {}).get(loc, {})
-        loc_settings = loc_block.get("settings")
-        if loc_settings is not None:
-            connection_defaults[loc] = loc_settings
+    The runtime keeps `connections` flat (conn_id → conn) and carries the
+    location settings layers under `connectionDefaults`; this is the one
+    place the two shapes meet."""
+    settings = _resolve_settings(config.get("settings"))
+    defaults = config.get("connectionDefaults") or {}
 
     by_location = {}
     for conn_id, conn in config["connections"].items():
@@ -623,8 +628,7 @@ def _compact_config(config):
     nested = {}
     for loc in LOCATIONS:
         location_conns = by_location.get(loc, {})
-        loc_block = (config.get("connections") or {}).get(loc, {})
-        loc_settings = loc_block.get("settings")
+        loc_settings = defaults.get(loc)
 
         if not location_conns and loc_settings is None:
             continue
@@ -634,7 +638,7 @@ def _compact_config(config):
             block["settings"] = loc_settings
 
         for conn_id, conn in location_conns.items():
-            flat = _compact_conn(conn, config.get("settings") or {}, connection_defaults)
+            flat = _compact_conn(conn, config.get("settings") or {}, defaults)
             if flat:
                 block[conn_id] = flat
 
@@ -713,12 +717,9 @@ def remote_errors(remote):
 
 
 def save_config(config, path=None):
+    defaults = config.get("connectionDefaults") or {}
     blocks = [("settings", config.get("settings"))]
-    for loc in LOCATIONS:
-        loc_block = (config.get("connections") or {}).get(loc, {})
-        loc_settings = loc_block.get("settings")
-        if loc_settings is not None:
-            blocks.append((f"connections.{loc}.settings", loc_settings))
+    blocks.extend((f"connectionDefaults.{loc}", defaults[loc]) for loc in LOCATIONS if loc in defaults)
     for name, block in blocks:
         errors = settings_block_errors(block, name)
         if errors:
@@ -880,7 +881,9 @@ def unique_connection_id(config, label):
     base = slugify(label)
     conn_id = base
     counter = 2
-    while conn_id in config["connections"]:
+    # "local"/"remote" are the location group names in the on-disk format —
+    # a connection named after one would be swallowed by the grouping.
+    while conn_id in config["connections"] or conn_id in LOCATIONS:
         conn_id = f"{base}-{counter}"
         counter += 1
     return conn_id
