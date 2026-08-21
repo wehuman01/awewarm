@@ -12,9 +12,17 @@ while its key was missing is held (not failed) — it still fires inside the
 catch-up window once the key returns; past it, it is recorded as skipped.
 That is exactly how the local tick already treats a machine that was asleep.
 
+`--hub` swaps the single-pairing model for many users behind one process:
+each tenant gets a private WarmServer workspace and pairs through a one-time
+invite (`awewarm hub invite`) exchanged at /v1/join for a personal token.
+Only SHA-256 hashes of tenant tokens and invites touch disk (tenants.json),
+so hub pairings survive a restart without every user re-claiming — the RAM
+rule still holds for every plaintext secret.
+
 Wire protocol (JSON over HTTP, Bearer token):
-  GET    /healthz                    no auth; {ok, version, claimed}
+  GET    /healthz                    no auth; {ok, version, claimed[, hub]}
   POST   /v1/claim                   {token} → claim an unclaimed server
+  POST   /v1/join                    hub only; {invite} → {token, tenantId}
   POST   /v1/release                 give up the claim (authed; disconnect)
   PUT    /v1/connections/<id>        {connection, apiKey, timezone} → take over
   DELETE /v1/connections/<id>        drop a connection (takeback)
@@ -22,13 +30,17 @@ Wire protocol (JSON over HTTP, Bearer token):
   GET    /v1/state                   server truth for `awewarm status`
   POST   /v1/connections/<id>/run    fire one now (manual semantics)
 """
+import hashlib
 import hmac
 import json
 import re
+import secrets
+import shutil
 import threading
 import time
 import urllib.parse
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -36,11 +48,23 @@ from . import __version__, schedule, transport
 from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
+INVITE_RE = re.compile(r"^awi_[A-Za-z0-9_-]{16,128}$")
 BODY_LIMIT_BYTES = 256 * 1024
 # The tick and run_now hold the server lock while sending, so one activation
 # must not stall every API call behind it: cap HTTP far below the 60 s the
 # local CLI allows (delegated connections are always HTTP subscriptions).
 ACTIVATION_TIMEOUT_SECONDS = 15
+
+# Hub-mode knobs (`awewarm serve --hub`); the two caps are also serve flags.
+DEFAULT_MAX_TENANTS = 50
+DEFAULT_MAX_CONNS_PER_TENANT = 5
+INVITE_TTL_HOURS = 48
+# Generous for honest clients (status + sync make a handful of calls an hour)
+# while still stopping a looping client from monopolizing the process.
+HUB_RATE_PER_MINUTE = 60
+# Persisting lastSeen on every request would rewrite tenants.json constantly;
+# refreshing it at most this often keeps `hub list` honest to a small window.
+HUB_SEEN_PRECISION = timedelta(minutes=10)
 
 
 class ApiError(Exception):
@@ -307,13 +331,252 @@ class WarmServer:
             return {"fired": fired, "held": held}
 
 
+class Tenant:
+    """One paired hub user: registry bookkeeping plus a private workspace.
+
+    The workspace is that tenant's own WarmServer over `tenants/<id>/` — its
+    connections, state, and RAM keyring are invisible to other tenants by
+    construction. It loads lazily so `awewarm hub invite` / `list` never pay
+    for spinning up every tenant's files.
+    """
+
+    def __init__(self, tenant_id, record, tenants_root):
+        self.id = tenant_id
+        self.record = record  # the registry entry: tokenHash, note, createdAt, lastSeenAt, usage
+        self.workspace_dir = Path(tenants_root) / tenant_id
+        self.requests = deque()  # monotonic timestamps, the rate-limit window
+        self._warm = None
+
+    @property
+    def token_hash(self):
+        return self.record.get("tokenHash") or ""
+
+    @property
+    def note(self):
+        return self.record.get("note") or ""
+
+    @property
+    def warm(self):
+        if self._warm is None:
+            self._warm = WarmServer(self.workspace_dir)
+        return self._warm
+
+
+class Hub:
+    """The multi-tenant engine behind `awewarm serve --hub`.
+
+    Pairing flows through one-time invites minted by the operator
+    (`awewarm hub invite`); /v1/join burns one and returns a personal token.
+    tenants.json stores only SHA-256 hashes of tokens and invites — plaintext
+    secrets still never touch disk, but unlike single-tenant mode the pairings
+    survive a restart without waiting for every user to come back online.
+    """
+
+    def __init__(self, data_dir, max_tenants=DEFAULT_MAX_TENANTS,
+                 max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
+        self.data_dir = Path(data_dir).expanduser()
+        self.registry_path = self.data_dir / "tenants.json"
+        self.log_path = self.data_dir / "awewarm-hub.log"
+        self.lock = threading.RLock()
+        self.max_tenants = max_tenants
+        self.max_conns_per_tenant = max_conns_per_tenant
+        self.registry = self._load()
+        self.tenants = {
+            tenant_id: Tenant(tenant_id, record, self.data_dir / "tenants")
+            for tenant_id, record in self.registry["tenants"].items()
+        }
+
+    # --- registry (hashes only; no secret ever lands here) ---
+
+    def _load(self):
+        try:
+            data = json.loads(self.registry_path.read_text())
+        except FileNotFoundError:
+            return {"version": 1, "tenants": {}, "invites": {}}
+        except (OSError, ValueError) as exc:
+            raise SystemExit(
+                f"awewarm serve: cannot read {self.registry_path}\n{exc}\n"
+                "fix: delete the file — tenants must re-join with fresh invites"
+            )
+        if not isinstance(data, dict) or not isinstance(data.get("tenants"), dict):
+            raise SystemExit(
+                f"awewarm serve: {self.registry_path} is malformed\n"
+                "fix: delete the file — tenants must re-join with fresh invites"
+            )
+        data.setdefault("invites", {})
+        return data
+
+    def _save(self):
+        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self.registry_path.write_text(json.dumps(self.registry, indent=2) + "\n")
+        self.registry_path.chmod(0o600)
+
+    def log(self, message):
+        append_log(self.log_path, message)
+
+    # --- pairing ---
+
+    def mint_invite(self, note=None, ttl_hours=INVITE_TTL_HOURS):
+        """One-time pairing code; only its hash is stored."""
+        invite = "awi_" + secrets.token_urlsafe(16)
+        now = datetime.now().astimezone()
+        with self.lock:
+            self.registry["invites"][_hash_secret(invite)] = {
+                "note": note,
+                "createdAt": schedule.iso(now),
+                "expiresAt": schedule.iso(now + timedelta(hours=ttl_hours)),
+            }
+            self._save()
+        return invite
+
+    def join(self, invite):
+        """Burn one invite, create the tenant, and return its token exactly once."""
+        with self.lock:
+            if not INVITE_RE.match(invite or ""):
+                raise ApiError(400, "invite must look like awi_<code> — get one from the hub operator")
+            digest = _hash_secret(invite)
+            entry = self.registry["invites"].get(digest)
+            if entry is None:
+                raise ApiError(403, "unknown or already-used invite — ask the hub operator for a fresh one")
+            now = datetime.now().astimezone()
+            if schedule.parse_ts(entry.get("expiresAt")) <= now:
+                del self.registry["invites"][digest]
+                self._save()
+                raise ApiError(403, "invite expired — ask the hub operator for a fresh one")
+            if len(self.registry["tenants"]) >= self.max_tenants:
+                raise ApiError(403, f"hub is full ({self.max_tenants} tenants) — ask the operator for capacity")
+            del self.registry["invites"][digest]
+            tenant_id = "t_" + secrets.token_hex(4)
+            while tenant_id in self.registry["tenants"]:
+                tenant_id = "t_" + secrets.token_hex(4)
+            token = "awt_" + secrets.token_urlsafe(32)
+            self.registry["tenants"][tenant_id] = {
+                "tokenHash": _hash_secret(token),
+                "note": entry.get("note"),
+                "createdAt": schedule.iso(now),
+                "lastSeenAt": None,
+                "usage": {"day": None, "today": 0, "total": 0},
+            }
+            self.tenants[tenant_id] = Tenant(tenant_id, self.registry["tenants"][tenant_id], self.data_dir / "tenants")
+            self._save()
+            self.log(f"{tenant_id} joined ({self.tenants[tenant_id].note or 'no note'})")
+            return {"ok": True, "token": token, "tenantId": tenant_id}
+
+    def revoke(self, tenant_id):
+        """Drop a tenant: its token, connections, and their state on disk."""
+        with self.lock:
+            tenant = self.tenants.get(tenant_id)
+            if tenant is None:
+                raise ApiError(404, f"no such tenant: {tenant_id} (see: awewarm hub list)")
+            del self.registry["tenants"][tenant_id]
+            self.tenants.pop(tenant_id, None)
+            self._save()
+        shutil.rmtree(tenant.workspace_dir, ignore_errors=True)
+        self.log(f"{tenant_id} revoked")
+        return {"ok": True}
+
+    def auth(self, bearer):
+        """Bearer token → tenant, behind the per-tenant rate-limit gate."""
+        with self.lock:
+            digest = _hash_secret(bearer)
+            tenant = next(
+                (t for t in self.tenants.values() if hmac.compare_digest(t.token_hash, digest)),
+                None,
+            )
+            if tenant is None:
+                raise ApiError(
+                    401,
+                    "invalid hub token (revoked?) — re-pair with a fresh invite: awewarm remote connect <url>",
+                )
+            now = time.monotonic()
+            while tenant.requests and now - tenant.requests[0] >= 60:
+                tenant.requests.popleft()
+            if len(tenant.requests) >= HUB_RATE_PER_MINUTE:
+                raise ApiError(429, "too many requests from this tenant — is a client looping?")
+            tenant.requests.append(now)
+            self._refresh_seen(tenant)
+            return tenant
+
+    def _refresh_seen(self, tenant):
+        now = datetime.now().astimezone()
+        seen = schedule.parse_ts(tenant.record.get("lastSeenAt"))
+        if seen is not None and now - seen < HUB_SEEN_PRECISION:
+            return
+        tenant.record["lastSeenAt"] = schedule.iso(now)
+        self._save()
+
+    # --- quotas and usage ---
+
+    def check_conn_quota(self, tenant, conn_id):
+        """Per-tenant connection cap; replacing an existing id never counts."""
+        with tenant.warm.lock:
+            conns = tenant.warm.config["connections"]
+            if conn_id not in conns and len(conns) >= self.max_conns_per_tenant:
+                raise ApiError(
+                    403,
+                    f"connection quota reached ({self.max_conns_per_tenant} per tenant on this hub)",
+                )
+
+    def _bump_usage(self, tenant, count):
+        with self.lock:
+            today = datetime.now().astimezone().date().isoformat()
+            usage = tenant.record.setdefault("usage", {})
+            if usage.get("day") != today:
+                usage["day"] = today
+                usage["today"] = 0
+            usage["today"] = usage.get("today", 0) + count
+            usage["total"] = usage.get("total", 0) + count
+            self._save()
+
+    def summarize(self):
+        """Rows for `awewarm hub list` — no secrets by construction."""
+        rows = []
+        for tenant_id in sorted(self.tenants):
+            tenant = self.tenants[tenant_id]
+            rows.append({
+                "tenant": tenant_id,
+                "note": tenant.note,
+                "createdAt": tenant.record.get("createdAt"),
+                "lastSeenAt": tenant.record.get("lastSeenAt"),
+                "connections": sorted(tenant.warm.config["connections"]),
+                "usage": dict(tenant.record.get("usage") or {}),
+            })
+        return rows
+
+    # --- the tick: every tenant's workspace in one pass ---
+
+    def tick(self, now_fn=None):
+        fired, held = 0, []
+        for tenant_id in sorted(self.tenants):
+            result = self.tenants[tenant_id].warm.tick(now_fn=now_fn)
+            fired += result["fired"]
+            held.extend(result["held"])
+            if result["fired"]:
+                self._bump_usage(self.tenants[tenant_id], result["fired"])
+        return {"fired": fired, "held": held}
+
+    def run_now(self, tenant, conn_id, reset_due=False, allow_auto_disabled=False):
+        result = tenant.warm.run_now(
+            conn_id, reset_due=reset_due, allow_auto_disabled=allow_auto_disabled
+        )
+        if result.get("ok"):
+            self._bump_usage(tenant, 1)
+        return result
+
+
+def _hash_secret(value):
+    return hashlib.sha256((value or "").encode()).hexdigest()
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "awewarm-server"
     protocol_version = "HTTP/1.1"
-    warm = None  # bound by make_server
+    warm = None  # bound by make_server (single-tenant)
+    hub = None   # bound by make_server (hub mode)
 
     def log_message(self, fmt, *args):
-        self.warm.log(f"{self.address_string()} {fmt % args}")
+        engine = self.hub or self.warm
+        engine.log(f"{self.address_string()} {fmt % args}")
 
     # --- plumbing ---
 
@@ -336,10 +599,12 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             raise ApiError(400, "body must be JSON")
 
-    def _authed(self):
+    def _bearer(self):
         header = self.headers.get("Authorization") or ""
-        token = header[7:] if header.startswith("Bearer ") else ""
-        if not self.warm.check_token(token):
+        return header[7:] if header.startswith("Bearer ") else ""
+
+    def _authed(self):
+        if not self.warm.check_token(self._bearer()):
             raise ApiError(401, "missing or invalid token (awewarm remote connect <url>)")
 
     def _dispatch(self, method):
@@ -348,45 +613,79 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/healthz":
                 if method != "GET":
                     raise ApiError(405, "GET only")
-                return self._send(200, {"ok": True, "version": __version__, "claimed": self.warm.claimed})
+                if self.hub is not None:
+                    payload = {"ok": True, "version": __version__, "claimed": True, "hub": True}
+                else:
+                    payload = {"ok": True, "version": __version__, "claimed": self.warm.claimed}
+                return self._send(200, payload)
+            if path == "/v1/join":
+                if self.hub is None:
+                    raise ApiError(404, "this server is single-tenant — pair with: awewarm remote connect <url>")
+                if method != "POST":
+                    raise ApiError(405, "POST only")
+                return self._send(200, self.hub.join(self._body().get("invite")))
             if path == "/v1/claim":
+                if self.hub is not None:
+                    raise ApiError(403, "this is a hub server — pair with an invite: awewarm remote connect <url>")
                 if method != "POST":
                     raise ApiError(405, "POST only")
                 return self._send(200, self.warm.claim(self._body().get("token")))
-            self._authed()
+            if self.hub is not None:
+                tenant = self.hub.auth(self._bearer())
+                warm, tenant_id = tenant.warm, tenant.id
+            else:
+                self._authed()
+                warm, tenant_id = self.warm, None
             if path == "/v1/release":
                 if method != "POST":
                     raise ApiError(405, "POST only")
-                return self._send(200, self.warm.release())
+                if self.hub is not None:
+                    # The pairing outlives a disconnect — the kept token re-pairs
+                    # on reconnect; freeing the slot is the operator's call
+                    # (`awewarm hub revoke`), not any single client's.
+                    return self._send(200, {"ok": True, "released": False})
+                return self._send(200, warm.release())
             parts = [urllib.parse.unquote(part) for part in path.split("/") if part]
             if parts[:2] == ["v1", "state"] and len(parts) == 2:
                 if method != "GET":
                     raise ApiError(405, "GET only")
-                return self._send(200, self.warm.view())
+                view = warm.view()
+                if tenant_id is not None:
+                    view["tenant"] = tenant_id
+                return self._send(200, view)
             if parts[:2] == ["v1", "keys"] and len(parts) == 2:
                 if method != "PUT":
                     raise ApiError(405, "PUT only")
-                return self._send(200, self.warm.put_keys(self._body()))
+                return self._send(200, warm.put_keys(self._body()))
             if parts[:2] == ["v1", "connections"] and len(parts) in (3, 4):
                 conn_id = parts[2]
                 verb = parts[3] if len(parts) == 4 else None
                 if verb == "run" and method == "POST":
                     body = self._body()
-                    return self._send(200, self.warm.run_now(
-                        conn_id, bool(body.get("resetDue")), bool(body.get("allowAutoDisabled"))
-                    ))
+                    if self.hub is not None:
+                        result = self.hub.run_now(
+                            tenant, conn_id, bool(body.get("resetDue")), bool(body.get("allowAutoDisabled"))
+                        )
+                    else:
+                        result = warm.run_now(
+                            conn_id, bool(body.get("resetDue")), bool(body.get("allowAutoDisabled"))
+                        )
+                    return self._send(200, result)
                 if verb is not None:
                     raise ApiError(404, f"no such endpoint: {path}")
                 if method == "PUT":
-                    return self._send(200, self.warm.put_connection(conn_id, self._body()))
+                    if self.hub is not None:
+                        self.hub.check_conn_quota(tenant, conn_id)
+                    return self._send(200, warm.put_connection(conn_id, self._body()))
                 if method == "DELETE":
-                    return self._send(200, self.warm.delete_connection(conn_id))
+                    return self._send(200, warm.delete_connection(conn_id))
                 raise ApiError(405, "PUT or DELETE only")
             raise ApiError(404, f"no such endpoint: {path}")
         except ApiError as exc:
             return self._send(exc.status, {"error": exc.message})
         except Exception as exc:  # never leak a traceback to the wire
-            self.warm.log(f"internal error on {method} {path}: {exc!r}")
+            engine = self.hub or self.warm
+            engine.log(f"internal error on {method} {path}: {exc!r}")
             return self._send(500, {"error": "internal server error (see the server log)"})
 
     def do_GET(self):
@@ -402,34 +701,49 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
 
-def make_server(data_dir, bind="127.0.0.1", port=8790, fixed_token=None):
-    """Build the WarmServer plus its HTTP server (port 0 picks a free one)."""
-    warm = WarmServer(data_dir, fixed_token=fixed_token)
-    handler = type("BoundHandler", (_Handler,), {"warm": warm})
+def make_server(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, hub=False,
+                max_tenants=DEFAULT_MAX_TENANTS, max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
+    """Build the engine (one WarmServer, or a Hub of them) plus its HTTP server.
+
+    Port 0 picks a free one."""
+    if hub:
+        engine = Hub(data_dir, max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant)
+        handler = type("BoundHandler", (_Handler,), {"hub": engine})
+    else:
+        engine = WarmServer(data_dir, fixed_token=fixed_token)
+        handler = type("BoundHandler", (_Handler,), {"warm": engine})
     httpd = ThreadingHTTPServer((bind, port), handler)
     httpd.daemon_threads = True
-    return warm, httpd
+    return engine, httpd
 
 
-def run(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, tick_seconds=60):
+def run(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, tick_seconds=60, hub=False,
+        max_tenants=DEFAULT_MAX_TENANTS, max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
     """Serve forever: API in the main thread, the tick loop beside it."""
-    warm, httpd = make_server(data_dir, bind=bind, port=port, fixed_token=fixed_token)
+    engine, httpd = make_server(
+        data_dir, bind=bind, port=port, fixed_token=fixed_token, hub=hub,
+        max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
+    )
     actual = httpd.server_address[1]
 
     def _loop():
         while True:
             time.sleep(tick_seconds)
             try:
-                warm.tick()
+                engine.tick()
             except Exception as exc:  # the loop must outlive any single tick
-                warm.log(f"tick crashed: {exc!r}")
+                engine.log(f"tick crashed: {exc!r}")
 
     threading.Thread(target=_loop, daemon=True, name="awewarm-tick").start()
     host, port_str = (bind, str(actual))
     print(f"awewarm serve {__version__}")
-    print(f"  data dir: {warm.data_dir}  (config/state/log — no secrets ever written to disk)")
+    print(f"  data dir: {engine.data_dir}  (config/state/log — no secrets ever written to disk)")
     print(f"  listening: http://{host}:{port_str}")
-    if fixed_token is not None:
+    if hub:
+        print(f"  hub mode: {len(engine.tenants)} of max {engine.max_tenants} tenants, "
+              f"{engine.max_conns_per_tenant} connections each")
+        print("  auth: per-tenant tokens (hashes in tenants.json); pair by invite: awewarm hub invite")
+    elif fixed_token is not None:
         print("  auth: fixed token from --token (RAM only)")
     else:
         print("  auth: claimed by the first `awewarm remote connect` (token lives in RAM)")
