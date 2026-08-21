@@ -1526,10 +1526,10 @@ def hub_config_command(data_dir, unset_dir):
 
 @hub.command("invite")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
-@click.option("--note", default=None, help="Who this invite is for (shown in hub list).")
+@click.option("--note", default=None, help="Who this invite is for (shown in hub list users).")
 @click.option("--expires-hours", "expires_hours", type=int, default=48, show_default=True, help="How long the invite stays usable.")
 def hub_invite_command(data_dir, note, expires_hours):
-    """Mint a one-time pairing invite (printed once; stored only as a hash)."""
+    """Mint a one-time pairing invite (recover later with: awewarm hub list invites --token)."""
     if expires_hours <= 0:
         die("--expires-hours must be greater than 0")
     engine = _load_hub(_resolve_server_data_dir(data_dir))
@@ -1537,6 +1537,13 @@ def hub_invite_command(data_dir, note, expires_hours):
     click.echo(f"✓ Invite minted{f' for {note}' if note else ''} — one use, expires in {expires_hours} h")
     click.echo(f"  {code}")
     click.echo("  The user runs: awewarm remote connect <hub-url> --invite " + code)
+    click.echo("  Lost it? List every minted code with: awewarm hub list invites --token")
+
+
+def _mask_invite(code):
+    if not code:
+        return "—"
+    return code if len(code) <= 8 else code[:8] + "…"
 
 
 def _print_table(headers, rows):
@@ -1571,16 +1578,21 @@ def _hub_conn_moment(entry, now):
     return _fmt_moment(due_at, conn_now)
 
 
-@hub.command("list")
+@hub.group("list")
+def hub_list():
+    """Read hub state: users (paired tenants) or invites (minted codes)."""
+
+
+@hub_list.command("users")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 @click.option("--api", "show_api", is_flag=True, help="Also list each connection's API endpoint, protocol, and model.")
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
-def hub_list_command(data_dir, show_api, as_json):
+def hub_list_users_command(data_dir, show_api, as_json):
     """Show tenants: pairing, connections, and activation usage."""
     data_dir = _resolve_server_data_dir(data_dir)
     engine = _load_hub(data_dir)
     rows = engine.summarize()
-    pending = len(engine.registry["invites"])
+    pending = sum(1 for row in engine.list_invites() if row["status"] == "pending")
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
@@ -1588,7 +1600,7 @@ def hub_list_command(data_dir, show_api, as_json):
         if pending:
             click.echo(
                 f"No tenants paired yet — {pending} invite(s) minted and unused\n"
-                "  (invite codes are shown only once, at mint time; mint another to see a new one)"
+                "  (see them with: awewarm hub list invites)"
             )
         else:
             click.echo(f"No tenants paired yet — mint invites with: awewarm hub invite --data-dir {data_dir}")
@@ -1639,6 +1651,41 @@ def hub_list_command(data_dir, show_api, as_json):
     if pending:
         footer += f", {pending} unused invite(s) pending"
     click.echo(footer)
+
+
+@hub_list.command("invites")
+@click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
+@click.option("--token", "show_codes", is_flag=True, help="Show full invite codes instead of masked ones (pending codes still work).")
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (codes follow --token).")
+def hub_list_invites_command(data_dir, show_codes, as_json):
+    """List minted invites: code, status, expiry, and who joined with it."""
+    engine = _load_hub(_resolve_server_data_dir(data_dir))
+    rows = engine.list_invites()
+    if as_json:
+        out = [dict(row, code=(row["code"] if show_codes else _mask_invite(row["code"]))) for row in rows]
+        click.echo(json.dumps(out, indent=2))
+        return
+    if not rows:
+        click.echo("No invites minted yet — mint one with: awewarm hub invite --note <who>")
+        return
+    now = datetime.now().astimezone()
+    table_rows = []
+    for row in rows:
+        expires = schedule.parse_ts(row["expiresAt"])
+        created = schedule.parse_ts(row["createdAt"])
+        used = schedule.parse_ts(row["usedAt"]) if row["usedAt"] else None
+        table_rows.append([
+            row["note"] or "—",
+            row["code"] if show_codes else _mask_invite(row["code"]),
+            row["status"],
+            expires.strftime("%m-%d %H:%M") if expires else "—",
+            row["usedBy"] or "—",
+            used.strftime("%m-%d %H:%M") if used else "—",
+            created.strftime("%m-%d %H:%M") if created else "—",
+        ])
+    _print_table(["NOTE", "CODE", "STATUS", "EXPIRES", "USED BY", "USED AT", "MINTED"], table_rows)
+    if not show_codes:
+        click.echo("codes are masked — pass --token to reveal them (a pending code still pairs)")
 
 
 @hub.command("revoke")

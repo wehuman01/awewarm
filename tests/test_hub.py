@@ -250,13 +250,13 @@ class HubCliTests(IsolatedTestCase):
         registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
         self.assertIn(server._hash_secret(code), registry["invites"])
         self.assertEqual(registry["invites"][server._hash_secret(code)]["note"], "alice")
-        self.assertNotIn(code, Path(self.data_dir, "tenants.json").read_text())
+        self.assertEqual(registry["invites"][server._hash_secret(code)]["code"], code)
 
     def test_list_shows_tenants_and_totals(self):
         engine = server.Hub(self.data_dir)
         invite = engine.mint_invite("alice")
         engine.join(invite)  # a tenant with no connections yet
-        result = invoke(["hub", "list"] + self.dir_opt)
+        result = invoke(["hub", "list", "users"] + self.dir_opt)
         self.assertEqual(result.exit_code, 0)
         self.assertIn("alice", result.output)
         self.assertIn("TENANT", result.output)
@@ -269,7 +269,7 @@ class HubCliTests(IsolatedTestCase):
         engine.tenants[joined["tenantId"]].warm.put_connection("glm", {
             "connection": plan_connection(), "apiKey": "sk-test", "timezone": TZ,
         })
-        result = invoke(["hub", "list"] + self.dir_opt + ["--api"])
+        result = invoke(["hub", "list", "users"] + self.dir_opt + ["--api"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("API", result.output)
         self.assertIn("glm", result.output)
@@ -280,7 +280,7 @@ class HubCliTests(IsolatedTestCase):
     def test_list_json_is_redacted(self):
         engine = server.Hub(self.data_dir)
         joined = engine.join(engine.mint_invite("alice"))
-        result = invoke(["hub", "list"] + self.dir_opt + ["--json"])
+        result = invoke(["hub", "list", "users"] + self.dir_opt + ["--json"])
         self.assertEqual(result.exit_code, 0)
         rows = json.loads(result.output)
         self.assertEqual(rows[0]["note"], "alice")
@@ -297,11 +297,46 @@ class HubCliTests(IsolatedTestCase):
     def test_list_with_no_tenants_still_shows_pending_invites(self):
         engine = server.Hub(self.data_dir)
         engine.mint_invite("alice")
-        result = invoke(["hub", "list"] + self.dir_opt)
+        result = invoke(["hub", "list", "users"] + self.dir_opt)
         self.assertEqual(result.exit_code, 0)
         self.assertIn("No tenants paired yet", result.output)
         self.assertIn("1 invite(s) minted and unused", result.output)
-        self.assertIn("shown only once", result.output)
+        self.assertIn("hub list invites", result.output)
+
+    def test_invites_masks_codes_by_default(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        result = invoke(["hub", "list", "invites"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("STATUS", result.output)
+        self.assertIn("pending", result.output)
+        self.assertNotIn(code, result.output)
+        self.assertIn(code[:8], result.output)
+
+    def test_invites_token_reveals_codes(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--token"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn(code, result.output)
+
+    def test_invites_shows_used_and_who_used_it(self):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite("alice"))
+        result = invoke(["hub", "list", "invites"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("used", result.output)
+        self.assertIn(joined["tenantId"], result.output)
+
+    def test_invites_json_follows_token_flag(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        masked = invoke(["hub", "list", "invites"] + self.dir_opt + ["--json"])
+        self.assertNotIn(code, masked.output)
+        revealed = invoke(["hub", "list", "invites"] + self.dir_opt + ["--json", "--token"])
+        rows = json.loads(revealed.output)
+        self.assertEqual(rows[0]["code"], code)
+        self.assertEqual(rows[0]["status"], "pending")
 
     def test_revoke_unknown_tenant_lists_known_ones(self):
         result = invoke(["hub", "revoke", "t_nope"] + self.dir_opt, input="y\n")
@@ -345,7 +380,8 @@ class ConnectHubTests(IsolatedTestCase):
         result = invoke(["remote", "connect", self.url])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("already paired", result.output)
-        self.assertEqual(len(self.hub.registry["invites"]), 1)
+        pending = [e for e in self.hub.registry["invites"].values() if not e.get("usedBy")]
+        self.assertEqual(len(pending), 1)
 
     def test_connect_recovers_from_a_revoked_stored_token(self):
         joined = remote_client.join(self.url, self.hub.mint_invite("alice"))

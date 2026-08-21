@@ -25,7 +25,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. On delegated connections it fires on the server. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 | Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
-| Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json), `awewarm hub list [--api/--json]` (read-only; --api adds each connection's API endpoint), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
+| Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json; the code is recoverable later), `awewarm hub list users [--api/--json]` (tenant table; --api adds each connection's API endpoint), `awewarm hub list invites [--token/--json]` (every minted code with pending/used/expired status; codes masked unless --token), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
 
 Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling — prefer the new names.
 

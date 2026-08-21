@@ -90,6 +90,7 @@ class SurfaceTests(IsolatedTestCase):
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push", "status"])
         self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "revoke"])
+        self.assertEqual(command_names(invoke(["hub", "list", "--help"]).output), ["invites", "users"])
 
     def test_version_prints_bare_number(self):
         result = invoke(["-v"])
@@ -1787,12 +1788,12 @@ class HubDataDirTests(IsolatedTestCase):
         self.addCleanup(tmp.cleanup)
         data_dir = str(Path(tmp.name) / "hub")
         invoke(["hub", "config", "--data-dir", data_dir])
-        result = invoke(["hub", "list"])
+        result = invoke(["hub", "list", "users"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn(data_dir, output_of(result))  # the resolved dir is named in the hint
         engine = server.Hub(data_dir)
         engine.join(engine.mint_invite("alice"))
-        result = invoke(["hub", "list"])
+        result = invoke(["hub", "list", "users"])
         self.assertIn("alice", output_of(result))
 
     def test_unset_and_data_dir_conflict(self):

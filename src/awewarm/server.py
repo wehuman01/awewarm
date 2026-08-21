@@ -15,9 +15,10 @@ That is exactly how the local tick already treats a machine that was asleep.
 `--hub` swaps the single-pairing model for many users behind one process:
 each tenant gets a private WarmServer workspace and pairs through a one-time
 invite (`awewarm hub invite`) exchanged at /v1/join for a personal token.
-Only SHA-256 hashes of tenant tokens and invites touch disk (tenants.json),
-so hub pairings survive a restart without every user re-claiming — the RAM
-rule still holds for every plaintext secret.
+tenants.json stores SHA-256 hashes of tenant tokens plus the invite codes
+themselves — the operator can re-read a sent code (`awewarm hub list
+invites --token`) — so hub pairings survive a restart without every user re-claiming;
+API keys remain the only secret that never touches disk.
 
 Wire protocol (JSON over HTTP, Bearer token):
   GET    /healthz                    no auth; {ok, version, claimed[, hub]}
@@ -63,7 +64,7 @@ INVITE_TTL_HOURS = 48
 # while still stopping a looping client from monopolizing the process.
 HUB_RATE_PER_MINUTE = 60
 # Persisting lastSeen on every request would rewrite tenants.json constantly;
-# refreshing it at most this often keeps `hub list` honest to a small window.
+# refreshing it at most this often keeps `hub list users` honest to a small window.
 HUB_SEEN_PRECISION = timedelta(minutes=10)
 
 
@@ -365,9 +366,11 @@ class Hub:
 
     Pairing flows through one-time invites minted by the operator
     (`awewarm hub invite`); /v1/join burns one and returns a personal token.
-    tenants.json stores only SHA-256 hashes of tokens and invites — plaintext
-    secrets still never touch disk, but unlike single-tenant mode the pairings
-    survive a restart without waiting for every user to come back online.
+    tenants.json stores SHA-256 hashes of tenant tokens; invite codes are kept
+    in plaintext so the operator can recover one they already sent
+    (`awewarm hub list invites --token`). API keys still never touch disk, and
+    unlike single-tenant mode the pairings survive a restart without waiting
+    for every user to come back online.
     """
 
     def __init__(self, data_dir, max_tenants=DEFAULT_MAX_TENANTS,
@@ -413,17 +416,45 @@ class Hub:
     # --- pairing ---
 
     def mint_invite(self, note=None, ttl_hours=INVITE_TTL_HOURS):
-        """One-time pairing code; only its hash is stored."""
+        """One-time pairing code; the code itself is kept so `hub list invites`
+        can recover it (tenant tokens, in contrast, are stored hashed only)."""
         invite = "awi_" + secrets.token_urlsafe(16)
         now = datetime.now().astimezone()
         with self.lock:
             self.registry["invites"][_hash_secret(invite)] = {
+                "code": invite,
                 "note": note,
                 "createdAt": schedule.iso(now),
                 "expiresAt": schedule.iso(now + timedelta(hours=ttl_hours)),
             }
             self._save()
         return invite
+
+    def list_invites(self):
+        """Rows for `awewarm hub list invites` — every minted code and its fate."""
+        now = datetime.now().astimezone()
+        rows = []
+        for entry in self.registry["invites"].values():
+            expires = schedule.parse_ts(entry.get("expiresAt"))
+            used_by = entry.get("usedBy")
+            if used_by:
+                status = "used"
+            elif expires is not None and expires <= now:
+                status = "expired"
+            else:
+                status = "pending"
+            rows.append({
+                # absent on invites minted before codes were kept on disk
+                "code": entry.get("code"),
+                "note": entry.get("note"),
+                "createdAt": entry.get("createdAt"),
+                "expiresAt": entry.get("expiresAt"),
+                "usedBy": used_by,
+                "usedAt": entry.get("usedAt"),
+                "status": status,
+            })
+        rows.sort(key=lambda row: row["createdAt"] or "")
+        return rows
 
     def join(self, invite):
         """Burn one invite, create the tenant, and return its token exactly once."""
@@ -432,7 +463,7 @@ class Hub:
                 raise ApiError(400, "invite must look like awi_<code> — get one from the hub operator")
             digest = _hash_secret(invite)
             entry = self.registry["invites"].get(digest)
-            if entry is None:
+            if entry is None or entry.get("usedBy"):
                 raise ApiError(403, "unknown or already-used invite — ask the hub operator for a fresh one")
             now = datetime.now().astimezone()
             if schedule.parse_ts(entry.get("expiresAt")) <= now:
@@ -441,7 +472,6 @@ class Hub:
                 raise ApiError(403, "invite expired — ask the hub operator for a fresh one")
             if len(self.registry["tenants"]) >= self.max_tenants:
                 raise ApiError(403, f"hub is full ({self.max_tenants} tenants) — ask the operator for capacity")
-            del self.registry["invites"][digest]
             tenant_id = "t_" + secrets.token_hex(4)
             while tenant_id in self.registry["tenants"]:
                 tenant_id = "t_" + secrets.token_hex(4)
@@ -454,6 +484,8 @@ class Hub:
                 "usage": {"day": None, "today": 0, "total": 0},
             }
             self.tenants[tenant_id] = Tenant(tenant_id, self.registry["tenants"][tenant_id], self.data_dir / "tenants")
+            entry["usedBy"] = tenant_id
+            entry["usedAt"] = schedule.iso(now)
             self._save()
             self.log(f"{tenant_id} joined ({self.tenants[tenant_id].note or 'no note'})")
             return {"ok": True, "token": token, "tenantId": tenant_id}
@@ -463,7 +495,7 @@ class Hub:
         with self.lock:
             tenant = self.tenants.get(tenant_id)
             if tenant is None:
-                raise ApiError(404, f"no such tenant: {tenant_id} (see: awewarm hub list)")
+                raise ApiError(404, f"no such tenant: {tenant_id} (see: awewarm hub list users)")
             del self.registry["tenants"][tenant_id]
             self.tenants.pop(tenant_id, None)
             self._save()
@@ -525,7 +557,7 @@ class Hub:
             self._save()
 
     def summarize(self):
-        """Rows for `awewarm hub list` — no secrets by construction."""
+        """Rows for `awewarm hub list users` — no secrets by construction."""
         rows = []
         for tenant_id in sorted(self.tenants):
             tenant = self.tenants[tenant_id]

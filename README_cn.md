@@ -250,12 +250,13 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
 每个租户有独立的工作区：连接、状态、密钥对其他租户不可见（别人的 `glm` 和你的互不干扰），单用户模式的一切照常——改动自动推送、`run` 远程执行、`--local` 收回、fixed 时间跟随**用户自己**的时区。管理命令在服务器上运行：
 
 ```bash
-awewarm hub list [--api]               # 租户表格：健康状态、用量、最近在线；--api 追加每个连接的 API 端点
+awewarm hub list users [--api]         # 租户表格：健康状态、用量、最近在线；--api 追加每个连接的 API 端点
+awewarm hub list invites [--token]     # 所有已签发的邀请码：待用/已用/过期；--token 显示明文
 awewarm hub revoke <tenant>          # 吊销租户：token、连接、状态一并删除
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
-与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
+与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --token`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
 
 一条信任规则必须说清楚：hub 用用户的 API key 发请求，明文 key 必然经过它的内存。Hub 适合**信任机器运营者（及其 root）**的人群——团队、朋友、自己家的设备；和陌生人合用一台 VPS 不属于这种场景。
 
@@ -339,7 +340,7 @@ awewarm scheduler install [--wake] / uninstall # 后台调度器（launchd / 任
 awewarm serve                          # 运行常驻服务器，调度已委托的连接
 awewarm serve --hub                    # 多租户服务器：用户凭一次性邀请码配对
 awewarm hub config [--data-dir /data]  # 设置/查看 serve 与 hub 命令的默认数据目录（~/.awewarm-server）
-awewarm hub invite / list / revoke     # hub 管理（在 hub 机器上运行）
+awewarm hub invite / revoke; hub list users / invites  # hub 管理（在 hub 机器上运行）
 awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
 awewarm remote status                  # 服务器视角：运行时长、上次 tick、委托连接
 awewarm remote push [<id>]             # 向服务器重新同步委托连接（配置 + 密钥）
