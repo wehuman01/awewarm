@@ -3,6 +3,7 @@
 hub, update (plus tick, hidden). Older command names still work as hidden
 aliases (removed in v1.0); the scheduler's `awewarm tick` invocation is fixed
 because installed scheduler agents run it verbatim and self-heal if outdated."""
+import copy
 import ipaddress
 import json
 import os
@@ -426,6 +427,38 @@ def _delegate_remote(config, conn_id, conn):
     click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")
 
 
+def _config_duplicate(config, conn_id, conn, delegate):
+    """Copy a connection under a fresh id (`config set <id> --duplicate`).
+
+    The key is re-stored under the new id — a shared ref would let removing
+    either connection delete the other's — and runtime state starts blank.
+    With --remote the copy is delegated and the original disabled: one
+    subscription, one ticker."""
+    new_id = f"{conn_id}-copy"
+    suffix = 2
+    while new_id in config["connections"]:
+        new_id = f"{conn_id}-copy{suffix}"
+        suffix += 1
+    clone = copy.deepcopy(conn)
+    clone.pop("location", None)  # the copy starts local; --remote delegates it below
+    api_key = _resolve_api_key(conn)
+    if api_key is not None:
+        clone.setdefault("auth", {})["apiKeyRef"] = keystore.store_api_key(new_id, api_key)
+    config["connections"][new_id] = clone
+    save_config(config)
+    click.echo(f"✓ {conn_id} duplicated as {new_id}")
+    if not delegate:
+        click.echo(f"  tweak it with: awewarm config set {new_id} ...")
+        return
+    _delegate_remote(config, new_id, clone)  # on failure its die() guides; the copy stays local
+    conn["enabled"] = False
+    save_config(config)
+    if conn.get("location") == "remote":  # a delegated original keeps ticking server-side
+        _push_edits_to_remote(config, load_state(), conn_id)
+    click.echo(f"✓ {conn_id} disabled — the remote copy ticks it now")
+    click.echo(f"  rollback: awewarm config set {conn_id} --on, then drop the copy: awewarm config remove {new_id}")
+
+
 def _takeback_remote(config, state, conn_id, conn):
     """Resume local scheduling (`config set <id> --local`), pulling server truth."""
     if conn.get("location") != "remote":
@@ -570,7 +603,7 @@ class _SetOptions:
         "times", "days", "mode", "enabled", "hide", "anchor_hhmm", "start_hhmm",
         "window_minutes", "api_key", "wake", "catchup_minutes",
         "catchup_attempts", "degrade_after_nodes", "location",
-        "inherit_schedule",
+        "inherit_schedule", "duplicate",
     )
 
     def __init__(self, **kwargs):
@@ -594,6 +627,12 @@ class _SetOptions:
 def _config_set(connection, opts):
     config = load_config()
     conn_id, conn = _find_connection(config, connection)
+    if opts.duplicate:
+        for field in _SetOptions.FIELDS:
+            if field not in ("duplicate", "location") and getattr(opts, field) is not None:
+                die(f"--duplicate combines only with --remote/--local — tweak the copy itself with: awewarm config set <new-id> ...")
+        _config_duplicate(config, conn_id, conn, delegate=opts.location is True)
+        return
     slots = []
     if opts.times:
         try:
@@ -800,8 +839,9 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled — overrides the global default (3).")
 @click.option("--remote/--local", "location", default=None, help="Delegate this connection to the remote server (--remote) or resume local scheduling (--local).")
 @click.option("--inherit-schedule", "inherit_schedule", is_flag=True, default=None, help="Drop this connection's own schedule overrides; it follows the location/global defaults instead.")
+@click.option("--duplicate", is_flag=True, default=False, help="Copy this connection under a fresh id (<id>-copy) instead of changing it; with --remote the copy is delegated and this one disabled.")
 def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-               catchup_minutes, catchup_attempts, degrade_after_nodes, location, inherit_schedule):
+               catchup_minutes, catchup_attempts, degrade_after_nodes, location, inherit_schedule, duplicate):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
@@ -810,6 +850,7 @@ def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_
         start_hhmm=start_hhmm, window_minutes=window_minutes, api_key=api_key, wake=wake,
         catchup_minutes=catchup_minutes, catchup_attempts=catchup_attempts,
         degrade_after_nodes=degrade_after_nodes, location=location, inherit_schedule=inherit_schedule,
+        duplicate=duplicate or None,  # is_flag defaults to False; _SetOptions speaks None
     ))
 
 

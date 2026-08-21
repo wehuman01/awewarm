@@ -228,10 +228,11 @@ cloudflared tunnel run --url http://127.0.0.1:8790 awewarm
 ```bash
 awewarm remote connect https://warm.example.com   # 本地生成并保存 token，认领服务器
 awewarm config set glm --remote                   # 服务器接管这条连接
+awewarm config set glm --duplicate --remote       # ……或者 glm 留在本地，委托它的一份副本
 awewarm status                                    # 合并视图：本地 + 委托真值
 ```
 
-`--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果，且和本地一致——一次成功的手动 run 同样会解除 auto-disabled 阶梯；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器并释放其 claim（其他机器可以立即配对），仍有委托连接时拒绝执行；配对 token 保留在 `secrets.json` 里，之后重连即刻完成，即使服务器还留着旧 claim 也不受影响。fixed 时间按委托方机器的时区运行（时区随推送传递；本机时区没有 IANA 名的机器（如 Windows）会推送固定的 `UTC±HH:MM` 偏移）；从不睡觉的服务器谈不上 wake。
+`--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。`--duplicate` 把连接复制成新 id（`glm-copy`）——API key 在新 id 下另存一份、运行状态从零开始；配合 `--remote` 时副本被委托、原连接自动停用，同一份订阅绝不会被双份保温。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果，且和本地一致——一次成功的手动 run 同样会解除 auto-disabled 阶梯；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器并释放其 claim（其他机器可以立即配对），仍有委托连接时拒绝执行；配对 token 保留在 `secrets.json` 里，之后重连即刻完成，即使服务器还留着旧 claim 也不受影响。fixed 时间按委托方机器的时区运行（时区随推送传递；本机时区没有 IANA 名的机器（如 Windows）会推送固定的 `UTC±HH:MM` 偏移）；从不睡觉的服务器谈不上 wake。
 
 ## Hub 模式 —— 一台服务器，多个用户
 

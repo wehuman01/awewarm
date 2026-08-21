@@ -1424,6 +1424,49 @@ class DayGridTests(IsolatedTestCase):
         self.assertEqual(conn["window"]["durationMinutes"], 300)
 
 
+class ConfigDuplicateTests(IsolatedTestCase):
+    def plan_with_key(self, conn_id="glm"):
+        conn = plan_connection()
+        conn["auth"]["apiKeyRef"] = keystore.store_api_key(conn_id, "sk-test")
+        write_config(conn, conn_id=conn_id)
+        return conn
+
+    def test_duplicate_copies_config_and_key_under_a_fresh_id(self):
+        self.plan_with_key()
+        result = invoke(["config", "set", "glm", "--duplicate"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("duplicated as glm-copy", result.output)
+        data = cfg.load_config()
+        original, clone = data["connections"]["glm"], data["connections"]["glm-copy"]
+        self.assertEqual(clone["kind"], "subscription")
+        self.assertEqual(clone["schedule"]["fixed"]["at"], original["schedule"]["fixed"]["at"])
+        self.assertEqual(clone["auth"]["apiKeyRef"], "file:glm-copy")  # own ref, not shared
+        self.assertEqual(keystore.load_api_key("file:glm-copy"), "sk-test")
+        self.assertEqual(keystore.load_api_key("file:glm"), "sk-test")  # original keeps its own
+        self.assertNotEqual(clone, original)  # a change to one never leaks into the other
+
+    def test_duplicate_takes_the_next_free_suffix(self):
+        self.plan_with_key()
+        invoke(["config", "set", "glm", "--duplicate"])
+        result = invoke(["config", "set", "glm", "--duplicate"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("glm-copy2", result.output)
+
+    def test_duplicate_rejects_other_flags(self):
+        self.plan_with_key()
+        result = invoke(["config", "set", "glm", "--duplicate", "--times", "07:00"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("only with --remote/--local", output_of(result))
+        self.assertNotIn("glm-copy", cfg.load_config()["connections"])  # rejected upfront, nothing created
+
+    def test_duplicate_of_an_account_without_a_key_works(self):
+        write_config(account_connection())
+        result = invoke(["config", "set", "claude-code-main", "--duplicate"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        clone = cfg.load_config()["connections"]["claude-code-main-copy"]
+        self.assertIsNone(clone["auth"]["apiKeyRef"])
+
+
 class RemoteDelegationTests(IsolatedTestCase):
     """Delegation end to end against a real in-process awewarm serve."""
 
@@ -1469,6 +1512,20 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertFalse(entry["keyMissing"])
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
         self.assertEqual(on_disk["connections"]["remote"]["glm"]["location"], "remote")
+
+    def test_duplicate_remote_delegates_the_copy_and_disables_the_original(self):
+        self.paired_config(plan_connection(fixed_at=("23:58",)))
+        result = invoke(["config", "set", "glm", "--duplicate", "--remote"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("duplicated as glm-copy", output_of(result))
+        self.assertIn("disabled", output_of(result))
+        view = self.server_view()
+        self.assertIn("glm-copy", view["connections"])  # the copy ticks server-side
+        self.assertNotIn("glm", view["connections"])    # the original never was
+        data = cfg.load_config()
+        self.assertEqual(data["connections"]["glm-copy"]["location"], "remote")
+        self.assertFalse(data["connections"]["glm"]["enabled"])  # one subscription, one ticker
+        self.assertEqual(keystore.load_api_key("file:glm-copy"), "sk-test")  # key traveled
 
     def test_delegation_freezes_schedule_against_global_edits(self):
         # the global schedule exists and the connection follows it while local;
