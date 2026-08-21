@@ -251,12 +251,12 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
 
 ```bash
 awewarm hub list users [--api]         # 租户表格：健康状态、用量、最近在线；--api 追加每个连接的 API 端点
-awewarm hub list invites [--token]     # 所有已签发的邀请码：待用/已用/过期；--token 显示明文
+awewarm hub list invites [--reveal]     # 所有已签发的邀请码：待用/已用/过期；--reveal 显示明文
 awewarm hub revoke <tenant>          # 吊销租户：token、连接、状态一并删除
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
-与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --token`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
+与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --reveal`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
 
 一条信任规则必须说清楚：hub 用用户的 API key 发请求，明文 key 必然经过它的内存。Hub 适合**信任机器运营者（及其 root）**的人群——团队、朋友、自己家的设备；和陌生人合用一台 VPS 不属于这种场景。
 
@@ -383,5 +383,7 @@ export AWEWARM_NO_UPDATE_CHECK=1
 pip install -e .
 python3 -m unittest discover -s tests
 ```
+
+源码检出状态下 `awewarm -v` 会标注 `editable` 及 git 状态；pip 记录的元数据停在 `pip install -e .` 那一刻，版本号升级后重跑一次即可同步 `pip show`。检出状态下 `awewarm update` 会拒绝执行——请用 `git pull` + 重新安装代替。
 
 工程规范见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)，版本历史见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。

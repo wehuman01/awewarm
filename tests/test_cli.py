@@ -92,10 +92,16 @@ class SurfaceTests(IsolatedTestCase):
         self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "revoke"])
         self.assertEqual(command_names(invoke(["hub", "list", "--help"]).output), ["invites", "users"])
 
-    def test_version_prints_bare_number(self):
+    def test_version_marks_a_source_checkout(self):
         result = invoke(["-v"])
         self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.output.strip(), awewarm.__version__)
+        # tests import the package from this repo, so -v says editable
+        self.assertTrue(result.output.strip().startswith(awewarm.__version__))
+        self.assertIn("editable", result.output)
+
+    @mock.patch("awewarm.running_from_checkout", return_value=False)
+    def test_version_is_bare_outside_a_checkout(self, _checkout):
+        self.assertEqual(awewarm.display_version(), awewarm.__version__)
 
     def test_entry_point_and_dependency_pinned(self):
         data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
@@ -1027,14 +1033,25 @@ class UpdateTests(IsolatedTestCase):
         run.assert_not_called()
 
     @mock.patch("awewarm.cli.subprocess.run")
+    @mock.patch("awewarm.cli.running_from_checkout", return_value=False)
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
-    def test_update_runs_pip(self, _pypi, run):
+    def test_update_runs_pip(self, _pypi, _checkout, run):
         run.return_value = mock.Mock(returncode=0)
         result = invoke(["update"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         command = " ".join(run.call_args[0][0])
         self.assertIn("awewarm", command)
         self.assertNotIn("pipx", command)
+
+    @mock.patch("awewarm.cli.subprocess.run")
+    @mock.patch("awewarm.cli.running_from_checkout", return_value=True)
+    @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
+    def test_update_refuses_on_a_source_checkout(self, _pypi, _checkout, run):
+        result = invoke(["update"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("source checkout", output_of(result))
+        self.assertIn("pip install -e", output_of(result))
+        run.assert_not_called()
 
     @mock.patch("awewarm.cli.get_pypi_latest", side_effect=OSError("offline"))
     def test_update_dies_on_network_failure(self, _pypi):

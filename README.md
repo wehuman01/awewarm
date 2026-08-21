@@ -251,12 +251,12 @@ Each tenant gets a private workspace: connections, state, and keys are invisible
 
 ```bash
 awewarm hub list users [--api]         # tenant table: health, usage, last seen; --api adds each connection's endpoint
-awewarm hub list invites [--token]     # every minted invite: pending/used/expired; --token reveals the code
+awewarm hub list invites [--reveal]     # every minted invite: pending/used/expired; --reveal shows the full code
 awewarm hub revoke <tenant>            # drop a tenant: token, connections, state
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
-Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --token`) — anyone who can read the data dir can use a pending invite, so guard it accordingly. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
+Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
 
 One trust rule to state plainly: the hub fires requests with its users' API keys, so their plaintext keys pass through its RAM. Hub for people who trust the machine's operator (and root); a shared VPS with strangers is not that.
 
@@ -371,6 +371,8 @@ export AWEWARM_NO_UPDATE_CHECK=1
 pip install -e .
 python3 -m unittest discover -s tests
 ```
+
+`awewarm -v` says `editable` (with the git state) when running from this checkout; pip's recorded metadata freezes at `pip install -e .` time, so re-run it after a version bump to keep `pip show` in sync. `awewarm update` refuses on a checkout — pull and re-install instead.
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the engineering doctrine and [docs/CHANGELOG.md](docs/CHANGELOG.md) for release history.
 

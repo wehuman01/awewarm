@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from . import __version__, discover, install, keystore, remote, schedule, transport
+from . import __version__, discover, display_version, install, keystore, remote, running_from_checkout, schedule, transport
 from .flows import _add_account_flow, _config_add, _slots_proc
 from .status import _show_status
 from .update_check import check_async, get_pypi_latest, version_gte
@@ -483,8 +483,18 @@ def _moved(old, new):
     click.echo(f"note: `awewarm {old}` moved to `awewarm {new}` (legacy alias, removed in v1.0)", err=True)
 
 
+def _version_callback(ctx, _param, value):
+    """What `version_option` does, except the version is computed lazily —
+    the editable/git marking must not cost a subprocess on every command."""
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(display_version())
+    ctx.exit()
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, "-v", "--version", message="%(version)s")
+@click.option("-v", "--version", is_flag=True, expose_value=False, is_eager=True,
+              callback=_version_callback, help="Show the version and exit.")
 def cli():
     """Keep AI coding-plan subscription windows warm with minimal requests."""
 
@@ -1529,7 +1539,7 @@ def hub_config_command(data_dir, unset_dir):
 @click.option("--note", default=None, help="Who this invite is for (shown in hub list users).")
 @click.option("--expires-hours", "expires_hours", type=int, default=48, show_default=True, help="How long the invite stays usable.")
 def hub_invite_command(data_dir, note, expires_hours):
-    """Mint a one-time pairing invite (recover later with: awewarm hub list invites --token)."""
+    """Mint a one-time pairing invite (recover later with: awewarm hub list invites --reveal)."""
     if expires_hours <= 0:
         die("--expires-hours must be greater than 0")
     engine = _load_hub(_resolve_server_data_dir(data_dir))
@@ -1537,7 +1547,7 @@ def hub_invite_command(data_dir, note, expires_hours):
     click.echo(f"✓ Invite minted{f' for {note}' if note else ''} — one use, expires in {expires_hours} h")
     click.echo(f"  {code}")
     click.echo("  The user runs: awewarm remote connect <hub-url> --invite " + code)
-    click.echo("  Lost it? List every minted code with: awewarm hub list invites --token")
+    click.echo("  Lost it? List every minted code with: awewarm hub list invites --reveal")
 
 
 def _mask_invite(code):
@@ -1655,8 +1665,8 @@ def hub_list_users_command(data_dir, show_api, as_json):
 
 @hub_list.command("invites")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
-@click.option("--token", "show_codes", is_flag=True, help="Show full invite codes instead of masked ones (pending codes still work).")
-@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (codes follow --token).")
+@click.option("--reveal", "show_codes", is_flag=True, help="Show full invite codes instead of masked ones (pending codes still work).")
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (codes follow --reveal).")
 def hub_list_invites_command(data_dir, show_codes, as_json):
     """List minted invites: code, status, expiry, and who joined with it."""
     engine = _load_hub(_resolve_server_data_dir(data_dir))
@@ -1685,7 +1695,7 @@ def hub_list_invites_command(data_dir, show_codes, as_json):
         ])
     _print_table(["NOTE", "CODE", "STATUS", "EXPIRES", "USED BY", "USED AT", "MINTED"], table_rows)
     if not show_codes:
-        click.echo("codes are masked — pass --token to reveal them (a pending code still pairs)")
+        click.echo("codes are masked — pass --reveal to show them (a pending code still pairs)")
     elif any(row["code"] is None for row in rows):
         click.echo("codes shown as — were minted before codes were kept on disk; mint a fresh invite for those")
 
@@ -1756,6 +1766,9 @@ def _self_update(check_only):
     click.echo(f"Current: {__version__}  Latest: {latest}")
     if check_only:
         return
+    if running_from_checkout():
+        die("this awewarm runs from a source checkout (pip install -e .) — "
+            "update it with: git pull && pip install -e .")
 
     if Path(sys.prefix, "pyvenv.cfg").exists() and "pipx" in sys.prefix:
         cmd = [shutil.which("pipx") or "pipx", "upgrade", "awewarm"]

@@ -341,12 +341,17 @@ class HubCliTests(IsolatedTestCase):
         self.assertNotIn(code, result.output)
         self.assertIn(code[:8], result.output)
 
-    def test_invites_token_reveals_codes(self):
+    def test_invites_reveal_reveals_codes(self):
         engine = server.Hub(self.data_dir)
         code = engine.mint_invite("alice")
-        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--token"])
+        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--reveal"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn(code, result.output)
+
+    def test_invites_rejects_the_removed_token_flag(self):
+        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--token"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("No such option", result.output)
 
     def test_invites_shows_used_and_who_used_it(self):
         engine = server.Hub(self.data_dir)
@@ -356,24 +361,24 @@ class HubCliTests(IsolatedTestCase):
         self.assertIn("used", result.output)
         self.assertIn(joined["tenantId"], result.output)
 
-    def test_invites_json_follows_token_flag(self):
+    def test_invites_json_follows_reveal_flag(self):
         engine = server.Hub(self.data_dir)
         code = engine.mint_invite("alice")
         masked = invoke(["hub", "list", "invites"] + self.dir_opt + ["--json"])
         self.assertNotIn(code, masked.output)
-        revealed = invoke(["hub", "list", "invites"] + self.dir_opt + ["--json", "--token"])
+        revealed = invoke(["hub", "list", "invites"] + self.dir_opt + ["--json", "--reveal"])
         rows = json.loads(revealed.output)
         self.assertEqual(rows[0]["code"], code)
         self.assertEqual(rows[0]["status"], "pending")
 
-    def test_invites_token_shows_a_dash_for_codes_never_stored(self):
+    def test_invites_reveal_shows_a_dash_for_codes_never_stored(self):
         engine = server.Hub(self.data_dir)
         code = engine.mint_invite("alice")
         path = Path(self.data_dir, "tenants.json")
         registry = json.loads(path.read_text())
         registry["invites"][server._hash_secret(code)].pop("code")  # older versions never stored it
         path.write_text(json.dumps(registry))
-        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--token"])
+        result = invoke(["hub", "list", "invites"] + self.dir_opt + ["--reveal"])
         self.assertEqual(result.exit_code, 0)
         self.assertNotIn("Traceback", result.output)
         self.assertIn("minted before codes were kept", result.output)
