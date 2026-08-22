@@ -12,6 +12,8 @@ Hub registry mutations now hold a cross-process transaction lock shared by the r
 
 `awewarm hub revoke` now also accepts an invite code (`awi_...`): a pending code is killed on the spot — honored by the running serve without a restart — instead of waiting out its expiry. Used codes are refused with a pointer to the tenant revoke that kills the token they produced; expired ones are swept as stale rows.
 
+`awewarm hub list users` gains an INVITE column with the code each tenant joined with (masked by default, full text with `--reveal`, mirroring `hub list invites`) — no more cross-referencing USED BY to map a tenant back to its code.
+
 ## v0.4.7
 
 Orphan pmset wake events no longer accumulate. `sync_wake_events` now reads the live `pmset -g sched` output with creator attribution on every pass (not just when the ledger is stale), so `wakeorpoweron` events armed by the pmset command line that no ledger entry tracks are identified and cancelled. A failed cancel adopts the orphan into the ledger so the normal retry path owns it. `teardown_wake_layer` sweeps the same orphans at uninstall time — with the scheduler gone, nothing else would ever cancel them.

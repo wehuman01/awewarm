@@ -251,7 +251,7 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
 每个租户有独立的工作区：连接、状态、密钥对其他租户不可见（别人的 `glm` 和你的互不干扰），单用户模式的一切照常——改动自动推送、`run` 远程执行、`--local` 收回、fixed 时间跟随**用户自己**的时区。管理命令在服务器上运行：
 
 ```bash
-awewarm hub list users [--api]         # 租户表格：健康状态、用量、最近在线；--api 追加每个连接的 API 端点
+awewarm hub list users [--api|--reveal]  # 租户表格：健康状态、用量、最近在线；--api 追加 API 端点，--reveal 显示配对用的邀请码
 awewarm hub list invites [--reveal]     # 所有已签发的邀请码：待用/已用/过期；--reveal 显示明文
 awewarm hub revoke <tenant>|awi_...  # 吊销租户（token、连接、状态）或作废待用的邀请码
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5

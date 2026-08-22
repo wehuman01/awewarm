@@ -386,6 +386,50 @@ class HubCliTests(IsolatedTestCase):
         self.assertEqual(rows[0]["note"], "alice")
         self.assertNotIn(joined["token"], result.output)
 
+    def test_list_users_masks_the_joining_code_by_default(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        engine.join(code)
+        result = invoke(["hub", "list", "users"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("INVITE", result.output)
+        self.assertNotIn(code, result.output)
+        self.assertIn(code[:8], result.output)
+        self.assertIn("masked", result.output)
+
+    def test_list_users_reveal_shows_the_joining_code(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        engine.join(code)
+        result = invoke(["hub", "list", "users"] + self.dir_opt + ["--reveal"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn(code, result.output)
+        self.assertNotIn("masked", result.output)
+
+    def test_list_users_json_follows_reveal(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        engine.join(code)
+        masked = invoke(["hub", "list", "users"] + self.dir_opt + ["--json"])
+        self.assertNotIn(code, masked.output)
+        revealed = invoke(["hub", "list", "users"] + self.dir_opt + ["--json", "--reveal"])
+        rows = json.loads(revealed.output)
+        self.assertEqual(rows[0]["invite"], code)
+
+    def test_list_users_shows_a_dash_when_the_code_was_never_stored(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        path = Path(self.data_dir, "tenants.json")
+        registry = json.loads(path.read_text())
+        registry["invites"][server._hash_secret(code)].pop("code")  # older versions never stored it
+        path.write_text(json.dumps(registry))
+        engine = server.Hub(self.data_dir)  # re-read the edited registry
+        engine.join(code)
+        result = invoke(["hub", "list", "users"] + self.dir_opt + ["--reveal"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("Traceback", result.output)
+        self.assertIn("—", result.output)
+
     def test_revoke_removes_the_tenant(self):
         engine = server.Hub(self.data_dir)
         joined = engine.join(engine.mint_invite("alice"))

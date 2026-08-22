@@ -1643,15 +1643,17 @@ def hub_list():
 @hub_list.command("users")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 @click.option("--api", "show_api", is_flag=True, help="Also list each connection's API endpoint, protocol, and model.")
+@click.option("--reveal", "show_codes", is_flag=True, help="Show the full invite code each tenant joined with (masked by default).")
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
-def hub_list_users_command(data_dir, show_api, as_json):
+def hub_list_users_command(data_dir, show_api, show_codes, as_json):
     """Show tenants: pairing, connections, and activation usage."""
     data_dir = _resolve_server_data_dir(data_dir)
     engine = _load_hub(data_dir)
     rows = engine.summarize()
     pending = sum(1 for row in engine.list_invites() if row["status"] == "pending")
     if as_json:
-        click.echo(json.dumps(rows, indent=2))
+        out = [dict(row, invite=(row["invite"] if show_codes else _mask_invite(row["invite"]))) for row in rows]
+        click.echo(json.dumps(out, indent=2))
         return
     if not rows:
         if pending:
@@ -1672,6 +1674,7 @@ def hub_list_users_command(data_dir, show_api, as_json):
         tenant_rows.append([
             row["tenant"],
             row["note"] or "—",
+            (row["invite"] or "—") if show_codes else _mask_invite(row["invite"]),
             str(len(conns)),
             _hub_tenant_status(conns),
             str(usage.get("today", 0)),
@@ -1680,7 +1683,7 @@ def hub_list_users_command(data_dir, show_api, as_json):
             paired.strftime("%Y-%m-%d") if paired else "—",
         ])
     _print_table(
-        ["TENANT", "NOTE", "CONNS", "STATUS", "TODAY", "TOTAL", "LAST SEEN", "PAIRED"],
+        ["TENANT", "NOTE", "INVITE", "CONNS", "STATUS", "TODAY", "TOTAL", "LAST SEEN", "PAIRED"],
         tenant_rows,
     )
     if show_api:
@@ -1704,6 +1707,8 @@ def hub_list_users_command(data_dir, show_api, as_json):
             )
         else:
             click.echo("\nNo delegated connections yet")
+    if not show_codes and any(row["invite"] for row in rows):
+        click.echo("\ncodes are masked — pass --reveal to show them")
     footer = f"\n{len(rows)} tenant(s)"
     if pending:
         footer += f", {pending} unused invite(s) pending"

@@ -251,7 +251,7 @@ awewarm config set glm --remote      # same delegation as single-user mode
 Each tenant gets a private workspace: connections, state, and keys are invisible to other tenants (their `glm` and yours never collide), and everything from single-user delegation works unchanged — edits push, `run` fires remotely, `--local` takes back, fixed times follow the *user's* timezone. Hub administration lives on the server:
 
 ```bash
-awewarm hub list users [--api]         # tenant table: health, usage, last seen; --api adds each connection's endpoint
+awewarm hub list users [--api|--reveal]  # tenant table: health, usage, last seen; --api adds endpoints, --reveal the joining invite code
 awewarm hub list invites [--reveal]     # every minted invite: pending/used/expired; --reveal shows the full code
 awewarm hub revoke <tenant>|awi_...   # drop a tenant (token, connections, state) or kill a pending invite
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5

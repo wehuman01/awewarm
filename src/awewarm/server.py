@@ -643,7 +643,12 @@ class Hub:
             self._save()
 
     def summarize(self):
-        """Rows for `awewarm hub list users` — no secrets by construction."""
+        """Rows for `hub list users` — no secrets by construction."""
+        joined_with = {
+            entry.get("usedBy"): entry.get("code")
+            for entry in self.registry["invites"].values()
+            if entry.get("usedBy")
+        }
         rows = []
         for tenant_id in sorted(self.tenants):
             tenant = self.tenants[tenant_id]
@@ -666,6 +671,7 @@ class Hub:
             rows.append({
                 "tenant": tenant_id,
                 "note": tenant.note,
+                "invite": joined_with.get(tenant_id),
                 "createdAt": tenant.record.get("createdAt"),
                 "lastSeenAt": tenant.record.get("lastSeenAt"),
                 "connections": connections,
