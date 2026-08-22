@@ -27,7 +27,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
 | Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json; the code is recoverable later), `awewarm hub list users [--api/--json]` (tenant table; --api adds each connection's API endpoint), `awewarm hub list invites [--token/--json]` (every minted code with pending/used/expired status; codes masked unless --token), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling — prefer the new names. So does `awewarm update` (the pre-0.4.8 spelling of `self-update`).
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling — prefer the new names. `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
 
 ## Intent Router
 

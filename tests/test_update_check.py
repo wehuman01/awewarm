@@ -28,7 +28,7 @@ class ShouldSkipTests(unittest.TestCase):
         self.assertTrue(_should_skip(["run", "--dry-run"]))
 
     def test_help_version_and_update_are_skipped(self):
-        for args in (["-h"], ["--help"], ["-v"], ["--version"], ["update"], ["update", "--check"], ["self-update"], ["self-update", "--check"]):
+        for args in (["-h"], ["--help"], ["-v"], ["--version"], ["self-update"], ["self-update", "--check"]):
             self.assertTrue(_should_skip(args), args)
 
     def test_interactive_commands_are_checked(self):

@@ -1956,14 +1956,6 @@ def legacy_inspect(connection, as_json):
     _show_status(connection, as_json)
 
 
-@cli.command("update", hidden=True)
-@click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
-def legacy_update(check_only):
-    """Legacy alias for `awewarm self-update`."""
-    _moved("update", "self-update")
-    _self_update(check_only)
-
-
 def main(argv=None):
     """Console entry point; prints an update reminder after interactive commands."""
     get_reminder = check_async(sys.argv[1:] if argv is None else argv)

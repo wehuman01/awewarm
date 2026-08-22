@@ -82,7 +82,7 @@ class SurfaceTests(IsolatedTestCase):
     def test_legacy_command_names_are_hidden(self):
         result = invoke(["--help"])
         names = command_names(result.output)
-        for legacy in ("add", "activate", "verify", "enable", "anchor", "disable", "times", "remove", "install", "uninstall", "inspect", "update"):
+        for legacy in ("add", "activate", "verify", "enable", "anchor", "disable", "times", "remove", "install", "uninstall", "inspect"):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
@@ -91,6 +91,12 @@ class SurfaceTests(IsolatedTestCase):
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push", "status"])
         self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "revoke"])
         self.assertEqual(command_names(invoke(["hub", "list", "--help"]).output), ["invites", "users"])
+
+    def test_update_command_is_gone(self):
+        # `update` was replaced by `self-update` outright — no hidden alias.
+        result = invoke(["update"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("No such command", result.output)
 
     def test_version_marks_a_source_checkout(self):
         result = invoke(["-v"])
@@ -1099,12 +1105,6 @@ class LegacyAliasTests(IsolatedTestCase):
         self.assertIn("run claude-code-main", output_of(result))
         state = cfg.load_state()
         self.assertEqual(state["connections"]["claude-code-main"]["history"][-1]["kind"], "manual")
-
-    @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
-    def test_legacy_update_check(self, _pypi):
-        result = invoke(["update", "--check"])
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("up to date", result.output)
 
     def test_legacy_inspect_json(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")

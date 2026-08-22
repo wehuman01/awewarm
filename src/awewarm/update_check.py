@@ -67,7 +67,7 @@ def _should_skip(args):
     # `awewarm run` (user-facing, real requests) and `awewarm tick` (the
     # scheduler, once a minute) and `self-update` (about to replace the
     # installed package) and `serve` (long-running) should never hit PyPI.
-    return bool(args) and args[0] in ("run", "tick", "update", "self-update", "serve")
+    return bool(args) and args[0] in ("run", "tick", "self-update", "serve")
 
 
 def check_async(args):

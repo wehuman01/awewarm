@@ -349,7 +349,7 @@ awewarm remote disconnect              # forget the server + release its claim (
 awewarm self-update [--check]         # upgrade to the latest PyPI release
 ```
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`) still work as hidden aliases; they print their new spelling and will be removed in v1.0. `awewarm update` (the pre-0.4.8 spelling of `self-update`) is hidden too.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`) still work as hidden aliases; they print their new spelling and will be removed in v1.0. `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
 
 ## Self-Update
 
