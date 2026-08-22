@@ -19,15 +19,15 @@ Every activation sends one REAL request against the user's coding-plan quota:
 
 | Category | Commands |
 |---|---|
-| Read-only — run freely | `awewarm status [<id>] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm remote status`, `awewarm self-update --check` |
+| Read-only — run freely | `awewarm status [<id>] [--remote|--local] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm self-update --check` |
 | Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake/--inherit-schedule`, `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install [--wake]`, `awewarm scheduler uninstall`, `awewarm self-update` |
 | Delegation — changes who ticks a connection; confirm intent first | `awewarm remote connect <url> [--token]` (single-user server) or `awewarm remote connect <url> --invite awi_...` (hub server), `awewarm config set <id> --remote` (only subscription connections; pushes config+key to the server), `awewarm config set <id> --local` (takeback: pulls server state), `awewarm remote disconnect` (refuses while delegations exist) |
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. On delegated connections it fires on the server. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
 | Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
-| Hub admin — operator runs on the hub box | `awewarm hub invite [--note/--expires-hours]` (read-only side effect: writes tenants.json; the code is recoverable later), `awewarm hub list users [--api/--json]` (tenant table; --api adds each connection's API endpoint), `awewarm hub list invites [--token/--json]` (every minted code with pending/used/expired status; codes masked unless --token), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
+| Hub admin — operator runs on the hub box | `awewarm hub status [--details]` (read-only overview: tenants/connections against the caps, invite counts, serve liveness probe), `awewarm hub invite [--note/--expires-hours]` (side effect: writes tenants.json; the code is recoverable later), `awewarm hub list users [--api/--reveal/--json]` (tenant table; --api adds each connection's API endpoint, --reveal the joining invite code), `awewarm hub list invites [--reveal/--json]` (every minted code with pending/used/expired/revoked status; codes masked unless --reveal), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling — prefer the new names. `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling — prefer the new names. `remote status` folded into `status --remote` (hidden alias likewise). `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
 
 ## Intent Router
 
@@ -41,7 +41,7 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 | "Pause while I'm on vacation", "休假暂停" | `awewarm config set <id> --off` (resume with `--on`) |
 | "Add my GLM subscription", "添加订阅套餐" | Tell the user to run `awewarm config add` in their terminal (interactive API key prompt). It also re-adds removed local accounts. |
 | "Verify the window", "验证窗口时长" | Guide the 3-step verify flow below; only send the real request if the user asks. |
-| "Let the server keep it warm 24/7", "委托服务器保温" | Requires a paired server: `awewarm remote connect <url>` then `awewarm config set <id> --remote` (subscription connections only). Check `awewarm remote status` afterwards. |
+| "Let the server keep it warm 24/7", "委托服务器保温" | Requires a paired server: `awewarm remote connect <url>` then `awewarm config set <id> --remote` (subscription connections only). Check `awewarm status --remote` afterwards (server health line + delegated connections). |
 | "Share one server with my team", "多人共用一台服务器/hub" | Operator runs `awewarm serve --hub` and hands out `awewarm hub invite` codes; each user runs `awewarm remote connect <url> --invite awi_...`. Warn: hub users must trust the box's operator/root — their API keys pass through its RAM. |
 | "Take it back local", "收回本地" | `awewarm config set <id> --local` — pulls server state first, local scheduling resumes. |
 | "Server restarted / key missing", "服务器重启/缺钥" | Harmless by design: any local command or `awewarm remote push` re-claims and re-pushes; held slots fire late within catch-up. |
@@ -76,7 +76,7 @@ Gating rule: `interval` is locked until the window is verified or user-confirmed
 awewarm status
 ```
 
-Per connection: mode, schedule line (fixed times in fixed mode; window in interval mode), last activation, next due moment; last line shows whether the background scheduler is installed (on macOS, a second footer line shows the wake layer: `Wake layer: enabled — N RTC wake(s) armed` or the `--wake` enable hint). `awewarm status <id>` shows one connection in detail (transport, evidence, plus the schedule info the summary omits). `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
+Per connection: mode, schedule line (fixed times in fixed mode; window in interval mode), last activation, next due moment; last line shows whether the background scheduler is installed (on macOS, a second footer line shows the wake layer: `Wake layer: enabled — N RTC wake(s) armed` or the `--wake` enable hint). `awewarm status <id>` shows one connection in detail (transport, evidence, plus the schedule info the summary omits). `--remote` filters to delegated connections and leads with the server health line (version, uptime, last tick); `--local` shows only locally scheduled connections. `degraded` means interval renewal auto-paused after 3 consecutive failures and will re-arm on the next success.
 
 ### Change fixed times
 
