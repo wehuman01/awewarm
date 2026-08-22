@@ -77,14 +77,14 @@ def claude_finding(**overrides):
 
 
 class SurfaceTests(IsolatedTestCase):
-    def test_help_shows_exactly_ten_commands(self):
+    def test_help_shows_exactly_nine_commands(self):
         result = invoke(["--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Usage: awewarm [OPTIONS] COMMAND [ARGS]...", result.output)
         self.assertIn("-v, --version", result.output)
         self.assertEqual(
             command_names(result.output),
-            ["config", "discover", "hub", "init", "remote", "run", "scheduler", "self-update", "serve", "status"],
+            ["config", "discover", "init", "remote", "run", "scheduler", "self-update", "serve", "status"],
         )
 
     def test_legacy_command_names_are_hidden(self):
@@ -97,8 +97,22 @@ class SurfaceTests(IsolatedTestCase):
         self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show", "template"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push"])
-        self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "restore", "revoke", "status"])
-        self.assertEqual(command_names(invoke(["hub", "list", "--help"]).output), ["invites", "users"])
+
+    def test_hub_commands_moved_to_the_hub_package(self):
+        # hub serving/administration is the separate awewarm-hub package now;
+        # both tombstones must name the replacement command verbatim.
+        result = invoke(["hub", "invite"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("awewarm-hub", output_of(result))
+        self.assertIn("awewarm-hub invite", output_of(result))
+        result = invoke(["hub", "list", "users"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("awewarm-hub list users", output_of(result))
+
+    def test_serve_hub_flag_moved_to_the_hub_package(self):
+        result = invoke(["serve", "--hub"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("awewarm-hub serve", output_of(result))
 
     def test_update_command_is_gone(self):
         # `update` was replaced by `self-update` outright — no hidden alias.
@@ -1915,45 +1929,3 @@ class ProfileScheduleTests(IsolatedTestCase):
         shown = invoke(["config", "set", "claude-code-main"])
         self.assertIn("schedule source:", output_of(shown))
         self.assertIn("local defaults → global", output_of(shown))
-
-
-class HubDataDirTests(IsolatedTestCase):
-    """`hub config --data-dir` persists the default; serve/hub commands follow it."""
-
-    def test_flag_beats_persisted_beats_default(self):
-        from awewarm.cli import DEFAULT_SERVER_DATA_DIR, _resolve_server_data_dir
-        self.assertEqual(_resolve_server_data_dir(None), DEFAULT_SERVER_DATA_DIR)
-        self.assertEqual(_resolve_server_data_dir("/tmp/flag"), "/tmp/flag")
-        invoke(["hub", "config", "--data-dir", "/tmp/persisted"])
-        self.assertEqual(_resolve_server_data_dir(None), "/tmp/persisted")
-        self.assertEqual(_resolve_server_data_dir("/tmp/flag"), "/tmp/flag")
-
-    def test_config_command_show_set_unset(self):
-        result = invoke(["hub", "config"])
-        self.assertEqual(result.exit_code, 0, output_of(result))
-        self.assertIn("~/.awewarm-server", output_of(result))
-        self.assertIn("the default", output_of(result))
-        invoke(["hub", "config", "--data-dir", "/tmp/hubdata"])
-        result = invoke(["hub", "config"])
-        self.assertIn("/tmp/hubdata", output_of(result))
-        self.assertIn("set with: awewarm hub config --data-dir", output_of(result))
-        invoke(["hub", "config", "--unset"])
-        result = invoke(["hub", "config"])
-        self.assertIn("the default", output_of(result))
-
-    def test_hub_commands_use_the_persisted_dir_without_the_flag(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        data_dir = str(Path(tmp.name) / "hub")
-        invoke(["hub", "config", "--data-dir", data_dir])
-        result = invoke(["hub", "list", "users"])
-        self.assertEqual(result.exit_code, 0, output_of(result))
-        self.assertIn(data_dir, output_of(result))  # the resolved dir is named in the hint
-        engine = server.Hub(data_dir)
-        engine.join(engine.mint_invite("alice"))
-        result = invoke(["hub", "list", "users"])
-        self.assertIn("alice", output_of(result))
-
-    def test_unset_and_data_dir_conflict(self):
-        result = invoke(["hub", "config", "--data-dir", "/x", "--unset"])
-        self.assertNotEqual(result.exit_code, 0)
