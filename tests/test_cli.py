@@ -1038,6 +1038,46 @@ class SchedulerCommandTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Scheduler installed", result.output)
 
+    @mock.patch("awewarm.install.install_scheduler")
+    def test_scheduler_install_skips_the_gate_with_a_local_connection(self, install_scheduler):
+        install_scheduler.return_value = "/Library/LaunchAgents/com.awewarm.scheduler.plist"
+        write_config(plan_connection())
+        result = invoke(["scheduler", "install"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("no connections for a local scheduler", output_of(result))
+        install_scheduler.assert_called_once()
+
+    @mock.patch("awewarm.install.install_scheduler")
+    def test_install_without_local_connections_prints_the_note_when_scripted(self, install_scheduler):
+        # CliRunner's stdin is not a tty: a script gets the notice and the install
+        install_scheduler.return_value = "/Library/LaunchAgents/com.awewarm.scheduler.plist"
+        result = invoke(["scheduler", "install"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("note: no connections for a local scheduler", output_of(result))
+        self.assertIn("Scheduler installed", result.output)
+        install_scheduler.assert_called_once()
+
+    @mock.patch("awewarm.install.install_scheduler")
+    def test_install_asks_first_when_everything_is_delegated(self, install_scheduler):
+        conn = plan_connection()
+        conn["location"] = "remote"  # the server's serve ticks it, not this machine
+        write_config(conn)
+        with mock.patch("awewarm.cli._stdin_is_interactive", return_value=True):
+            result = invoke(["scheduler", "install"], input="n\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Install the scheduler anyway?", result.output)
+        self.assertIn("aborted — nothing installed", result.output)
+        install_scheduler.assert_not_called()
+
+    @mock.patch("awewarm.install.install_scheduler")
+    def test_install_gate_confirm_proceeds_on_yes(self, install_scheduler):
+        install_scheduler.return_value = "/Library/LaunchAgents/com.awewarm.scheduler.plist"
+        with mock.patch("awewarm.cli._stdin_is_interactive", return_value=True):
+            result = invoke(["scheduler", "install"], input="y\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Scheduler installed", result.output)
+        install_scheduler.assert_called_once()
+
     @mock.patch("awewarm.install.uninstall_scheduler", return_value=False)
     def test_scheduler_uninstall_when_absent(self, _uninstall):
         result = invoke(["scheduler", "uninstall"])

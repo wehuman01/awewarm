@@ -1223,7 +1223,30 @@ def _legacy_pmset_cleanup():
         )
 
 
+def _stdin_is_interactive():
+    """True when a human can be asked (tests patch this to try both paths)."""
+    return sys.stdin.isatty()
+
+
 def _scheduler_install(wake=False):
+    local = [
+        cid for cid, conn in load_config()["connections"].items()
+        if conn.get("enabled", True) and conn.get("location") != "remote"
+    ]
+    if not local:
+        # A machine that delegated everything (or has no connections yet) has
+        # nothing for a local scheduler to tick — the server's serve does that.
+        # Ask before --wake's sudo prompt so the gate is always seen first.
+        notice = (
+            "no connections for a local scheduler to tick — everything is\n"
+            "delegated to the server (or none are configured); the server's\n"
+            "`awewarm serve` ticks delegated connections itself"
+        )
+        if not _stdin_is_interactive():
+            click.echo(f"note: {notice}")
+        elif not click.confirm(f"{notice}\nInstall the scheduler anyway?", default=False):
+            click.echo("aborted — nothing installed (re-run when a connection is scheduled locally)")
+            return
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
     entries = install.calendar_entries(load_config())
