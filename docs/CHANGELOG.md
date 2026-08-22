@@ -10,6 +10,8 @@ HTTP integration tests now close their listening sockets and join server threads
 
 Hub registry mutations now hold a cross-process transaction lock shared by the resident server and operator CLI. A stale usage/last-seen write can no longer overwrite a concurrent revoke and revive the tenant's token.
 
+`awewarm hub revoke` now also accepts an invite code (`awi_...`): a pending code is killed on the spot — honored by the running serve without a restart — instead of waiting out its expiry. Used codes are refused with a pointer to the tenant revoke that kills the token they produced; expired ones are swept as stale rows.
+
 ## v0.4.7
 
 Orphan pmset wake events no longer accumulate. `sync_wake_events` now reads the live `pmset -g sched` output with creator attribution on every pass (not just when the ledger is stale), so `wakeorpoweron` events armed by the pmset command line that no ledger entry tracks are identified and cancelled. A failed cancel adopts the orphan into the ledger so the normal retry path owns it. `teardown_wake_layer` sweeps the same orphans at uninstall time — with the scheduler gone, nothing else would ever cancel them.

@@ -100,6 +100,35 @@ class PairingTests(HubCase):
         self.assertIn("expired", str(ctx.exception))
         self.assertNotIn(digest, self.registry()["invites"])
 
+    def test_revoked_invite_no_longer_pairs(self):
+        invite = self.hub.mint_invite("alice")
+        self.hub.revoke_invite(invite)
+        digest = server._hash_secret(invite)
+        self.assertNotIn(digest, self.registry()["invites"])
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.join(self.url, invite)
+        self.assertIn("403", str(ctx.exception))
+
+    def test_revoke_invite_sweeps_an_expired_entry(self):
+        invite = self.hub.mint_invite("alice")
+        digest = server._hash_secret(invite)
+        from awewarm import schedule
+        self.hub.registry["invites"][digest]["expiresAt"] = schedule.iso(
+            datetime.now().astimezone()
+        )
+        result = self.hub.revoke_invite(invite)
+        self.assertEqual(result["status"], "expired")
+        self.assertNotIn(digest, self.registry()["invites"])
+
+    def test_revoke_invite_refuses_a_used_code_and_keeps_its_record(self):
+        invite = self.hub.mint_invite("alice")
+        joined = remote_client.join(self.url, invite)
+        with self.assertRaises(server.ApiError) as ctx:
+            self.hub.revoke_invite(invite)
+        self.assertEqual(ctx.exception.status, 403)
+        self.assertIn(joined["tenantId"], str(ctx.exception))
+        self.assertIn(server._hash_secret(invite), self.registry()["invites"])  # the audit row stays
+
     def test_malformed_invite_is_a_400(self):
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.join(self.url, "not-an-invite")
@@ -226,6 +255,13 @@ class CrossProcessTests(HubCase):
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.fetch_state(self.url, token)
         self.assertIn("401", str(ctx.exception))
+
+    def test_revoked_invite_stops_pairing_without_a_restart(self):
+        code = server.Hub(self.data_dir).mint_invite("alice")  # `awewarm hub invite`
+        server.Hub(self.data_dir).revoke_invite(code)  # `awewarm hub revoke awi_...`
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.join(self.url, code)  # against the long-lived serve
+        self.assertIn("403", str(ctx.exception))
 
     def test_stale_usage_write_cannot_revive_a_revoked_tenant(self):
         token, tenant_id = self.join("alice")
@@ -366,6 +402,51 @@ class HubCliTests(IsolatedTestCase):
             result = invoke(["hub", "revoke", joined["tenantId"]] + self.dir_opt, input="y\n")
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn(f"could not revoke {joined['tenantId']}", result.output)
+        self.assertIn("hub registry is busy", result.output)
+        self.assertNotIn("Traceback", result.output)
+
+    def test_revoke_kills_a_pending_invite(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        result = invoke(["hub", "revoke", code] + self.dir_opt, input="y\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("invite revoked for alice", result.output)
+        registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
+        self.assertNotIn(server._hash_secret(code), registry["invites"])
+        with self.assertRaises(server.ApiError):
+            engine.join(code)
+
+    def test_revoke_invite_aborts_without_confirmation(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        result = invoke(["hub", "revoke", code] + self.dir_opt, input="n\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("aborted", result.output)
+        self.assertTrue(engine.join(code)["token"].startswith("awt_"))
+
+    def test_revoke_invite_reports_a_used_code_without_deleting_it(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        joined = engine.join(code)
+        result = invoke(["hub", "revoke", code] + self.dir_opt, input="y\n")
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("already used", result.output)
+        self.assertIn(joined["tenantId"], result.output)
+        registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
+        self.assertIn(server._hash_secret(code), registry["invites"])  # the audit row stays
+
+    def test_revoke_invite_reports_an_unknown_code(self):
+        result = invoke(["hub", "revoke", "awi_" + "x" * 20] + self.dir_opt, input="y\n")
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("no such invite", result.output)
+        self.assertIn("hub list invites", result.output)
+
+    def test_revoke_invite_reports_a_busy_registry_without_a_traceback(self):
+        busy = server.ApiError(503, "hub registry is busy — retry this request")
+        with mock.patch.object(server.Hub, "revoke_invite", side_effect=busy):
+            result = invoke(["hub", "revoke", "awi_" + "x" * 20] + self.dir_opt, input="y\n")
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("could not revoke the invite", result.output)
         self.assertIn("hub registry is busy", result.output)
         self.assertNotIn("Traceback", result.output)
 

@@ -1747,12 +1747,32 @@ def hub_list_invites_command(data_dir, show_codes, as_json):
         click.echo("codes shown as — were minted before codes were kept on disk; mint a fresh invite for those")
 
 
+def _hub_revoke_invite(engine, code):
+    """`hub revoke awi_...`: the code dies now instead of at its expiry."""
+    if not click.confirm(f"Revoke invite {code}? It stops pairing immediately.", default=False):
+        click.echo("aborted — nothing revoked")
+        return
+    from .server import ApiError
+    try:
+        result = engine.revoke_invite(code)
+    except ApiError as exc:  # registry busy, unknown, or already used
+        die(f"could not revoke the invite:\n{exc}")
+    if result["status"] == "expired":
+        click.echo("✓ invite had already expired — stale entry removed")
+    else:
+        note = f" for {result['note']}" if result["note"] else ""
+        click.echo(f"✓ invite revoked{note} — the code no longer pairs; a fresh one: awewarm hub invite")
+
+
 @hub.command("revoke")
 @click.argument("tenant")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 def hub_revoke_command(tenant, data_dir):
-    """Drop a tenant: its token, connections, and their state."""
+    """Drop a tenant (t_...): its token, connections, and their state. Or kill an unused invite (awi_...)."""
     engine = _load_hub(_resolve_server_data_dir(data_dir))
+    if tenant.startswith("awi_"):
+        _hub_revoke_invite(engine, tenant)
+        return
     known = {row["tenant"]: row for row in engine.summarize()}
     if tenant not in known:
         die(f"no such tenant: {tenant}\nknown tenants: {', '.join(sorted(known)) or 'none'}")

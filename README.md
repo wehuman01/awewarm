@@ -253,11 +253,11 @@ Each tenant gets a private workspace: connections, state, and keys are invisible
 ```bash
 awewarm hub list users [--api]         # tenant table: health, usage, last seen; --api adds each connection's endpoint
 awewarm hub list invites [--reveal]     # every minted invite: pending/used/expired; --reveal shows the full code
-awewarm hub revoke <tenant>            # drop a tenant: token, connections, state
+awewarm hub revoke <tenant>|awi_...   # drop a tenant (token, connections, state) or kill a pending invite
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
-Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly. Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a tenant revocation. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
+Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly (a leaked code can be killed on the spot with `hub revoke awi_...`; the running serve honors it without a restart). Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a tenant revocation. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
 
 One trust rule to state plainly: the hub fires requests with its users' API keys, so their plaintext keys pass through its RAM. Hub for people who trust the machine's operator (and root); a shared VPS with strangers is not that.
 

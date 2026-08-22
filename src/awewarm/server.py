@@ -559,6 +559,30 @@ class Hub:
         self.log(f"{tenant_id} revoked")
         return {"ok": True}
 
+    def revoke_invite(self, code):
+        """Kill an unused invite now instead of at its expiry (`hub revoke awi_...`).
+
+        A used invite keeps its record (who joined, when) — the code itself is
+        spent; an expired one is swept as a stale row.
+        """
+        with self._registry_transaction():
+            digest = _hash_secret(code)
+            entry = self.registry["invites"].get(digest)
+            if entry is None:
+                raise ApiError(404, f"no such invite: {code}\nfix: list codes with: awewarm hub list invites --reveal")
+            if entry.get("usedBy"):
+                raise ApiError(
+                    403,
+                    f"invite already used by {entry['usedBy']} — the code is spent, its token lives on;\n"
+                    f"revoke that instead: awewarm hub revoke {entry['usedBy']}",
+                )
+            expires = schedule.parse_ts(entry.get("expiresAt"))
+            was_expired = expires is not None and expires <= datetime.now().astimezone()
+            del self.registry["invites"][digest]
+            self._save()
+        self.log(f"invite revoked ({entry.get('note') or 'no note'})")
+        return {"ok": True, "status": "expired" if was_expired else "pending", "note": entry.get("note")}
+
     def auth(self, bearer):
         """Bearer token → tenant, behind the per-tenant rate-limit gate."""
         with self.lock:
