@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.7
+
+Orphan pmset wake events no longer accumulate. `sync_wake_events` now reads the live `pmset -g sched` output with creator attribution on every pass (not just when the ledger is stale), so `wakeorpoweron` events armed by the pmset command line that no ledger entry tracks are identified and cancelled. A failed cancel adopts the orphan into the ledger so the normal retry path owns it. `teardown_wake_layer` sweeps the same orphans at uninstall time — with the scheduler gone, nothing else would ever cancel them.
+
+`config set <id> --duplicate` copies a connection under a fresh id (`<id>-copy`, then `<id>-copy2` if that exists). The API key is re-stored under the new id so removing either connection cannot clobber the other's secret. With `--remote` the copy is delegated and the original disabled — one subscription, one ticker. `--duplicate` rejects any other flag combination.
+
+`hub list invites --token` is now `--reveal` (the old flag is rejected outright). `awewarm -v` on a source checkout now says `editable, git <describe>` instead of a bare number; `awewarm update` refuses on a checkout and tells you to `git pull && pip install -e .` instead of running pip.
+
 ## v0.4.6
 
 `hub list` splits into `hub list users` (paired tenants) and `hub list invites` (every minted code with pending / used / expired status, codes masked by default; `--token` reveals them). Invite codes are kept on disk in the clear so the operator can recover one already sent (`hub list invites --token`) — anyone who can read the data dir can use a pending invite, so guard it accordingly. The server now reloads `tenants.json` when it changes underneath a long-lived `serve`, so invites minted or tenants revoked by separate CLI processes take effect without a restart, while in-memory usage / lastSeen for already-connected tenants survive the reload. `join` marks an invite as used (`usedBy` / `usedAt`) instead of deleting it, so the operator can see who joined with which code. `tenants.json` still stores only SHA-256 hashes of tenant tokens (pairings survive restarts), and API keys remain the only secret that never touches disk.
