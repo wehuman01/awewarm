@@ -346,18 +346,18 @@ awewarm remote connect <url>           # pair with a server (token generated + s
 awewarm remote status                  # server view: uptime, last tick, delegated connections
 awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)
 awewarm remote disconnect              # forget the server + release its claim (refuses while delegations exist)
-awewarm update [--check]              # upgrade to the latest PyPI release
+awewarm self-update [--check]         # upgrade to the latest PyPI release
 ```
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`, `self-update`) still work as hidden aliases; they print their new spelling and will be removed in v1.0.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`) still work as hidden aliases; they print their new spelling and will be removed in v1.0. `awewarm update` (the pre-0.4.8 spelling of `self-update`) is hidden too.
 
 ## Self-Update
 
 awewarm checks PyPI in the background — at most once a day, and never during scheduler ticks. When a newer release exists, interactive commands print a reminder to stderr.
 
 ```bash
-awewarm update            # upgrade to the latest release
-awewarm update --check    # show versions only
+awewarm self-update            # upgrade to the latest release
+awewarm self-update --check    # show versions only
 ```
 
 To disable the background check:
@@ -373,7 +373,7 @@ pip install -e .
 python3 -m unittest discover -s tests
 ```
 
-`awewarm -v` says `editable` (with the git state) when running from this checkout; pip's recorded metadata freezes at `pip install -e .` time, so re-run it after a version bump to keep `pip show` in sync. `awewarm update` refuses on a checkout — pull and re-install instead.
+`awewarm -v` says `editable` (with the git state) when running from this checkout; pip's recorded metadata freezes at `pip install -e .` time, so re-run it after a version bump to keep `pip show` in sync. `awewarm self-update` refuses on a checkout — pull and re-install instead.
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the engineering doctrine and [docs/CHANGELOG.md](docs/CHANGELOG.md) for release history.
 

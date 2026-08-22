@@ -76,13 +76,13 @@ class SurfaceTests(IsolatedTestCase):
         self.assertIn("-v, --version", result.output)
         self.assertEqual(
             command_names(result.output),
-            ["config", "discover", "hub", "init", "remote", "run", "scheduler", "serve", "status", "update"],
+            ["config", "discover", "hub", "init", "remote", "run", "scheduler", "self-update", "serve", "status"],
         )
 
     def test_legacy_command_names_are_hidden(self):
         result = invoke(["--help"])
         names = command_names(result.output)
-        for legacy in ("add", "activate", "verify", "enable", "anchor", "disable", "times", "remove", "install", "uninstall", "inspect", "self-update"):
+        for legacy in ("add", "activate", "verify", "enable", "anchor", "disable", "times", "remove", "install", "uninstall", "inspect", "update"):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
@@ -1020,14 +1020,14 @@ class SchedulerCommandTests(IsolatedTestCase):
 class UpdateTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
     def test_check_when_up_to_date(self, _pypi):
-        result = invoke(["update", "--check"])
+        result = invoke(["self-update", "--check"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("up to date", result.output)
 
     @mock.patch("awewarm.cli.subprocess.run")
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
     def test_check_shows_latest_without_updating(self, _pypi, run):
-        result = invoke(["update", "--check"])
+        result = invoke(["self-update", "--check"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("9.9.9", result.output)
         run.assert_not_called()
@@ -1037,7 +1037,7 @@ class UpdateTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
     def test_update_runs_pip(self, _pypi, _checkout, run):
         run.return_value = mock.Mock(returncode=0)
-        result = invoke(["update"])
+        result = invoke(["self-update"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         command = " ".join(run.call_args[0][0])
         self.assertIn("awewarm", command)
@@ -1047,7 +1047,7 @@ class UpdateTests(IsolatedTestCase):
     @mock.patch("awewarm.cli.running_from_checkout", return_value=True)
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="9.9.9")
     def test_update_refuses_on_a_source_checkout(self, _pypi, _checkout, run):
-        result = invoke(["update"])
+        result = invoke(["self-update"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("source checkout", output_of(result))
         self.assertIn("pip install -e", output_of(result))
@@ -1055,7 +1055,7 @@ class UpdateTests(IsolatedTestCase):
 
     @mock.patch("awewarm.cli.get_pypi_latest", side_effect=OSError("offline"))
     def test_update_dies_on_network_failure(self, _pypi):
-        result = invoke(["update", "--check"])
+        result = invoke(["self-update", "--check"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("failed to check PyPI", output_of(result))
 
@@ -1101,8 +1101,8 @@ class LegacyAliasTests(IsolatedTestCase):
         self.assertEqual(state["connections"]["claude-code-main"]["history"][-1]["kind"], "manual")
 
     @mock.patch("awewarm.cli.get_pypi_latest", return_value="0.0.1")
-    def test_legacy_self_update_check(self, _pypi):
-        result = invoke(["self-update", "--check"])
+    def test_legacy_update_check(self, _pypi):
+        result = invoke(["update", "--check"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("up to date", result.output)
 

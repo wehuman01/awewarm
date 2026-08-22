@@ -165,7 +165,7 @@ def _maybe_self_heal_job(config=None):
     invokes `awewarm tick` and the wake entries are current.
 
     Covers users who upgraded via `pip install --upgrade awewarm` directly,
-    bypassing `awewarm update` — the next tick detects the old job, rewrites
+    bypassing `awewarm self-update` — the next tick detects the old job, rewrites
     it, and from the tick after that the new command line is in use.
     """
     try:

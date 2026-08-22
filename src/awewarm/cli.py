@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """awewarm CLI: init, discover, config, status, run, scheduler, remote, serve,
-hub, update (plus tick, hidden). Older command names still work as hidden
+hub, self-update (plus tick, hidden). Older command names still work as hidden
 aliases (removed in v1.0); the scheduler's `awewarm tick` invocation is fixed
 because installed scheduler agents run it verbatim and self-heal if outdated."""
 import copy
@@ -1197,7 +1197,7 @@ def _legacy_pmset_cleanup():
     """Cancel a pmset repeat wake left behind by awewarm < 0.4, if any.
 
     The calendar entries replaced it; this runs after scheduler
-    install/uninstall and after `awewarm update`, and is a no-op once the
+    install/uninstall and after `awewarm self-update`, and is a no-op once the
     state key is gone. A failed cancel keeps the key, so the next of those
     commands retries.
     """
@@ -1828,9 +1828,9 @@ def _self_update(check_only):
         raise SystemExit(result.returncode)
 
 
-@cli.command("update")
+@cli.command("self-update")
 @click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
-def update_command(check_only):
+def self_update_command(check_only):
     """Update awewarm to the latest PyPI release."""
     _self_update(check_only)
 
@@ -1956,11 +1956,11 @@ def legacy_inspect(connection, as_json):
     _show_status(connection, as_json)
 
 
-@cli.command("self-update", hidden=True)
+@cli.command("update", hidden=True)
 @click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
-def legacy_self_update(check_only):
-    """Legacy alias for `awewarm update`."""
-    _moved("self-update", "update")
+def legacy_update(check_only):
+    """Legacy alias for `awewarm self-update`."""
+    _moved("update", "self-update")
     _self_update(check_only)
 
 

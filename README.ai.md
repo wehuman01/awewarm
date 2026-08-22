@@ -193,7 +193,7 @@ awewarm status <id>                 # one connection in detail
 awewarm config set <id>             # show current schedule settings
 awewarm status --json               # redacted machine-readable dump
 awewarm config path                 # file locations
-awewarm update --check              # show current/latest version
+awewarm self-update --check          # show current/latest version
 ```
 
 Local-only changes (run on user request):
@@ -206,7 +206,7 @@ awewarm config set <id> --anchor HH:MM     # anchor past an already-open window 
 awewarm config remove <id>                 # delete connection + stored API key (confirm first)
 awewarm scheduler install [--wake]         # background scheduler (launchd / Task Scheduler / systemd);
                                            # --wake arms RTC wake-from-sleep for slot/renewal moments
-awewarm update                             # upgrade awewarm
+awewarm self-update                      # upgrade awewarm
 ```
 
 User-only commands (interactive or quota-consuming):
@@ -220,7 +220,7 @@ awewarm run [--force]               # fires every enabled connection now (prompt
 
 The background scheduler's own command is `awewarm tick` (hidden, invoked once a minute by the installed agent) — never call it manually; use `awewarm run` for manual activations and `awewarm status` to preview what would fire.
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, `self-update`, ...) still work as hidden aliases that print their new spelling.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling; so does `awewarm update` (the pre-0.4.8 spelling of `self-update`).
 
 ## Safety Rules
 

@@ -346,18 +346,18 @@ awewarm remote connect <url>           # 与服务器配对（token 本地生成
 awewarm remote status                  # 服务器视角：运行时长、上次 tick、委托连接
 awewarm remote push [<id>]             # 向服务器重新同步委托连接（配置 + 密钥）
 awewarm remote disconnect              # 忘掉服务器并释放 claim（仍有委托连接时拒绝）
-awewarm update [--check]              # 升级到最新 PyPI 版本
+awewarm self-update [--check]         # 升级到最新 PyPI 版本
 ```
 
-0.3 之前版本的命令（`add plan`、`times`、`enable`、`disable`、`verify`、`anchor`、`activate`、`remove`、`install`、`uninstall`、`inspect`、`self-update`）仍作为隐藏别名可用 —— 执行时会提示新写法，v1.0 移除。
+0.3 之前版本的命令（`add plan`、`times`、`enable`、`disable`、`verify`、`anchor`、`activate`、`remove`、`install`、`uninstall`、`inspect`）仍作为隐藏别名可用 —— 执行时会提示新写法，v1.0 移除。`awewarm update`（`self-update` 在 0.4.8 之前的写法）同样是隐藏别名。
 
 ## 自动更新
 
 awewarm 会在后台检查 PyPI —— 每天至多一次，且绝不在调度器 tick 里检查。有新版本时，交互式命令会在结束后向 stderr 打印一条提醒。
 
 ```bash
-awewarm update            # 升级到最新版本
-awewarm update --check    # 只看版本，不升级
+awewarm self-update            # 升级到最新版本
+awewarm self-update --check    # 只看版本，不升级
 ```
 
 关闭后台检查：
@@ -385,6 +385,6 @@ pip install -e .
 python3 -m unittest discover -s tests
 ```
 
-源码检出状态下 `awewarm -v` 会标注 `editable` 及 git 状态；pip 记录的元数据停在 `pip install -e .` 那一刻，版本号升级后重跑一次即可同步 `pip show`。检出状态下 `awewarm update` 会拒绝执行——请用 `git pull` + 重新安装代替。
+源码检出状态下 `awewarm -v` 会标注 `editable` 及 git 状态；pip 记录的元数据停在 `pip install -e .` 那一刻，版本号升级后重跑一次即可同步 `pip show`。检出状态下 `awewarm self-update` 会拒绝执行——请用 `git pull` + 重新安装代替。
 
 工程规范见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)，版本历史见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。

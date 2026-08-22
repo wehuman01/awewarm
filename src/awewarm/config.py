@@ -415,7 +415,7 @@ def load_config(path=None):
             + _template_fix(path or config_path()))
     version = data.get("version", 1)
     if version > CONFIG_VERSION:
-        die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm update")
+        die(f"config version {version} is newer than this awewarm understands\nfix: update awewarm: awewarm self-update")
     if version < CONFIG_VERSION:
         die(
             f"config version {version} predates the current format (version {CONFIG_VERSION}); "

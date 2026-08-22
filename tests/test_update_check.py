@@ -42,7 +42,7 @@ class ReminderTests(IsolatedTestCase):
     def test_check_returns_reminder_for_newer_release(self, _pypi):
         reminder = update_check._check()
         self.assertIn("9.9.9", reminder)
-        self.assertIn("awewarm update", reminder)
+        self.assertIn("awewarm self-update", reminder)
 
     @mock.patch.object(update_check, "get_pypi_latest", return_value="9.9.9")
     def test_reminder_at_most_once_per_day(self, _pypi):

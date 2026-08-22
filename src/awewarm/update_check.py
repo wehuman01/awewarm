@@ -2,7 +2,7 @@
 
 Checks PyPI at most once a day (cached next to the config) and only for
 interactive commands — never for `awewarm tick`, which the background scheduler
-invokes every minute, and never for `awewarm update` itself. Network failures
+invokes every minute, and never for `awewarm self-update` itself. Network failures
 back off for a few hours so an offline machine does not retry on every command.
 """
 import json
@@ -65,8 +65,8 @@ def _should_skip(args):
     if any(flag in args for flag in ("-h", "--help", "-v", "-V", "--version")):
         return True
     # `awewarm run` (user-facing, real requests) and `awewarm tick` (the
-    # scheduler, once a minute) and `update` (about to replace the installed
-    # package) and `serve` (long-running) should never hit PyPI.
+    # scheduler, once a minute) and `self-update` (about to replace the
+    # installed package) and `serve` (long-running) should never hit PyPI.
     return bool(args) and args[0] in ("run", "tick", "update", "self-update", "serve")
 
 
@@ -123,4 +123,4 @@ def _check():
         return None
 
     _save_cache(cache_path, {**cache, "nextCheckAt": now + CHECK_INTERVAL_S, "latestVersion": latest, "lastReminded": now})
-    return f"Update available: {__version__} → {latest}. Run `awewarm update` to update."
+    return f"Update available: {__version__} → {latest}. Run `awewarm self-update` to update."
