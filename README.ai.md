@@ -221,7 +221,7 @@ awewarm run [--force]               # fires every enabled connection now (prompt
 
 The background scheduler's own command is `awewarm tick` (hidden, invoked once a minute by the installed agent) — never call it manually; use `awewarm run` for manual activations and `awewarm status` to preview what would fire.
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling. `remote status` folded into `status --remote` (hidden alias likewise). `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling. `remote status` folded into `status --remote` (hidden alias likewise). `awewarm update` was removed outright in v0.5.0 — use `awewarm self-update`.
 
 ## Safety Rules
 

@@ -356,7 +356,7 @@ awewarm remote disconnect              # 忘掉服务器并释放 claim（仍有
 awewarm self-update [--check]         # 升级到最新 PyPI 版本
 ```
 
-0.3 之前版本的命令（`add plan`、`times`、`enable`、`disable`、`verify`、`anchor`、`activate`、`remove`、`install`、`uninstall`、`inspect`）仍作为隐藏别名可用 —— 执行时会提示新写法，v1.0 移除。`remote status` 已并入 `status --remote`（同样保留为隐藏别名）。`awewarm update` 已在 v0.4.8 彻底移除——请使用 `awewarm self-update`。
+0.3 之前版本的命令（`add plan`、`times`、`enable`、`disable`、`verify`、`anchor`、`activate`、`remove`、`install`、`uninstall`、`inspect`）仍作为隐藏别名可用 —— 执行时会提示新写法，v1.0 移除。`remote status` 已并入 `status --remote`（同样保留为隐藏别名）。`awewarm update` 已在 v0.5.0 彻底移除——请使用 `awewarm self-update`。
 
 ## 自动更新
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.8
+## v0.5.0
 
 `awewarm status` gains `--remote` / `--local` filters: the merged view keeps showing everything by default, `--remote` narrows it to delegated connections and leads with the server health line (version, uptime, last tick) that used to live in `remote status`, `--local` shows only locally scheduled connections. A filter that names a connection of the other kind dies with the matching `config set <id> --remote/--local` fix instead of rendering it; `--remote` with no server paired or nothing delegated prints a friendly pointer instead of failing. `awewarm remote status` is now a hidden alias for `status --remote` (migration note, removed in v1.0), same treatment as the pre-0.3 names.
 

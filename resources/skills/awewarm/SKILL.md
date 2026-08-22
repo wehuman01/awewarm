@@ -27,7 +27,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Server-side — user runs on the 24/7 box | `awewarm serve [--data-dir/--bind/--port/--token]` (resident process; do not background it from an agent session). |
 | Hub admin — operator runs on the hub box | `awewarm hub status [--details]` (read-only overview: tenants/connections against the caps, invite counts, serve liveness probe), `awewarm hub invite [--note/--expires-hours]` (side effect: writes tenants.json; the code is recoverable later), `awewarm hub list users [--api/--reveal/--json]` (tenant table; --api adds each connection's API endpoint, --reveal the joining invite code), `awewarm hub list invites [--reveal/--json]` (every minted code with pending/used/expired/revoked status; codes masked unless --reveal), `awewarm hub revoke <tenant>` (confirm first — kills that user's pairings and their delegated connections). All take `--data-dir` (default `~/.awewarm-server`). |
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling — prefer the new names. `remote status` folded into `status --remote` (hidden alias likewise). `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor`, `activate`, `inspect`, ...) still work as hidden aliases that print their new spelling — prefer the new names. `remote status` folded into `status --remote` (hidden alias likewise). `awewarm update` was removed outright in v0.5.0 — use `awewarm self-update`.
 
 ## Intent Router
 
