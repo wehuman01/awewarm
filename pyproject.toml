@@ -23,6 +23,11 @@ classifiers = [
   "Topic :: Utilities"
 ]
 
+[project.urls]
+Homepage = "https://github.com/wehuman01/awewarm"
+Repository = "https://github.com/wehuman01/awewarm"
+Changelog = "https://github.com/wehuman01/awewarm/blob/main/docs/CHANGELOG.md"
+
 [project.scripts]
 awewarm = "awewarm.cli:main"
 

@@ -238,7 +238,7 @@ awewarm status --local                            # 只看本地调度的连接
 
 ## Hub 模式 —— 一台服务器，多个用户
 
-多租户保温——一台常开机器为团队、家人或社区保温，用一次性邀请码配对——已拆分为独立包：**awewarm-hub**（`pip install awewarm-hub`；闭源，PyPI 可装）。运营者改用 `awewarm-hub serve` 运行并管理租户（`awewarm-hub invite / list / revoke / restore / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。
+多租户保温——一台常开机器为团队、家人或社区保温，用一次性邀请码配对——已拆分为独立包：**[awewarm-hub](https://github.com/wehuman01/awewarm-hub)**（`pip install awewarm-hub`；同样以 MPL-2.0 开源，PyPI 可装）。运营者改用 `awewarm-hub serve` 运行并管理租户（`awewarm-hub invite / list / revoke / restore / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。
 
 hub 的用户继续使用本包，方式完全不变：
 

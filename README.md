@@ -238,7 +238,7 @@ awewarm status --local                            # locally scheduled connection
 
 ## Hub mode — one server, many users
 
-Multi-tenant serving — one box warming connections for a team, a family, or a community, paired through one-time invites — is a separate package: **awewarm-hub** (`pip install awewarm-hub`; closed-source, on PyPI). The operator runs `awewarm-hub serve` and administers tenants there (`awewarm-hub invite / list / revoke / restore / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement.
+Multi-tenant serving — one box warming connections for a team, a family, or a community, paired through one-time invites — is a separate package: **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** (`pip install awewarm-hub`; open-source under the same MPL-2.0, on PyPI). The operator runs `awewarm-hub serve` and administers tenants there (`awewarm-hub invite / list / revoke / restore / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement.
 
 Users of a hub keep using this package exactly as before:
 
