@@ -53,8 +53,8 @@ def _save_cache(path, data):
         pass
 
 
-def get_pypi_latest():
-    url = "https://pypi.org/pypi/awewarm/json"
+def get_pypi_latest(package="awewarm"):
+    url = f"https://pypi.org/pypi/{package}/json"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=5) as response:
         data = json.loads(response.read())
