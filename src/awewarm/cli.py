@@ -1586,7 +1586,11 @@ def hub_invite_command(data_dir, note, expires_hours):
     if expires_hours <= 0:
         die("--expires-hours must be greater than 0")
     engine = _load_hub(_resolve_server_data_dir(data_dir))
-    code = engine.mint_invite(note, expires_hours)
+    from .server import ApiError
+    try:
+        code = engine.mint_invite(note, expires_hours)
+    except ApiError as exc:  # registry busy (serve mid-update) or the save failed
+        die(f"could not mint the invite:\n{exc}")
     click.echo(f"✓ Invite minted{f' for {note}' if note else ''} — one use, expires in {expires_hours} h")
     click.echo(f"  {code}")
     click.echo("  The user runs: awewarm remote connect <hub-url> --invite " + code)
@@ -1758,7 +1762,11 @@ def hub_revoke_command(tenant, data_dir):
     if not click.confirm(f"Revoke {tenant}{label}? Its delegated connections stop being ticked: {conns}", default=False):
         click.echo("aborted — nothing revoked")
         return
-    engine.revoke(tenant)
+    from .server import ApiError
+    try:
+        engine.revoke(tenant)
+    except ApiError as exc:  # registry busy (serve mid-update) or revoked in another process
+        die(f"could not revoke {tenant}:\n{exc}")
     click.echo(f"✓ {tenant} revoked — its token no longer works; connections and state removed")
 
 
@@ -1962,6 +1970,8 @@ def main(argv=None):
     """Console entry point; prints an update reminder after interactive commands."""
     args = list(sys.argv[1:] if argv is None else argv)
     get_reminder = check_async(args)
+    # The root group takes no options, so args[0] is the subcommand name when
+    # one is given; help/version flags may sit at any position.
     command = args[0] if args else None
     bypass_lock = command == "serve" or any(
         arg in ("-h", "--help", "-v", "--version") for arg in args
@@ -1970,7 +1980,7 @@ def main(argv=None):
     try:
         try:
             with guard:
-                return cli.main(args=argv, prog_name="awewarm")
+                return cli.main(args=args, prog_name="awewarm")
         except LockBusy:
             if command == "tick":
                 return None

@@ -307,6 +307,15 @@ class HubCliTests(IsolatedTestCase):
         self.assertEqual(registry["invites"][server._hash_secret(code)]["note"], "alice")
         self.assertEqual(registry["invites"][server._hash_secret(code)]["code"], code)
 
+    def test_invite_reports_a_busy_registry_without_a_traceback(self):
+        busy = server.ApiError(503, "hub registry is busy — retry this request")
+        with mock.patch.object(server.Hub, "mint_invite", side_effect=busy):
+            result = invoke(["hub", "invite"] + self.dir_opt)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("could not mint the invite", result.output)
+        self.assertIn("hub registry is busy", result.output)
+        self.assertNotIn("Traceback", result.output)
+
     def test_list_shows_tenants_and_totals(self):
         engine = server.Hub(self.data_dir)
         invite = engine.mint_invite("alice")
@@ -348,6 +357,17 @@ class HubCliTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
         self.assertNotIn(joined["tenantId"], registry["tenants"])
+
+    def test_revoke_reports_a_busy_registry_without_a_traceback(self):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite("alice"))
+        busy = server.ApiError(503, "hub registry is busy — retry this request")
+        with mock.patch.object(server.Hub, "revoke", side_effect=busy):
+            result = invoke(["hub", "revoke", joined["tenantId"]] + self.dir_opt, input="y\n")
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn(f"could not revoke {joined['tenantId']}", result.output)
+        self.assertIn("hub registry is busy", result.output)
+        self.assertNotIn("Traceback", result.output)
 
     def test_list_with_no_tenants_still_shows_pending_invites(self):
         engine = server.Hub(self.data_dir)

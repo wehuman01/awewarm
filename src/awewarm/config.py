@@ -397,7 +397,7 @@ def _write_json(path, data):
     )
     tmp = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, path)
     except BaseException:

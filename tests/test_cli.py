@@ -1695,6 +1695,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
         self.assertEqual(on_disk["connections"]["remote"]["glm"]["settings"]["schedule"]["times"], ["07:07"])
 
+
 class PlainHttpConnectTests(IsolatedTestCase):
     """remote connect must warn before pairing over plaintext HTTP to a public host."""
 
