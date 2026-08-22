@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import urllib.parse
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ import click
 
 from . import __version__, discover, display_version, install, keystore, remote, running_from_checkout, schedule, transport
 from .flows import _add_account_flow, _config_add, _slots_proc
+from .locking import LockBusy, local_process_lock
 from .status import _show_status
 from .update_check import check_async, get_pypi_latest, version_gte
 from .config import (
@@ -1958,9 +1960,22 @@ def legacy_inspect(connection, as_json):
 
 def main(argv=None):
     """Console entry point; prints an update reminder after interactive commands."""
-    get_reminder = check_async(sys.argv[1:] if argv is None else argv)
+    args = list(sys.argv[1:] if argv is None else argv)
+    get_reminder = check_async(args)
+    command = args[0] if args else None
+    bypass_lock = command == "serve" or command in ("-h", "--help", "-v", "--version")
+    guard = nullcontext() if bypass_lock else local_process_lock(timeout_seconds=0 if command == "tick" else 5)
     try:
-        return cli.main(args=argv, prog_name="awewarm")
+        try:
+            with guard:
+                return cli.main(args=argv, prog_name="awewarm")
+        except LockBusy:
+            if command == "tick":
+                return None
+            raise SystemExit(
+                "awewarm: another awewarm command is still running\n"
+                "fix: wait for it to finish, then retry"
+            )
     finally:
         reminder = get_reminder()
         if reminder:

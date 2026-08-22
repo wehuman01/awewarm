@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 
-from .config import config_path, die
+from .config import _write_json, config_path, die
 
 
 def secrets_path():
@@ -23,20 +23,23 @@ def _read_secrets():
     try:
         with open(secrets_path(), encoding="utf-8") as handle:
             data = json.load(handle)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        if not isinstance(data, dict):
+            die(
+                f"secrets file must contain a JSON object: {secrets_path()}\n"
+                "fix: restore or repair the file; awewarm will not overwrite it"
+            )
+        return data
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        die(
+            f"cannot read secrets: {secrets_path()}\n{exc}\n"
+            "fix: restore or repair the file; awewarm will not overwrite it"
+        )
 
 
 def _write_secrets(data):
-    path = secrets_path()
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
-        handle.write("\n")
-    try:
-        os.chmod(path, 0o600)  # every write, so a hand-relaxed mode never persists
-    except OSError:
-        pass
+    _write_json(secrets_path(), data)
 
 
 def store_api_key(conn_id, api_key):

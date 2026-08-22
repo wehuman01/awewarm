@@ -35,6 +35,12 @@ first.
   deliberate exception — a resident *server* process for delegated
   connections; its tick body is the same pure planner and the local rules
   above still hold for everything running locally.
+- **Local state is one transaction at a time**: the console entry point holds
+  one cross-process lock across each short-lived command. A competing
+  background `tick` exits and retries next minute; an interactive command
+  waits up to five seconds, then fails clearly. Atomic JSON replacement keeps
+  readers from seeing torn files; the lock prevents read-modify-write updates
+  from overwriting each other.
 - **Pure planner**: `schedule.plan_actions(connection, conn_state, now)` does
   no I/O and takes an injected clock. Every scheduling rule lives there and is
   covered by tests. Do not put time decisions anywhere else.
@@ -59,7 +65,8 @@ first.
   ladder; manual/verify fires never count as nodes; a slot the machine slept
   through (zero attempts) is not a lost node.
 - **Security**: `discover` is read-only (no network, existence checks only);
-  API keys live in `secrets.json` (0600, read-back verified on store; legacy
+  API keys live in `secrets.json` (0600, atomic writes, read-back verified on
+  store; a malformed file is refused rather than replaced; legacy
   `keychain:` refs migrate once via the `security` CLI); every display path
   goes through `transport.redact`;
   logs never contain API keys or auth headers.
@@ -72,6 +79,11 @@ first.
   catch-up decides. The `--remote` flag only lands after the server accepted
   the push. Never introduce a state where both sides (or neither) tick a
   connection.
+- **Hub registry mutations are cross-process transactions**: the resident
+  `serve --hub` process and one-shot `hub invite/revoke` commands share a lock
+  under the server data dir. Every registry mutation refreshes from disk,
+  changes memory, and atomically saves while holding that lock; otherwise a
+  stale usage write could revive a revoked tenant.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.
 - **Update checks never run on scheduler ticks**: `update_check.check_async`

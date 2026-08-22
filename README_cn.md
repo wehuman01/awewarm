@@ -43,7 +43,7 @@ pip3 install awewarm
 
 后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm tick`。
 
-所有密钥都保存在 `secrets.json` —— 环境变量引用方式已移除：后台调度器（launchd / systemd / 任务计划程序）读不到 shell 变量，会以 "API key unavailable" 静默失败。
+所有密钥都保存在 `secrets.json` —— 环境变量引用方式已移除：后台调度器（launchd / systemd / 任务计划程序）读不到 shell 变量，会以 "API key unavailable" 静默失败。密钥文件使用原子写入；如果文件损坏或不可读，awewarm 会明确拒绝操作，不会把它静默覆盖。
 
 ## 快速开始
 
@@ -257,7 +257,7 @@ awewarm hub revoke <tenant>          # 吊销租户：token、连接、状态一
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
-与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --reveal`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
+与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --reveal`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限。常驻服务器与运营命令之间的 registry 修改会串行执行，因此并发的用量更新不会撤销租户吊销。另外 `remote disconnect` 不释放 hub 名额——保留的 token 重连即恢复；释放名额由运营者通过 `hub revoke` 决定。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
 
 一条信任规则必须说清楚：hub 用用户的 API key 发请求，明文 key 必然经过它的内存。Hub 适合**信任机器运营者（及其 root）**的人群——团队、朋友、自己家的设备；和陌生人合用一台 VPS 不属于这种场景。
 

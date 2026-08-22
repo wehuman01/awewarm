@@ -43,7 +43,7 @@ pip3 install awewarm
 
 The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm tick`.
 
-All keys live in `secrets.json` — env-var references were removed because the background scheduler (launchd/systemd/Task Scheduler) cannot read shell variables and would silently fail with "API key unavailable".
+All keys live in `secrets.json` — env-var references were removed because the background scheduler (launchd/systemd/Task Scheduler) cannot read shell variables and would silently fail with "API key unavailable". Writes are atomic; a malformed or unreadable secrets file is refused rather than silently replaced.
 
 ## Quick Start
 
@@ -257,7 +257,7 @@ awewarm hub revoke <tenant>            # drop a tenant: token, connections, stat
 awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
 ```
 
-Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
+Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly. Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a tenant revocation. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
 
 One trust rule to state plainly: the hub fires requests with its users' API keys, so their plaintext keys pass through its RAM. Hub for people who trust the machine's operator (and root); a shared VPS with strangers is not that.
 

@@ -30,6 +30,7 @@ no-ops.
 import json
 import os
 import re
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -391,14 +392,24 @@ def _write_json(path, data):
     # Same-dir temp + rename: readers (and a concurrent writer in another
     # process — the scheduler tick racing an edit command) never see a torn
     # file, where truncate-then-write once left two JSON docs concatenated.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "w") as handle:
-        handle.write(json.dumps(data, indent=2) + "\n")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _template_fix(where):

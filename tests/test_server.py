@@ -7,14 +7,13 @@ skip once it returns.
 """
 import json
 import tempfile
-import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from helpers import account_connection, plan_connection
+from helpers import account_connection, plan_connection, start_http_server, stop_http_server
 
 from awewarm import remote as remote_client
 from awewarm import server, transport
@@ -41,8 +40,8 @@ class ServerCase(unittest.TestCase):
         self.warm, self.httpd = server.make_server(
             self.data_dir, "127.0.0.1", 0, fixed_token=fixed_token
         )
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.shutdown)
+        self.server_thread = start_http_server(self.httpd)
+        self.addCleanup(stop_http_server, self.httpd, self.server_thread)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         if claim:
             remote_client.claim(self.url, self.token)
@@ -160,7 +159,7 @@ class ConnectionTests(ServerCase):
         self.push_plan()
         self.warm.state["connections"]["glm"]["lastResult"] = "success"
         self.warm._save(self.warm.state_path, self.warm.state)
-        warm2, _ = server.make_server(self.data_dir)  # simulates a restart
+        warm2 = server.WarmServer(self.data_dir)  # simulates a restart
         self.assertFalse(warm2.claimed)
         self.assertEqual(warm2.config["connections"]["glm"]["activation"]["model"], "glm-4.7")
         self.assertEqual(warm2.state["connections"]["glm"]["lastResult"], "success")
@@ -169,7 +168,7 @@ class ConnectionTests(ServerCase):
 
     def test_put_keys_restores_keyring(self):
         self.push_plan()
-        warm2, _ = server.make_server(self.data_dir)
+        warm2 = server.WarmServer(self.data_dir)
         self.assertTrue(warm2.view()["connections"]["glm"]["keyMissing"])
         remote_client.push_keys(self.url, self.token, {"glm": "sk-test"})
         self.assertFalse(self.view()["connections"]["glm"]["keyMissing"])

@@ -1,7 +1,6 @@
 import json
 import os
 import tempfile
-import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,11 +8,18 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
-from helpers import IsolatedTestCase, account_connection, plan_connection
+from helpers import (
+    IsolatedTestCase,
+    account_connection,
+    plan_connection,
+    start_http_server,
+    stop_http_server,
+)
 
 import awewarm
 from awewarm import config as cfg, keystore, remote, schedule, server
 from awewarm.cli import cli, main
+from awewarm.locking import process_lock
 
 RUNNER = CliRunner()
 
@@ -1151,6 +1157,20 @@ class MainReminderTests(IsolatedTestCase):
             pass
         check.assert_called_once_with(["run"])
 
+    @mock.patch("awewarm.cli.check_async", return_value=lambda: None)
+    def test_tick_exits_cleanly_when_another_process_holds_the_lock(self, _check):
+        with process_lock(timeout_seconds=0):
+            self.assertIsNone(main(["tick"]))
+
+    @mock.patch("awewarm.cli.check_async", return_value=lambda: None)
+    def test_interactive_command_reports_a_busy_lock(self, _check):
+        immediate_lock = lambda **_kwargs: process_lock(timeout_seconds=0)
+        with process_lock(timeout_seconds=0), \
+             mock.patch("awewarm.cli.local_process_lock", side_effect=immediate_lock):
+            with self.assertRaises(SystemExit) as ctx:
+                main(["status"])
+        self.assertIn("another awewarm command is still running", str(ctx.exception))
+
 
 class AddPlanUserAnchorTests(IsolatedTestCase):
     @mock.patch("awewarm.discover.discover_accounts", return_value=[])
@@ -1479,8 +1499,8 @@ class RemoteDelegationTests(IsolatedTestCase):
 
     def start_server(self):
         self.warm, self.httpd = server.make_server(self.server_dir, "127.0.0.1", 0)
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.shutdown)
+        self.server_thread = start_http_server(self.httpd)
+        self.addCleanup(stop_http_server, self.httpd, self.server_thread)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self.token = remote.generate_token()
         remote.claim(self.url, self.token)
@@ -1626,7 +1646,7 @@ class RemoteDelegationTests(IsolatedTestCase):
     def test_status_offline_falls_back_to_last_sync(self):
         self.delegate()
         self.assertEqual(invoke(["status"]).exit_code, 0)
-        self.httpd.shutdown()
+        stop_http_server(self.httpd, self.server_thread)
         result = invoke(["status"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("server unreachable, showing the last sync", output_of(result))
@@ -1656,7 +1676,7 @@ class RemoteDelegationTests(IsolatedTestCase):
 
     def test_edits_while_offline_stay_local_and_pending(self):
         self.delegate()
-        self.httpd.shutdown()
+        stop_http_server(self.httpd, self.server_thread)
         result = invoke(["config", "set", "glm", "--times", "07:07"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("unreachable", output_of(result))
@@ -1664,7 +1684,6 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertIn("glm", state.get("pendingPush") or {})
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
         self.assertEqual(on_disk["connections"]["remote"]["glm"]["settings"]["schedule"]["times"], ["07:07"])
-
 
 class PlainHttpConnectTests(IsolatedTestCase):
     """remote connect must warn before pairing over plaintext HTTP to a public host."""

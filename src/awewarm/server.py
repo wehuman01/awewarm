@@ -41,12 +41,14 @@ import threading
 import time
 import urllib.parse
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import __version__, schedule, transport
 from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for, _write_json
+from .locking import LockBusy, process_lock
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
 INVITE_RE = re.compile(r"^awi_[A-Za-z0-9_-]{16,128}$")
@@ -377,6 +379,7 @@ class Hub:
                  max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
         self.data_dir = Path(data_dir).expanduser()
         self.registry_path = self.data_dir / "tenants.json"
+        self.registry_lock_path = self.data_dir / "tenants.lock"
         self.log_path = self.data_dir / "awewarm-hub.log"
         self.lock = threading.RLock()
         self.max_tenants = max_tenants
@@ -421,14 +424,26 @@ class Hub:
         _write_json(self.registry_path, self.registry)
         self._registry_stamp = self._stamp()
 
+    @contextmanager
+    def _registry_transaction(self):
+        """Serialize refresh + mutation + save across serve and hub CLI processes."""
+        with self.lock:
+            try:
+                with process_lock(self.registry_lock_path, timeout_seconds=5):
+                    self._refresh()
+                    yield
+            except LockBusy:
+                raise ApiError(503, "hub registry is busy — retry this request")
+
     def _refresh(self):
         """Adopt tenants.json changes made by other processes since our last look.
 
         `hub invite` and `hub revoke` are one-shot CLI processes writing the
         same file; without this a long-lived serve would 403 every join with
         an invite minted after it started and keep honoring revoked tokens.
-        Records of tenants we already serve win over disk — their in-memory
-        usage and lastSeen are newer than anything another process wrote."""
+        Disk wins for persisted tenant records because every mutation saves
+        synchronously under the registry transaction lock. Existing Tenant
+        objects stay alive so their RAM keyrings and rate-limit queues survive."""
         with self.lock:
             stamp = self._stamp()
             if stamp is None or stamp == self._registry_stamp:
@@ -443,7 +458,7 @@ class Hub:
             self.registry = fresh
             for tenant_id in list(self.tenants):
                 if tenant_id in fresh["tenants"]:
-                    fresh["tenants"][tenant_id] = self.tenants[tenant_id].record
+                    self.tenants[tenant_id].record = fresh["tenants"][tenant_id]
                 else:  # revoked by the operator in another process
                     self.tenants.pop(tenant_id, None)
             for tenant_id, record in fresh["tenants"].items():
@@ -461,7 +476,7 @@ class Hub:
         can recover it (tenant tokens, in contrast, are stored hashed only)."""
         invite = "awi_" + secrets.token_urlsafe(16)
         now = datetime.now().astimezone()
-        with self.lock:
+        with self._registry_transaction():
             self.registry["invites"][_hash_secret(invite)] = {
                 "code": invite,
                 "note": note,
@@ -499,8 +514,7 @@ class Hub:
 
     def join(self, invite):
         """Burn one invite, create the tenant, and return its token exactly once."""
-        with self.lock:
-            self._refresh()  # invites are minted by other processes (awewarm hub invite)
+        with self._registry_transaction():
             if not INVITE_RE.match(invite or ""):
                 raise ApiError(400, "invite must look like awi_<code> — get one from the hub operator")
             digest = _hash_secret(invite)
@@ -534,7 +548,7 @@ class Hub:
 
     def revoke(self, tenant_id):
         """Drop a tenant: its token, connections, and their state on disk."""
-        with self.lock:
+        with self._registry_transaction():
             tenant = self.tenants.get(tenant_id)
             if tenant is None:
                 raise ApiError(404, f"no such tenant: {tenant_id} (see: awewarm hub list users)")
@@ -573,8 +587,11 @@ class Hub:
         seen = schedule.parse_ts(tenant.record.get("lastSeenAt"))
         if seen is not None and now - seen < HUB_SEEN_PRECISION:
             return
-        tenant.record["lastSeenAt"] = schedule.iso(now)
-        self._save()
+        with self._registry_transaction():
+            if tenant.id not in self.tenants:
+                raise ApiError(401, "hub token was revoked during this request")
+            tenant.record["lastSeenAt"] = schedule.iso(now)
+            self._save()
 
     # --- quotas and usage ---
 
@@ -589,7 +606,9 @@ class Hub:
                 )
 
     def _bump_usage(self, tenant, count):
-        with self.lock:
+        with self._registry_transaction():
+            if tenant.id not in self.tenants:
+                return
             today = datetime.now().astimezone().date().isoformat()
             usage = tenant.record.setdefault("usage", {})
             if usage.get("day") != today:
@@ -634,12 +653,14 @@ class Hub:
 
     def tick(self, now_fn=None):
         fired, held = 0, []
-        for tenant_id in sorted(self.tenants):
-            result = self.tenants[tenant_id].warm.tick(now_fn=now_fn)
+        with self._registry_transaction():
+            tenants = [self.tenants[tenant_id] for tenant_id in sorted(self.tenants)]
+        for tenant in tenants:
+            result = tenant.warm.tick(now_fn=now_fn)
             fired += result["fired"]
             held.extend(result["held"])
             if result["fired"]:
-                self._bump_usage(self.tenants[tenant_id], result["fired"])
+                self._bump_usage(tenant, result["fired"])
         return {"fired": fired, "held": held}
 
     def run_now(self, tenant, conn_id, reset_due=False, allow_auto_disabled=False):

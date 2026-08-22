@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.8
+
+Local commands now share one cross-process transaction lock, preventing a scheduler tick and an interactive edit/run from overwriting each other's `state.json` updates. A busy background tick exits for the next minute to catch up; an interactive command waits up to five seconds and then reports the conflict.
+
+`secrets.json` writes now use the same atomic replace path as config and state. Malformed, unreadable, or non-object secret files are refused with a repair hint instead of being treated as empty and overwritten.
+
+HTTP integration tests now close their listening sockets and join server threads, removing Python 3.13 resource warnings and cutting their shutdown time. The old `awewarm update` alias is removed outright; use `awewarm self-update`.
+
+Hub registry mutations now hold a cross-process transaction lock shared by the resident server and operator CLI. A stale usage/last-seen write can no longer overwrite a concurrent revoke and revive the tenant's token.
+
 ## v0.4.7
 
 Orphan pmset wake events no longer accumulate. `sync_wake_events` now reads the live `pmset -g sched` output with creator attribution on every pass (not just when the ledger is stale), so `wakeorpoweron` events armed by the pmset command line that no ledger entry tracks are identified and cancelled. A failed cancel adopts the orphan into the ledger so the normal retry path owns it. `teardown_wake_layer` sweeps the same orphans at uninstall time — with the scheduler gone, nothing else would ever cancel them.

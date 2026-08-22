@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -9,6 +10,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 ENV_KEYS = ("AWEWARM_CONFIG", "AWEWARM_STATE", "AWEWARM_LOG", "AWEWARM_PLIST", "AWEWARM_SYSTEMD_DIR")
+
+
+def start_http_server(httpd):
+    """Run a test HTTP server with a short shutdown polling interval."""
+    thread = threading.Thread(
+        target=httpd.serve_forever,
+        kwargs={"poll_interval": 0.01},
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def stop_http_server(httpd, thread):
+    """Stop the loop, close its listening socket, and reap its thread."""
+    if thread.is_alive():
+        httpd.shutdown()
+    httpd.server_close()
+    thread.join(timeout=1)
 
 
 class IsolatedTestCase(unittest.TestCase):

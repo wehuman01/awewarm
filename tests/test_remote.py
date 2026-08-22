@@ -2,13 +2,12 @@
 honest failure modes (unreachable server, unconfigured remote, impostor 200s).
 """
 import tempfile
-import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
-from helpers import IsolatedTestCase, plan_connection
+from helpers import IsolatedTestCase, plan_connection, start_http_server, stop_http_server
 
 from awewarm import keystore, remote, server
 
@@ -26,8 +25,8 @@ class LiveServerCase(IsolatedTestCase):
     def start_server(self):
         from awewarm import server
         self.warm, self.httpd = server.make_server(self.data_dir, "127.0.0.1", 0)
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.shutdown)
+        self.server_thread = start_http_server(self.httpd)
+        self.addCleanup(stop_http_server, self.httpd, self.server_thread)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
     def pair(self):
@@ -99,8 +98,8 @@ class ImpostorTests(IsolatedTestCase):
                 pass
 
         httpd = HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.shutdown)
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
         url = f"http://127.0.0.1:{httpd.server_address[1]}"
         with self.assertRaises(remote.RemoteError) as ctx:
             remote.healthz(url)
@@ -123,8 +122,8 @@ class ImpostorTests(IsolatedTestCase):
                 pass
 
         httpd = HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.shutdown)
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
         url = f"http://127.0.0.1:{httpd.server_address[1]}"
         self.assertTrue(remote.healthz(url)["ok"])
         # Cloudflare Bot Fight Mode bans the default "Python-urllib/3.x" UA
@@ -146,8 +145,8 @@ class ImpostorTests(IsolatedTestCase):
                 pass
 
         httpd = HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.shutdown)
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
         url = f"http://127.0.0.1:{httpd.server_address[1]}"
         with self.assertRaises(remote.RemoteError) as ctx:
             remote.healthz(url)
@@ -166,7 +165,7 @@ class SessionTests(LiveServerCase):
         remote.push_connection(
             self.url, self.token, "glm", plan_connection(), "sk-test", "Asia/Shanghai"
         )
-        self.httpd.shutdown()  # restart: RAM token and keys are gone
+        stop_http_server(self.httpd, self.server_thread)  # restart: RAM token and keys are gone
         self.start_server()  # new port, same data dir
         config["remote"]["url"] = self.url  # DNS would repoint the same name
         self.assertFalse(remote.healthz(self.url)["claimed"])
@@ -177,7 +176,7 @@ class SessionTests(LiveServerCase):
 
     def test_wrong_stored_token_is_reported_not_swallowed(self):
         config = self.pair()
-        self.httpd.shutdown()
+        stop_http_server(self.httpd, self.server_thread)
         self.start_server()
         remote.claim(self.url, remote.generate_token())  # someone else claimed it first
         config["remote"]["url"] = self.url

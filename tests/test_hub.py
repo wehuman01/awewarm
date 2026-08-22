@@ -7,7 +7,6 @@ via hashed tokens while API keys stay RAM-only), revocation, and the client
 """
 import json
 import tempfile
-import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +14,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
-from helpers import IsolatedTestCase, plan_connection
+from helpers import IsolatedTestCase, plan_connection, start_http_server, stop_http_server
 
 import awewarm
 from awewarm import remote as remote_client
@@ -50,8 +49,8 @@ class HubCase(unittest.TestCase):
             self.data_dir, "127.0.0.1", 0, hub=True,
             max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
         )
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.shutdown)
+        self.server_thread = start_http_server(self.httpd)
+        self.addCleanup(stop_http_server, self.httpd, self.server_thread)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
     def join(self, note=None):
@@ -115,8 +114,8 @@ class PairingTests(HubCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         warm, httpd = server.make_server(Path(tmp.name) / "single", "127.0.0.1", 0)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.shutdown)
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
         url = f"http://127.0.0.1:{httpd.server_address[1]}"
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.join(url, "awi_" + "i" * 30)
@@ -178,7 +177,7 @@ class LifecycleTests(HubCase):
     def test_pairing_survives_a_restart_keys_do_not(self):
         token, _ = self.join("alice")
         self.push_plan(token)
-        self.httpd.shutdown()
+        stop_http_server(self.httpd, self.server_thread)
         self.make_hub()  # same data dir, fresh process
         view = remote_client.fetch_state(self.url, token)  # no re-claim needed
         self.assertTrue(view["connections"]["glm"]["keyMissing"])
@@ -228,14 +227,42 @@ class CrossProcessTests(HubCase):
             remote_client.fetch_state(self.url, token)
         self.assertIn("401", str(ctx.exception))
 
-    def test_reload_keeps_the_served_tenants_newer_state(self):
+    def test_stale_usage_write_cannot_revive_a_revoked_tenant(self):
         token, tenant_id = self.join("alice")
-        self.hub.tenants[tenant_id].record.setdefault("usage", {})["total"] = 7  # newer than disk
+        stale_tenant = self.hub.tenants[tenant_id]
+        server.Hub(self.data_dir).revoke(tenant_id)
+
+        self.hub._bump_usage(stale_tenant, 1)
+
+        self.assertNotIn(tenant_id, server.Hub(self.data_dir).registry["tenants"])
+        with self.assertRaises(server.ApiError) as ctx:
+            self.hub.auth(token)
+        self.assertEqual(ctx.exception.status, 401)
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_tick_does_not_fire_a_tenant_revoked_by_another_process(self, _send):
+        token, tenant_id = self.join("alice")
+        self.push_plan(token)
+        workspace = self.data_dir / "tenants" / tenant_id
+        server.Hub(self.data_dir).revoke(tenant_id)
+
+        result = self.hub.tick(now_fn=lambda conn: at("03:00", seconds=30))
+
+        self.assertEqual(result["fired"], 0)
+        self.assertFalse(workspace.exists())
+
+    def test_reload_uses_disk_record_but_keeps_runtime_tenant_state(self):
+        token, tenant_id = self.join("alice")
+        tenant = self.hub.tenants[tenant_id]
+        tenant.record.setdefault("usage", {})["total"] = 7  # deliberately unsaved stale memory
+        tenant.requests.append(123)
         code = server.Hub(self.data_dir).mint_invite("bob")  # operator writes tenants.json
         self.hub._refresh()
-        # the operator's invite became visible and alice's in-memory usage survived the graft
+        # Disk is authoritative for persisted records; runtime-only state stays on the Tenant.
         self.assertIn(server._hash_secret(code), self.hub.registry["invites"])
-        self.assertEqual(self.hub.registry["tenants"][tenant_id]["usage"]["total"], 7)
+        self.assertEqual(self.hub.registry["tenants"][tenant_id]["usage"]["total"], 0)
+        self.assertIs(self.hub.tenants[tenant_id], tenant)
+        self.assertEqual(list(tenant.requests), [123])
 
 
 class UsageTests(HubCase):
@@ -398,8 +425,8 @@ class ConnectHubTests(IsolatedTestCase):
         self.addCleanup(tmp.cleanup)
         self.data_dir = Path(tmp.name) / "hub"
         self.hub, self.httpd = server.make_server(self.data_dir, "127.0.0.1", 0, hub=True)
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.shutdown)
+        self.server_thread = start_http_server(self.httpd)
+        self.addCleanup(stop_http_server, self.httpd, self.server_thread)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
     def test_connect_with_invite_stores_a_working_token(self):

@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from helpers import IsolatedTestCase
@@ -42,6 +43,47 @@ class SecretsFileTests(IsolatedTestCase):
 
     def test_load_missing_entry_returns_none(self):
         self.assertIsNone(keystore.load_api_key("file:nobody"))
+
+    def test_malformed_secrets_file_is_refused_without_overwriting_it(self):
+        path = Path(keystore.secrets_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{broken")
+
+        with self.assertRaises(SystemExit) as ctx:
+            keystore.store_api_key("glm", "k" * 32)
+
+        self.assertIn("cannot read secrets", str(ctx.exception))
+        self.assertEqual(path.read_text(), "{broken")
+
+    def test_non_object_secrets_file_is_refused_without_overwriting_it(self):
+        path = Path(keystore.secrets_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]\n")
+
+        with self.assertRaises(SystemExit) as ctx:
+            keystore.store_api_key("glm", "k" * 32)
+
+        self.assertIn("must contain a JSON object", str(ctx.exception))
+        self.assertEqual(path.read_text(), "[]\n")
+
+    def test_failed_atomic_replace_keeps_the_previous_secrets_file(self):
+        keystore.store_api_key("glm", "old-key")
+        path = Path(keystore.secrets_path())
+        temp_modes = []
+
+        def fail_replace(source, _target):
+            temp_modes.append(os.stat(source).st_mode & 0o777)
+            raise OSError("disk full")
+
+        with mock.patch("awewarm.config.os.chmod", side_effect=OSError("denied")), \
+             mock.patch("awewarm.config.os.replace", side_effect=fail_replace):
+            with self.assertRaises(OSError):
+                keystore.store_api_key("other", "new-key")
+
+        self.assertEqual(temp_modes, [0o600])
+        self.assertEqual(keystore.load_api_key("file:glm"), "old-key")
+        self.assertIsNone(keystore.load_api_key("file:other"))
+        self.assertEqual(list(path.parent.glob(path.name + ".*.tmp")), [])
 
     def test_store_empty_key_dies(self):
         with self.assertRaises(SystemExit):
