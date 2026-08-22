@@ -1,10 +1,13 @@
 import os
 import multiprocessing
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from awewarm import locking
 from awewarm.locking import LockBusy, local_lock_paths, process_lock
 
 
@@ -17,6 +20,20 @@ def _try_lock_in_child(path, result):
 
 
 class ProcessLockTests(unittest.TestCase):
+    def test_windows_lock_uses_one_byte_nonblocking_lock(self):
+        calls = []
+        fake_msvcrt = SimpleNamespace(
+            LK_NBLCK=1,
+            LK_UNLCK=2,
+            locking=lambda fd, mode, size: calls.append((fd, mode, size)),
+        )
+        handle = SimpleNamespace(fileno=lambda: 42, seek=lambda _offset: None)
+        with mock.patch.object(locking.os, "name", "nt"), \
+             mock.patch.dict(sys.modules, {"msvcrt": fake_msvcrt}):
+            locking._try_lock(handle)
+            locking._unlock(handle)
+        self.assertEqual([call[1:] for call in calls], [(1, 1), (2, 1)])
+
     def test_local_locks_cover_both_config_and_state_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

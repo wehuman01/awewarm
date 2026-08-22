@@ -1,7 +1,9 @@
 import json
+import io
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -1170,6 +1172,14 @@ class MainReminderTests(IsolatedTestCase):
             with self.assertRaises(SystemExit) as ctx:
                 main(["status"])
         self.assertIn("another awewarm command is still running", str(ctx.exception))
+
+    @mock.patch("awewarm.cli.check_async", return_value=lambda: None)
+    @mock.patch("awewarm.cli.local_process_lock", side_effect=AssertionError("help must not lock"))
+    def test_subcommand_help_bypasses_the_local_lock(self, _lock, _check):
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                main(["status", "--help"])
+        self.assertEqual(ctx.exception.code, 0)
 
 
 class AddPlanUserAnchorTests(IsolatedTestCase):

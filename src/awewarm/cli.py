@@ -1963,7 +1963,9 @@ def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     get_reminder = check_async(args)
     command = args[0] if args else None
-    bypass_lock = command == "serve" or command in ("-h", "--help", "-v", "--version")
+    bypass_lock = command == "serve" or any(
+        arg in ("-h", "--help", "-v", "--version") for arg in args
+    )
     guard = nullcontext() if bypass_lock else local_process_lock(timeout_seconds=0 if command == "tick" else 5)
     try:
         try:

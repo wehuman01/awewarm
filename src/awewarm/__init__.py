@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-__version__ = "0.4.7"
+__version__ = "0.4.8"
 
 
 def _checkout_root():

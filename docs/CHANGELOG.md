@@ -2,7 +2,7 @@
 
 ## v0.4.8
 
-Local commands now share one cross-process transaction lock, preventing a scheduler tick and an interactive edit/run from overwriting each other's `state.json` updates. A busy background tick exits for the next minute to catch up; an interactive command waits up to five seconds and then reports the conflict.
+Local commands now share one cross-process transaction lock, preventing the local scheduler tick and an interactive edit/run from overwriting each other's `state.json` updates. A busy background tick exits for the next minute to catch up; an interactive command waits up to five seconds and then reports the conflict. `awewarm serve` keeps its separate server data directory and coordination model.
 
 `secrets.json` writes now use the same atomic replace path as config and state. Malformed, unreadable, or non-object secret files are refused with a repair hint instead of being treated as empty and overwritten.
 
