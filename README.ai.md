@@ -253,6 +253,10 @@ If the user is speaking Chinese, use this version instead:
 
 ## Next Steps
 
+### awewarm-hub — one server, many users
+
+If the user wants to share one always-on server with a team or family (paired through one-time invites), that is the separate **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** package (`pip install awewarm-hub`). The *operator* sets it up on the 24/7 box by following its agent doc: https://github.com/wehuman01/awewarm-hub/blob/main/README.ai.md — hub *users* stay right here with plain awewarm.
+
 ### aweswitch — agent profile switching
 
 If the user launches coding sessions against different providers, point them to [aweswitch](https://github.com/Webioinfo01/aweswitch), an agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath.

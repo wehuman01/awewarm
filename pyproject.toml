@@ -27,6 +27,7 @@ classifiers = [
 Homepage = "https://github.com/wehuman01/awewarm"
 Repository = "https://github.com/wehuman01/awewarm"
 Changelog = "https://github.com/wehuman01/awewarm/blob/main/docs/CHANGELOG.md"
+Hub = "https://github.com/wehuman01/awewarm-hub"
 
 [project.scripts]
 awewarm = "awewarm.cli:main"

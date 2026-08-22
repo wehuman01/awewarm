@@ -1,10 +1,12 @@
 # Changelog
 
-## v0.6.0
+## v0.5.5
 
 **Breaking:** hub mode — one server warming connections for many invited users — moved out of this package into **awewarm-hub**, a separate open-source package (same MPL-2.0, at [wehuman01/awewarm-hub](https://github.com/wehuman01/awewarm-hub)) on PyPI. The operator installs it on the box (`pip install awewarm-hub`, then `awewarm-hub serve` / `invite` / `list` / `revoke` / `restore` / `config`); an existing `~/.awewarm-server` data dir carries over unchanged. Everything hub *users* need stays here and works exactly as before: pairing (`awewarm remote connect <url> --invite awi_...`) and delegated-connection sync. Solo `awewarm serve` is untouched, and `server._Handler` grew overridable seams — the semi-public extension surface awewarm-hub builds on. The old spellings now die with a tombstone naming their replacement: `awewarm serve --hub` → `awewarm-hub serve`, `awewarm hub ...` → `awewarm-hub ...`; `awewarm serve` also no longer reads a data dir persisted by `hub config --data-dir` (the mechanism moved with the hub commands — pass `--data-dir` instead). Hub-side changes since v0.5.0 (per-token machine pairing with `--max-machines` and earlier hub entries below) never shipped in a release of this package; they ship in awewarm-hub, whose changelog carries them from here on.
 
 `scheduler install` now asks before installing on a machine with nothing to schedule locally — every connection delegated, or none configured yet. The server's `serve` ticks delegated connections itself, so a local scheduler there is dead weight (typically hit on the hub box, where installing awewarm-hub also brings this CLI). The question comes before `--wake`'s sudo prompt; scripted (non-tty) installs proceed with a notice.
+
+The two packages cross-reference each other in docs and metadata — this README's Companion Tools, README.ai.md's Next Steps, the packaged skill, and `pyproject.toml`'s URLs point to awewarm-hub, whose README/README_cn/README.ai/CONTRIBUTING/skill suite mirrors this one and points back — and their version numbers run in lockstep from here on: both ship v0.5.5, with the hub's engine pin at `awewarm>=0.5.5,<0.6`.
 
 ## v0.5.0
 

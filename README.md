@@ -78,6 +78,7 @@ You will be asked for the protocol, API base URL, API key, and model; awewarm te
 
 awewarm is part of a small tool family for AI coding agents:
 
+- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0, versions in lockstep with this package.
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath. If you launch coding-plan profiles with aweswitch, awewarm is the piece that keeps those 5-hour windows from going cold overnight.
 - **[aweskill](https://github.com/Webioinfo01/aweskill)** — CLI skill package manager for AI agents (47+ agents).
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — session bookmark manager for Claude Code and Codex.
