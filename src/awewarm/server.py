@@ -62,6 +62,7 @@ ACTIVATION_TIMEOUT_SECONDS = 15
 # stamped into the registry at launch so `hub status` can report them.
 DEFAULT_MAX_TENANTS = 10
 DEFAULT_MAX_CONNS_PER_TENANT = 5
+DEFAULT_MAX_MACHINES = 1
 INVITE_TTL_HOURS = 48
 # Generous for honest clients (status + sync make a handful of calls an hour)
 # while still stopping a looping client from monopolizing the process.
@@ -376,7 +377,7 @@ class Hub:
     for every user to come back online.
     """
 
-    def __init__(self, data_dir, max_tenants=None, max_conns_per_tenant=None):
+    def __init__(self, data_dir, max_tenants=None, max_conns_per_tenant=None, max_machines=None):
         self.data_dir = Path(data_dir).expanduser()
         self.registry_path = self.data_dir / "tenants.json"
         self.registry_lock_path = self.data_dir / "tenants.lock"
@@ -395,6 +396,10 @@ class Hub:
         self.max_conns_per_tenant = (
             max_conns_per_tenant if max_conns_per_tenant is not None
             else self.serve_record.get("maxConnsPerTenant", DEFAULT_MAX_CONNS_PER_TENANT)
+        )
+        self.max_machines = (
+            max_machines if max_machines is not None
+            else self.serve_record.get("maxMachines", DEFAULT_MAX_MACHINES)
         )
         self._registry_stamp = self._stamp()
         self.tenants = {
@@ -491,12 +496,16 @@ class Hub:
             "port": port,
             "maxTenants": self.max_tenants,
             "maxConnsPerTenant": self.max_conns_per_tenant,
+            "maxMachines": self.max_machines,
         }
         with self._registry_transaction():
             self.registry["serve"] = record
             self._save()
         self.serve_record = record
-        self.log(f"serve up on {bind}:{port} — caps {self.max_tenants} tenants, {self.max_conns_per_tenant} conns each")
+        self.log(
+            f"serve up on {bind}:{port} — caps {self.max_tenants} tenants, "
+            f"{self.max_conns_per_tenant} conns each, {self.max_machines} machine(s) per token"
+        )
 
     # --- pairing ---
 
@@ -544,7 +553,7 @@ class Hub:
         rows.sort(key=lambda row: row["createdAt"] or "")
         return rows
 
-    def join(self, invite):
+    def join(self, invite, machine=None):
         """Burn one invite, create the tenant, and return its token exactly once."""
         with self._registry_transaction():
             if not INVITE_RE.match(invite or ""):
@@ -571,6 +580,7 @@ class Hub:
                 "createdAt": schedule.iso(now),
                 "lastSeenAt": None,
                 "usage": {"day": None, "today": 0, "total": 0},
+                "machines": [machine] if machine else [],
             }
             self.tenants[tenant_id] = Tenant(tenant_id, self.registry["tenants"][tenant_id], self.data_dir / "tenants")
             entry["usedBy"] = tenant_id
@@ -599,7 +609,9 @@ class Hub:
     def revoke(self, tenant_id):
         """Suspend a tenant (`hub revoke t_...`): its token stops authenticating
         and its connections stop ticking, but everything stays on disk —
-        reversible with `hub restore`. A suspended tenant frees its slot."""
+        reversible with `hub restore`. A suspended tenant frees its slot, and
+        its machine pairings are wiped: restore + reconnect is the recovery
+        path for a user who reinstalled their machine."""
         with self._registry_transaction():
             record = self.registry["tenants"].get(tenant_id)
             if record is None:
@@ -607,6 +619,7 @@ class Hub:
             if record.get("suspendedAt"):
                 raise ApiError(403, f"{tenant_id} is already suspended — restore it instead: awewarm hub restore {tenant_id}")
             record["suspendedAt"] = schedule.iso(datetime.now().astimezone())
+            record.pop("machines", None)
             invite = self._invite_of(tenant_id)
             if invite is not None:
                 invite["revokedAt"] = record["suspendedAt"]
@@ -682,8 +695,8 @@ class Hub:
         self.log(f"invite restored ({entry.get('note') or 'no note'})")
         return {"ok": True, "tenant": used_by}
 
-    def auth(self, bearer):
-        """Bearer token → tenant, behind the per-tenant rate-limit gate."""
+    def auth(self, bearer, machine=None):
+        """Bearer token → tenant, behind the machine cap and rate-limit gate."""
         with self.lock:
             self._refresh()  # revocations happen in other processes (awewarm hub revoke)
             digest = _hash_secret(bearer)
@@ -701,6 +714,25 @@ class Hub:
                     401,
                     f"hub token suspended by the operator — ask them to restore it: awewarm hub restore {tenant.id}",
                 )
+            if not machine:
+                raise ApiError(
+                    403,
+                    "this hub requires a machine id — update awewarm on this machine and reconnect",
+                )
+            with self._registry_transaction():
+                if tenant.id not in self.tenants:
+                    raise ApiError(401, "hub token was revoked during this request")
+                machines = tenant.record.setdefault("machines", [])
+                if machine not in machines:
+                    if len(machines) >= self.max_machines:
+                        raise ApiError(
+                            403,
+                            f"this token is already paired on {len(machines)} machine(s) "
+                            f"(limit {self.max_machines}) — ask the operator for room "
+                            "(serve --max-machines) or a reset (hub revoke + restore)",
+                        )
+                    machines.append(machine)
+                    self._save()
             now = time.monotonic()
             while tenant.requests and now - tenant.requests[0] >= 60:
                 tenant.requests.popleft()
@@ -778,6 +810,7 @@ class Hub:
                 "note": tenant.note,
                 "invite": joined_with.get(tenant_id),
                 "suspended": bool(tenant.record.get("suspendedAt")),
+                "machines": len(tenant.record.get("machines") or []),
                 "createdAt": tenant.record.get("createdAt"),
                 "lastSeenAt": tenant.record.get("lastSeenAt"),
                 "connections": connections,
@@ -850,6 +883,9 @@ class _Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization") or ""
         return header[7:] if header.startswith("Bearer ") else ""
 
+    def _machine(self):
+        return (self.headers.get("X-Awe-Machine") or "").strip()
+
     def _authed(self):
         if not self.warm.check_token(self._bearer()):
             raise ApiError(401, "missing or invalid token (awewarm remote connect <url>)")
@@ -870,7 +906,7 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ApiError(404, "this server is single-tenant — pair with: awewarm remote connect <url>")
                 if method != "POST":
                     raise ApiError(405, "POST only")
-                return self._send(200, self.hub.join(self._body().get("invite")))
+                return self._send(200, self.hub.join(self._body().get("invite"), self._machine()))
             if path == "/v1/claim":
                 if self.hub is not None:
                     raise ApiError(403, "this is a hub server — pair with an invite: awewarm remote connect <url>")
@@ -878,7 +914,7 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ApiError(405, "POST only")
                 return self._send(200, self.warm.claim(self._body().get("token")))
             if self.hub is not None:
-                tenant = self.hub.auth(self._bearer())
+                tenant = self.hub.auth(self._bearer(), self._machine())
                 warm, tenant_id = tenant.warm, tenant.id
             else:
                 self._authed()
@@ -949,12 +985,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def make_server(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, hub=False,
-                max_tenants=DEFAULT_MAX_TENANTS, max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
+                max_tenants=DEFAULT_MAX_TENANTS, max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT,
+                max_machines=DEFAULT_MAX_MACHINES):
     """Build the engine (one WarmServer, or a Hub of them) plus its HTTP server.
 
     Port 0 picks a free one."""
     if hub:
-        engine = Hub(data_dir, max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant)
+        engine = Hub(data_dir, max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
+                     max_machines=max_machines)
         handler = type("BoundHandler", (_Handler,), {"hub": engine})
     else:
         engine = WarmServer(data_dir, fixed_token=fixed_token)
@@ -965,11 +1003,13 @@ def make_server(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, hub=Fal
 
 
 def run(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, tick_seconds=60, hub=False,
-        max_tenants=DEFAULT_MAX_TENANTS, max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
+        max_tenants=DEFAULT_MAX_TENANTS, max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT,
+        max_machines=DEFAULT_MAX_MACHINES):
     """Serve forever: API in the main thread, the tick loop beside it."""
     engine, httpd = make_server(
         data_dir, bind=bind, port=port, fixed_token=fixed_token, hub=hub,
         max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
+        max_machines=max_machines,
     )
     actual = httpd.server_address[1]
     if hub:

@@ -8,6 +8,8 @@ via hashed tokens while API keys stay RAM-only), revocation, and the client
 import json
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -44,10 +46,11 @@ class HubCase(unittest.TestCase):
         self.data_dir = Path(tmp.name) / "hub"
         self.make_hub()
 
-    def make_hub(self, max_tenants=50, max_conns_per_tenant=5):
+    def make_hub(self, max_tenants=50, max_conns_per_tenant=5, max_machines=1):
         self.hub, self.httpd = server.make_server(
             self.data_dir, "127.0.0.1", 0, hub=True,
             max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
+            max_machines=max_machines,
         )
         self.server_thread = start_http_server(self.httpd)
         self.addCleanup(stop_http_server, self.httpd, self.server_thread)
@@ -254,6 +257,60 @@ class LifecycleTests(HubCase):
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.fetch_state(self.url, token)
         self.assertIn("429", str(ctx.exception))
+
+
+class MachineTests(HubCase):
+    """One token, N machines: `serve --max-machines` (default 1) — the cap
+    rides on a per-install machine id sent with every authed request."""
+
+    def test_a_token_serves_one_machine_by_default(self):
+        token, _ = self.join("alice")
+        remote_client.fetch_state(self.url, token, machine="awm_desktop")
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.fetch_state(self.url, token, machine="awm_laptop")
+        self.assertIn("already paired on 1 machine", str(ctx.exception))
+
+    def test_the_same_machine_reconnects_freely(self):
+        token, _ = self.join("alice")
+        for _ in range(3):
+            remote_client.fetch_state(self.url, token, machine="awm_desktop")
+        machines = next(iter(self.registry()["tenants"].values()))["machines"]
+        self.assertEqual(machines, ["awm_desktop"])
+
+    def test_join_seeds_the_joining_machine(self):
+        code = self.hub.mint_invite("alice")
+        remote_client.join(self.url, code, machine="awm_desktop")
+        machines = next(iter(self.registry()["tenants"].values()))["machines"]
+        self.assertEqual(machines, ["awm_desktop"])
+
+    def test_a_headerless_client_is_refused(self):
+        token, _ = self.join("alice")
+        request = urllib.request.Request(
+            self.url + "/v1/state", method="GET",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=10)
+        self.assertEqual(ctx.exception.code, 403)
+        self.assertIn(b"machine id", ctx.exception.read())
+
+    def test_max_machines_can_be_raised(self):
+        self.make_hub(max_machines=2)
+        token, _ = self.join("alice")
+        remote_client.fetch_state(self.url, token, machine="awm_desktop")
+        remote_client.fetch_state(self.url, token, machine="awm_laptop")
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.fetch_state(self.url, token, machine="awm_phone")
+        self.assertIn("limit 2", str(ctx.exception))
+
+    def test_revoke_and_restore_clears_the_machines(self):
+        token, tenant_id = self.join("alice")
+        remote_client.fetch_state(self.url, token, machine="awm_old")
+        self.hub.revoke(tenant_id)
+        self.hub.restore(tenant_id)
+        # a reinstalled machine (fresh id) can now take the freed slot
+        remote_client.fetch_state(self.url, token, machine="awm_new")
+        self.assertEqual(self.registry()["tenants"][tenant_id]["machines"], ["awm_new"])
 
 
 class CrossProcessTests(HubCase):

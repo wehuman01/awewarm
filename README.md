@@ -250,7 +250,7 @@ awewarm remote connect https://warm.example.com --invite awi_...
 awewarm config set glm --remote      # same delegation as single-user mode
 ```
 
-`remote connect` prints the personal token once at join (it is auto-saved to `secrets.json`): the invite is spent, so a saved copy of that token — reused with `remote connect <url> --token <token>` — is the only way back in without asking the operator for a fresh invite.
+`remote connect` prints the personal token once at join (it is auto-saved to `secrets.json`): the invite is spent, so a saved copy of that token — reused with `remote connect <url> --token <token>` — is the only way back in without asking the operator for a fresh invite. A token serves **one machine** by default (`serve --max-machines N` to allow more): each install identifies itself with a per-machine id on every request, so copying the token to a second laptop gets a clear refusal — and `hub revoke` + `hub restore` clears the paired machines (the recovery path after an OS reinstall).
 
 Each tenant gets a private workspace: connections, state, and keys are invisible to other tenants (their `glm` and yours never collide), and everything from single-user delegation works unchanged — edits push, `run` fires remotely, `--local` takes back, fixed times follow the *user's* timezone. Hub administration lives on the server:
 
@@ -260,7 +260,7 @@ awewarm hub list users [--api|--reveal]  # tenant table: health, usage, last see
 awewarm hub list invites [--reveal]     # every minted invite: pending/revoked/used/suspended/expired; --reveal shows the full code
 awewarm hub revoke <tenant>|awi_...   # suspend a tenant or kill an invite: the token stops working now, everything kept on disk
 awewarm hub restore <tenant>|awi_...  # undo a revoke: token/code works again (a restored tenant re-takes a slot)
-awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5
+awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5 --max-machines 1
 ```
 
 Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly (a leaked code can be killed on the spot with `hub revoke awi_...`; the running serve honors it without a restart). At launch `serve` stamps its effective caps (max-tenants / max-conns-per-tenant) and listening endpoint into `tenants.json`; `hub status` reads that to show "N/max" usage and probe the local serve for liveness — with no record yet (serve never launched against the data dir) it says caps unknown. Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a revocation. Revocation is suspension, not deletion: a revoked invite or a suspended tenant (revoking a used code suspends the tenant it produced — the two are the same state seen from either handle) keeps its connections and state, and `hub restore` brings it back; a suspended tenant frees its capacity slot, and restoring re-takes one, refusing when the hub is full. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.

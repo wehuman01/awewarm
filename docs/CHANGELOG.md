@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Hub tokens are now machine-capped: `serve --max-machines N` (default 1) limits how many machines one token may serve from. Every client install carries a stable machine id (a `machine-id` file next to the config) sent with each authed request; a token used from a second machine gets a clear refusal naming the limit, and headerless (older) clients are told to update. Joining seeds the joining machine; `hub revoke` + `hub restore` clears a tenant's paired machines — the recovery path after an OS reinstall. `hub status` reports paired machines against the cap, and `hub list users --json` carries a per-tenant machines count.
+
 ## v0.5.0
 
 `awewarm status` gains `--remote` / `--local` filters: the merged view keeps showing everything by default, `--remote` narrows it to delegated connections and leads with the server health line (version, uptime, last tick) that used to live in `remote status`, `--local` shows only locally scheduled connections. A filter that names a connection of the other kind dies with the matching `config set <id> --remote/--local` fix instead of rendering it; `--remote` with no server paired or nothing delegated prints a friendly pointer instead of failing. `awewarm remote status` is now a hidden alias for `status --remote` (migration note, removed in v1.0), same treatment as the pre-0.3 names.

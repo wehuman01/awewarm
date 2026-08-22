@@ -1606,6 +1606,12 @@ def hub_status_command(data_dir, show_details):
         f"  connections: {total_conns} delegated"
         + (f" (max {conn_cap} per tenant)" if conn_cap else "")
     )
+    machine_cap = record.get("maxMachines")
+    paired = sum(row["machines"] for row in rows if not row["suspended"])
+    click.echo(
+        f"  machines: {paired} paired"
+        + (f" (max {machine_cap} per token; revoke + restore clears)" if machine_cap else " (cap unknown)")
+    )
     invites_line = ", ".join(f"{invite_counts[k]} {k}" for k in ("pending", "used", "expired", "revoked") if invite_counts.get(k))
     click.echo(f"  invites: {invites_line or 'none minted'} (mint: awewarm hub invite)")
     if not record:
@@ -1917,8 +1923,9 @@ def hub_restore_command(target, data_dir):
 @click.option("--hub", is_flag=True, help="Multi-tenant mode: users pair with one-time invites (awewarm hub invite).")
 @click.option("--max-tenants", "max_tenants", default=10, show_default=True, type=int, help="Hub mode: cap on active tenants (suspended ones free their slot).")
 @click.option("--max-conns-per-tenant", "max_conns_per_tenant", default=5, show_default=True, type=int, help="Hub mode: delegated connections each tenant may keep.")
+@click.option("--max-machines", "max_machines", default=1, show_default=True, type=int, help="Hub mode: machines each token may serve from (revoke + restore clears them).")
 @click.option("--tick-seconds", default=60, show_default=True, type=int, help="Seconds between scheduling passes.")
-def serve_command(data_dir, bind, port, fixed_token, hub, max_tenants, max_conns_per_tenant, tick_seconds):
+def serve_command(data_dir, bind, port, fixed_token, hub, max_tenants, max_conns_per_tenant, max_machines, tick_seconds):
     """Run the always-on server that ticks delegated connections.
 
 \b
@@ -1935,13 +1942,13 @@ invite hashes reach disk (tenants.json) so pairings survive a restart.
     """
     if hub and fixed_token:
         die("--token pins a single pairing; --hub pairs many users via invites — pick one")
-    if max_tenants <= 0 or max_conns_per_tenant <= 0:
-        die("--max-tenants and --max-conns-per-tenant must be greater than 0")
+    if max_tenants <= 0 or max_conns_per_tenant <= 0 or max_machines <= 0:
+        die("--max-tenants, --max-conns-per-tenant, and --max-machines must be greater than 0")
     from . import server
     server.run(
         _resolve_server_data_dir(data_dir), bind=bind, port=port, fixed_token=fixed_token,
         tick_seconds=tick_seconds, hub=hub, max_tenants=max_tenants,
-        max_conns_per_tenant=max_conns_per_tenant,
+        max_conns_per_tenant=max_conns_per_tenant, max_machines=max_machines,
     )
 
 

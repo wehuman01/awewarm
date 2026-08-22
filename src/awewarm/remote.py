@@ -10,8 +10,10 @@ import secrets as _secrets
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from . import __version__, keystore
+from .config import config_path
 
 # Namespaced so no connection id can collide with it (slugify never emits ":").
 TOKEN_SECRET_ID = "remote:token"
@@ -51,7 +53,35 @@ def store_token(token):
     keystore.delete_api_key(LEGACY_TOKEN_SECRET_ID)
 
 
-def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
+MACHINE_HEADER = "X-Awe-Machine"
+_machine_cache = None
+
+
+def machine_id():
+    """A stable per-install identity (not a secret): hubs cap how many
+    machines one token may serve from, keyed on this id. Lives next to the
+    config so an OS reinstall mints a fresh one — visible to the hub as a
+    new machine."""
+    global _machine_cache
+    if _machine_cache:
+        return _machine_cache
+    path = Path(config_path()).expanduser().parent / "machine-id"
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        value = ""
+    if not value:
+        value = "awm_" + _secrets.token_hex(8)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value + "\n", encoding="utf-8")
+        except OSError:
+            return value  # unwritable config dir: per-process id, still coherent
+    _machine_cache = value
+    return value
+
+
+def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS, machine=None):
     target = url.rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
     headers = {
@@ -62,6 +92,8 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if token or machine:
+        headers[MACHINE_HEADER] = machine or machine_id()
     request = urllib.request.Request(target, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -96,9 +128,9 @@ def claim(url, token):
     return _request(url, "POST", "/v1/claim", {"token": token})
 
 
-def join(url, invite):
+def join(url, invite, machine=None):
     """Exchange a one-time hub invite for a personal pairing token."""
-    return _request(url, "POST", "/v1/join", {"invite": invite})
+    return _request(url, "POST", "/v1/join", {"invite": invite}, machine=machine)
 
 
 def release(url, token):
@@ -114,8 +146,8 @@ def push_keys(url, token, mapping):
     return _request(url, "PUT", "/v1/keys", mapping, token)
 
 
-def fetch_state(url, token):
-    return _request(url, "GET", "/v1/state", token=token)
+def fetch_state(url, token, machine=None):
+    return _request(url, "GET", "/v1/state", token=token, machine=machine)
 
 
 def delete_connection(url, token, conn_id):

@@ -250,7 +250,7 @@ awewarm remote connect https://warm.example.com --invite awi_...
 awewarm config set glm --remote      # 委托方式与单用户模式完全相同
 ```
 
-`remote connect` 在加入成功那一刻会明文打印一次个人 token（已自动存入 `secrets.json`）：邀请码随即作废，自己保存的 token（配合 `remote connect <url> --token <token>` 复用）是不找运营者要新码的唯一回归途径。
+`remote connect` 在加入成功那一刻会明文打印一次个人 token（已自动存入 `secrets.json`）：邀请码随即作废，自己保存的 token（配合 `remote connect <url> --token <token>` 复用）是不找运营者要新码的唯一回归途径。一个 token 默认只允许**一台机器**使用（`serve --max-machines N` 放宽）：每个安装用一个持久的机器身份随每次请求上报，把 token 抄到第二台笔记本会得到明确的拒绝——`hub revoke` + `hub restore` 会清空已配对的机器（重装系统后的恢复路径）。
 
 每个租户有独立的工作区：连接、状态、密钥对其他租户不可见（别人的 `glm` 和你的互不干扰），单用户模式的一切照常——改动自动推送、`run` 远程执行、`--local` 收回、fixed 时间跟随**用户自己**的时区。管理命令在服务器上运行：
 
@@ -260,7 +260,7 @@ awewarm hub list users [--api|--reveal]  # 租户表格：健康状态、用量�
 awewarm hub list invites [--reveal]     # 所有已签发的邀请码：待用/已撤销/已用/已停用/过期；--reveal 显示明文
 awewarm hub revoke <tenant>|awi_...  # 停用一个租户或作废一个邀请码：token 立即失效，数据全部保留
 awewarm hub restore <tenant>|awi_... # 撤销之反悔：token/码重新生效（恢复的租户会重新占用名额）
-awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5
+awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5 --max-machines 1
 ```
 
 与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --reveal`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限（误发或泄漏的码可用 `hub revoke awi_...` 当场作废，常驻服务器无需重启即生效）。`serve` 启动时会把生效的配额（max-tenants / max-conns-per-tenant）与监听端点记进 `tenants.json`，`hub status` 据此显示 "N/max" 用量并对本机 serve 做存活探测——数据目录里没有记录（serve 从未在此启动）时显示 caps unknown。常驻服务器与运营命令之间的 registry 修改会串行执行，因此并发的用量更新不会撤销吊销。吊销是**停用**而非删除：被撤销的邀请码或被停用的租户（撤销已用的码会连带停用它换出的租户——同一个停用状态，两个把手）保留全部连接与状态，`hub restore` 一键恢复；停用的租户释放名额，恢复时重新占用，名额满则拒绝。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
