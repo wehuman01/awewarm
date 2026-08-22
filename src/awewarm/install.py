@@ -427,7 +427,10 @@ def cancel_wake_schedule(interactive=True):
 #     moments the schedules next need the machine awake for and converges the
 #     armed events to them. Interval chains drift by design (each renewal
 #     re-anchors on its success), so re-deriving every tick follows the drift
-#     with no pre-computed table to go stale. Windows needs no grant: the
+#     with no pre-computed table to go stale. pmset events carry no owner
+#     tag, so a race between two converging syncs (a tick tail and a config
+#     edit) can leave untracked debris; every pass reclaims such orphans
+#     too. Windows needs no grant: the
 #     same sync registers one-shot WakeToRun tasks for interval moments.
 
 
@@ -495,22 +498,37 @@ def _canonical_spec(text):
     )
 
 
-def _live_wake_canonicals():
-    """Wake-type entries currently armed, from `pmset -g sched`; None on error."""
-    result = subprocess.run(
-        ["pmset", "-g", "sched"], capture_output=True, text=True, timeout=30
-    )
+def _wire_from_canonical(canon):
+    """Canonical spec back into the 2-digit-year wire form pmset expects —
+    the same format arming writes, which `schedule cancel` matches on."""
+    day, time_part = canon.split(" ")
+    return f"{day[:-4]}{day[-2:]} {time_part}"
+
+
+def _live_wake_entries():
+    """(canonical, type, creator) per one-shot power event in `pmset -g
+    sched`; None on error. The creator is the `by '…'` attribution: macOS
+    arms its own alarms as plain `wake` with a com.apple creator, while the
+    pmset command line (awewarm's sync or a manual sudo) arms
+    `wakeorpoweron` events whose creator is 'pmset' or absent."""
+    try:
+        result = subprocess.run(
+            ["pmset", "-g", "sched"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     if result.returncode != 0:
         return None
     found = set()
     for match in re.finditer(
-        r"(?:wake|wakepoweron|poweron) at "
-        r"(\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?)",
+        r"(wake|wakeorpoweron|poweron) at "
+        r"(\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?)"
+        r"(?:\s+by\s+'([^']*)')?",
         result.stdout or "",
     ):
-        canon = _canonical_spec(match.group(1))
+        canon = _canonical_spec(match.group(2))
         if canon:
-            found.add(canon)
+            found.add((canon, match.group(1), match.group(3)))
     return found
 
 
@@ -520,7 +538,9 @@ def sync_wake_events(config, state, now):
     macOS mirrors the desired moments into pmset one-shot events through the
     sudoers grant; the ledger in state['wakeEvents'] is reconciled against
     `pmset -g sched` so fired events drop out and lost-ledger events are
-    re-tracked instead of double-armed. Returns True when pmset was touched.
+    re-tracked instead of double-armed. Events the pmset command line armed
+    that no ledger entry tracks and no schedule wants are reclaimed as
+    orphans (see _reclaim_orphan_wakes). Returns True when pmset was touched.
     Saves state only when the ledger or the blocked flag changed.
     """
     if sys.platform == "win32":
@@ -534,10 +554,10 @@ def sync_wake_events(config, state, now):
         for moment, _kind in wake_specs(config, state, now)
     }
     ledger = list(state.get("wakeEvents") or [])
-    if {_canonical_spec(spec) or spec for spec in ledger} == set(desired):
-        return False  # in sync — skip the pmset read entirely
-    live = _live_wake_canonicals()
+    entries = _live_wake_entries()
+    live = None if entries is None else {canon for canon, _etype, _creator in entries}
     kept, blocked, touched = [], False, False
+    cancelled_now = set()
     for spec in ledger:
         canon = _canonical_spec(spec) or spec
         if live is not None and canon not in live:
@@ -545,6 +565,7 @@ def sync_wake_events(config, state, now):
         if canon not in desired:
             if _sudo_pmset(["schedule", "cancel", WAKE_TYPE, spec], interactive=False):
                 touched = True
+                cancelled_now.add(canon)
                 continue
             blocked = True  # cancel refused (grant broken?) — keep tracking
         kept.append(spec)
@@ -559,8 +580,50 @@ def sync_wake_events(config, state, now):
             touched = True
         else:
             blocked = True
+    if entries is not None:
+        # a just-cancelled ledger entry is still in this pass's snapshot —
+        # tracked, or the sweep below would cancel it a second time
+        tracked = (
+            {(_canonical_spec(spec) or spec) for spec in kept} | set(desired) | cancelled_now
+        )
+        cancelled, failed = _reclaim_orphan_wakes(entries, tracked)
+        touched = touched or bool(cancelled)
+        blocked = blocked or bool(failed)
+        # a failed reclaim adopts the orphan into the ledger so the normal
+        # retry path owns it and `status` shows it
+        kept.extend(failed)
     _record_sync(state, kept, blocked)
     return touched
+
+
+def _reclaim_orphan_wakes(entries, tracked, interactive=False):
+    """Cancel pmset-armed events no tracked canonical covers.
+
+    pmset events carry no owner tag, so the ledger is the only record of
+    what awewarm armed — a race between two converging syncs (a tick tail
+    and a config edit) leaves live debris the ledger loop never sees again.
+    Only wakeorpoweron events with creator 'pmset' (or none) qualify; macOS
+    arms its own alarms as plain `wake` with a com.apple creator and those
+    are never touched. Each cancel is logged with the re-arm command so a
+    manual event reclaimed by mistake can be restored verbatim; one cancel
+    removes one entry, so a duplicated orphan converges over following
+    ticks. Returns (cancelled, failed) as wire specs.
+    """
+    cancelled, failed = [], []
+    for canon, etype, creator in sorted(entries, key=lambda e: (e[0], e[1], e[2] or "")):
+        if etype != WAKE_TYPE or creator not in (None, "pmset") or canon in tracked:
+            continue
+        wire = _wire_from_canonical(canon)
+        if _sudo_pmset(["schedule", "cancel", WAKE_TYPE, wire], interactive=interactive):
+            cancelled.append(wire)
+            append_log(
+                log_path(),
+                f'wake sync: reclaimed orphan event "{wire}" — no schedule wants it; '
+                f're-arm: sudo pmset schedule {WAKE_TYPE} "{wire}"',
+            )
+        else:
+            failed.append(wire)
+    return cancelled, failed
 
 
 def _record_sync(state, kept, blocked):
@@ -646,19 +709,30 @@ def teardown_wake_layer(interactive=True):
     """Scheduler-uninstall path: cancel armed RTC wakes, drop the grant.
 
     Returns (cancelled, total, grant_removed); failures keep their ledger
-    entries so a later uninstall retries and converges.
+    entries so a later uninstall retries and converges. Orphaned pmset
+    events beyond the ledger are swept by the same filter the tick's sync
+    uses — with the scheduler gone, nothing else would ever cancel them.
     """
     state = load_state()
     armed = state.get("wakeEvents") or []
-    cancelled = 0
+    ledger_cancelled = 0
     for spec in armed:
         if _sudo_pmset(["schedule", "cancel", WAKE_TYPE, spec], interactive=interactive):
-            cancelled += 1
-    if cancelled == len(armed):
+            ledger_cancelled += 1
+    cancelled, total = ledger_cancelled, len(armed)
+    entries = _live_wake_entries()
+    if entries is not None:
+        # every ledger canonical is excluded, cancelled or not: a failed
+        # ledger cancel stays a ledger problem, not an orphan
+        tracked = {(_canonical_spec(spec) or spec) for spec in armed}
+        reclaimed, failed = _reclaim_orphan_wakes(entries, tracked, interactive=interactive)
+        cancelled += len(reclaimed)
+        total += len(reclaimed) + len(failed)
+    if ledger_cancelled == len(armed):
         state.pop("wakeEvents", None)
         state.pop("wakeSyncBlocked", None)
         save_state(state)
-    return cancelled, len(armed), uninstall_wake_grant(interactive=interactive)
+    return cancelled, total, uninstall_wake_grant(interactive=interactive)
 
 
 def armed_wake_moments(state):

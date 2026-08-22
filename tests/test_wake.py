@@ -148,7 +148,7 @@ class SyncWakeEventsTests(IsolatedTestCase):
     def test_arms_desired_events(self):
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install.scheduler_installed", return_value=True), \
-             mock.patch("awewarm.install._live_wake_canonicals", return_value=set()) as live, \
+             mock.patch("awewarm.install._live_wake_entries", return_value=set()) as live, \
              mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo:
             state = {"connections": {}}
             self.assertTrue(install.sync_wake_events(self._fixed_config(), state, FRIDAY))
@@ -159,14 +159,17 @@ class SyncWakeEventsTests(IsolatedTestCase):
         # ledger persisted for the next convergence pass
         self.assertEqual(install.load_state().get("wakeEvents"), state["wakeEvents"])
 
-    def test_in_sync_ledger_skips_pmset_entirely(self):
+    def test_in_sync_still_reads_live_to_sweep_orphans(self):
+        # the ledger matching desired no longer short-circuits: orphans only
+        # show up in `pmset -g sched`, so every pass reads live once
         state = {"connections": {}, "wakeEvents": ["08/22/26 06:35:00"]}
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install.scheduler_installed", return_value=True), \
-             mock.patch("awewarm.install._live_wake_canonicals") as live, \
+             mock.patch("awewarm.install._live_wake_entries",
+                        return_value={("08/22/2026 06:35:00", "wakeorpoweron", "pmset")}) as live, \
              mock.patch("awewarm.install._sudo_pmset") as sudo:
             self.assertFalse(install.sync_wake_events(self._fixed_config(), state, FRIDAY))
-            live.assert_not_called()
+            live.assert_called_once()
             sudo.assert_not_called()
 
     def test_cancels_stale_ledger_entry(self):
@@ -174,8 +177,9 @@ class SyncWakeEventsTests(IsolatedTestCase):
         state = {"connections": {}, "wakeEvents": [stale, "08/22/26 06:35:00"]}
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install.scheduler_installed", return_value=True), \
-             mock.patch("awewarm.install._live_wake_canonicals",
-                        return_value={install._canonical_spec(spec) for spec in state["wakeEvents"]}), \
+             mock.patch("awewarm.install._live_wake_entries",
+                        return_value={(install._canonical_spec(spec), "wakeorpoweron", "pmset")
+                                      for spec in state["wakeEvents"]}), \
              mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo:
             self.assertTrue(install.sync_wake_events(self._fixed_config(), state, FRIDAY))
             argvs = [call.args[0] for call in sudo.call_args_list]
@@ -187,7 +191,7 @@ class SyncWakeEventsTests(IsolatedTestCase):
         state = {"connections": {}, "wakeEvents": [consumed, "08/22/26 06:35:00"]}
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install.scheduler_installed", return_value=True), \
-             mock.patch("awewarm.install._live_wake_canonicals", return_value=set()) as live, \
+             mock.patch("awewarm.install._live_wake_entries", return_value=set()) as live, \
              mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo:
             install.sync_wake_events(self._fixed_config(), state, FRIDAY)
             for argv in (call.args[0] for call in sudo.call_args_list):
@@ -199,8 +203,8 @@ class SyncWakeEventsTests(IsolatedTestCase):
         wire = "08/22/26 06:35:00"
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install.scheduler_installed", return_value=True), \
-             mock.patch("awewarm.install._live_wake_canonicals",
-                        return_value={install._canonical_spec(wire)}), \
+             mock.patch("awewarm.install._live_wake_entries",
+                        return_value={(install._canonical_spec(wire), "wakeorpoweron", "pmset")}), \
              mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo:
             state = {"connections": {}}
             install.sync_wake_events(self._fixed_config(), state, FRIDAY)
@@ -210,7 +214,7 @@ class SyncWakeEventsTests(IsolatedTestCase):
     def test_arm_failure_sets_blocked_flag_and_logs_once(self):
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install.scheduler_installed", return_value=True), \
-             mock.patch("awewarm.install._live_wake_canonicals", return_value=set()), \
+             mock.patch("awewarm.install._live_wake_entries", return_value=set()), \
              mock.patch("awewarm.install._sudo_pmset", return_value=False), \
              mock.patch("awewarm.install.append_log") as logged:
             state = {"connections": {}}
@@ -221,11 +225,69 @@ class SyncWakeEventsTests(IsolatedTestCase):
 
     def test_no_grant_is_a_silent_noop(self):
         with mock.patch("awewarm.install.wake_grant_installed", return_value=False), \
-             mock.patch("awewarm.install._live_wake_canonicals") as live:
+             mock.patch("awewarm.install._live_wake_entries") as live:
             state = {"connections": {}}
             self.assertFalse(install.sync_wake_events(self._fixed_config(), state, FRIDAY))
             live.assert_not_called()
         self.assertNotIn("wakeEvents", state)
+
+
+class OrphanReclaimTests(IsolatedTestCase):
+    """Live pmset debris no ledger tracks — fallout of converging-sync races."""
+
+    def test_reclaims_pmset_event_no_schedule_wants(self):
+        # the fully opted-out regime: desired empty, ledger empty, debris armed
+        state = {"connections": {}}
+        with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install.scheduler_installed", return_value=True), \
+             mock.patch("awewarm.install._live_wake_entries",
+                        return_value={("08/23/2026 07:00:00", "wakeorpoweron", "pmset")}), \
+             mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo, \
+             mock.patch("awewarm.install.append_log") as logged:
+            self.assertTrue(install.sync_wake_events({"connections": {}}, state, FRIDAY))
+            self.assertEqual(
+                sudo.call_args.args[0],
+                ["schedule", "cancel", "wakeorpoweron", "08/23/26 07:00:00"],
+            )
+            self.assertIn("re-arm", logged.call_args.args[1])
+        self.assertEqual(state.get("wakeEvents", []), [])
+
+    def test_system_events_and_plain_wakes_are_untouched(self):
+        state = {"connections": {}}
+        with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install.scheduler_installed", return_value=True), \
+             mock.patch("awewarm.install._live_wake_entries", return_value={
+                 ("08/22/2026 01:55:33", "wake", "com.apple.alarm.calaccessd"),
+                 ("08/22/2026 07:00:00", "wakeorpoweron", "com.apple.powerd"),
+             }), \
+             mock.patch("awewarm.install._sudo_pmset") as sudo:
+            self.assertFalse(install.sync_wake_events({"connections": {}}, state, FRIDAY))
+            sudo.assert_not_called()
+
+    def test_failed_reclaim_adopts_orphan_into_ledger(self):
+        state = {"connections": {}}
+        with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install.scheduler_installed", return_value=True), \
+             mock.patch("awewarm.install._live_wake_entries",
+                        return_value={("08/23/2026 07:00:00", "wakeorpoweron", "pmset")}), \
+             mock.patch("awewarm.install._sudo_pmset", return_value=False):
+            self.assertFalse(install.sync_wake_events({"connections": {}}, state, FRIDAY))
+        self.assertEqual(state["wakeEvents"], ["08/23/26 07:00:00"])
+        self.assertTrue(state["wakeSyncBlocked"])
+
+    def test_just_cancelled_ledger_entry_is_not_reclaimed(self):
+        # the stale-cancel and the orphan sweep share one pmset snapshot —
+        # an entry cancelled moments ago must not be cancelled twice
+        stale = "08/25/26 09:00:00"
+        state = {"connections": {}, "wakeEvents": [stale]}
+        with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install.scheduler_installed", return_value=True), \
+             mock.patch("awewarm.install._live_wake_entries",
+                        return_value={("08/25/2026 09:00:00", "wakeorpoweron", "pmset")}), \
+             mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo:
+            self.assertTrue(install.sync_wake_events({"connections": {}}, state, FRIDAY))
+            sudo.assert_called_once()
+        self.assertNotIn(stale, state.get("wakeEvents", []))
 
 
 class SudoersTests(IsolatedTestCase):
@@ -277,6 +339,7 @@ class TeardownTests(IsolatedTestCase):
     def test_cancels_events_and_removes_grant(self):
         self._armed_state()
         with mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo, \
+             mock.patch("awewarm.install._live_wake_entries", return_value=set()), \
              mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
              mock.patch("awewarm.install._sudo_cmd", return_value=True):
             self.assertEqual(install.teardown_wake_layer(), (1, 1, True))
@@ -289,9 +352,26 @@ class TeardownTests(IsolatedTestCase):
     def test_failed_cancel_keeps_the_ledger_for_retry(self):
         self._armed_state()
         with mock.patch("awewarm.install._sudo_pmset", return_value=False), \
+             mock.patch("awewarm.install._live_wake_entries", return_value=set()), \
              mock.patch("awewarm.install.wake_grant_installed", return_value=False):
             self.assertEqual(install.teardown_wake_layer(), (0, 1, False))
         self.assertEqual(install.load_state().get("wakeEvents"), ["08/22/26 06:35:00"])
+
+    def test_uninstall_sweeps_orphans_beyond_the_ledger(self):
+        # with the scheduler gone no tick ever converges again — orphans the
+        # ledger never tracked must go in the same uninstall pass
+        self._armed_state()
+        with mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo, \
+             mock.patch("awewarm.install._live_wake_entries", return_value={
+                 ("08/22/2026 06:35:00", "wakeorpoweron", "pmset"),
+                 ("08/23/2026 07:00:00", "wakeorpoweron", "pmset"),
+             }), \
+             mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install._sudo_cmd", return_value=True):
+            self.assertEqual(install.teardown_wake_layer(), (2, 2, True))
+            cancels = [call.args[0] for call in sudo.call_args_list]
+            self.assertIn(["schedule", "cancel", "wakeorpoweron", "08/23/26 07:00:00"], cancels)
+        self.assertNotIn("wakeEvents", install.load_state())
 
 
 class WindowsIntervalWakeTests(IsolatedTestCase):
