@@ -197,7 +197,7 @@ Two pairing safety notes. An unclaimed server trusts the **first** token that re
 ssh my-server
 pip3 install awewarm
 awewarm serve                                 # listens on 127.0.0.1:8790, data at ~/.awewarm-server
-awewarm hub config --data-dir /data/awewarm   # ...or set the default data dir once, no flag needed
+awewarm serve --data-dir /data/awewarm        # ...or keep config/state/log somewhere else
 ```
 
 Keep it running with a systemd user unit (`~/.config/systemd/user/awewarm.service`):
@@ -238,34 +238,14 @@ awewarm status --local                            # locally scheduled connection
 
 ## Hub mode — one server, many users
 
-`awewarm serve --hub` turns the same server into a shared warming point: a team, a family, or a community can run one box while everyone keeps their own secrets on their own machine. Pairing goes through one-time invites instead of first-token-claims — the race that makes the single-user model unsafe to share never happens.
+Multi-tenant serving — one box warming connections for a team, a family, or a community, paired through one-time invites — is a separate package: **awewarm-hub** (`pip install awewarm-hub`; closed-source, on PyPI). The operator runs `awewarm-hub serve` and administers tenants there (`awewarm-hub invite / list / revoke / restore / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement.
+
+Users of a hub keep using this package exactly as before:
 
 ```bash
-# on the hub machine (same cloudflared setup as above)
-awewarm serve --hub                  # data at ~/.awewarm-server (or: hub config --data-dir)
-awewarm hub invite --note alice      # prints: awi_...  (one use, 48 h)
-
-# on each user's machine
 awewarm remote connect https://warm.example.com --invite awi_...
 awewarm config set glm --remote      # same delegation as single-user mode
 ```
-
-`remote connect` prints the personal token once at join (it is auto-saved to `secrets.json`): the invite is spent, so a saved copy of that token — reused with `remote connect <url> --token <token>` — is the only way back in without asking the operator for a fresh invite. A token serves **one machine** by default (`serve --max-machines N` to allow more): each install identifies itself with a per-machine id on every request, so copying the token to a second laptop gets a clear refusal — and `hub revoke` + `hub restore` clears the paired machines (the recovery path after an OS reinstall).
-
-Each tenant gets a private workspace: connections, state, and keys are invisible to other tenants (their `glm` and yours never collide), and everything from single-user delegation works unchanged — edits push, `run` fires remotely, `--local` takes back, fixed times follow the *user's* timezone. Hub administration lives on the server:
-
-```bash
-awewarm hub status [--details]        # overview: tenant/connection capacity (N/max), invite counts, a serve liveness probe; --details lists every delegated connection
-awewarm hub list users [--api|--reveal]  # tenant table: health, usage, last seen; --api adds endpoints, --reveal the joining invite code
-awewarm hub list invites [--reveal]     # every minted invite: pending/revoked/used/suspended/expired; --reveal shows the full code
-awewarm hub revoke <tenant>|awi_...   # suspend a tenant or kill an invite: the token stops working now, everything kept on disk
-awewarm hub restore <tenant>|awi_...  # undo a revoke: token/code works again (a restored tenant re-takes a slot)
-awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5 --max-machines 1
-```
-
-Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly (a leaked code can be killed on the spot with `hub revoke awi_...`; the running serve honors it without a restart). At launch `serve` stamps its effective caps (max-tenants / max-conns-per-tenant) and listening endpoint into `tenants.json`; `hub status` reads that to show "N/max" usage and probe the local serve for liveness — with no record yet (serve never launched against the data dir) it says caps unknown. Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a revocation. Revocation is suspension, not deletion: a revoked invite or a suspended tenant (revoking a used code suspends the tenant it produced — the two are the same state seen from either handle) keeps its connections and state, and `hub restore` brings it back; a suspended tenant frees its capacity slot, and restoring re-takes one, refusing when the hub is full. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
-
-One trust rule to state plainly: the hub fires requests with its users' API keys, so their plaintext keys pass through its RAM. Hub for people who trust the machine's operator (and root); a shared VPS with strangers is not that.
 
 ## Config
 
@@ -345,11 +325,8 @@ awewarm status --remote / --local     # delegated connections only (with the ser
 awewarm run [--force]                 # fire every enabled connection now, ignoring the schedule (prompts; --force skips)
 awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
 awewarm scheduler install [--wake] / uninstall # background scheduler (launchd / Task Scheduler / systemd); --wake also arms RTC wake-from-sleep
-awewarm serve                          # run the always-on server that ticks delegated connections
-awewarm serve --hub                    # multi-tenant server: users pair with one-time invites
-awewarm hub status [--details]         # hub overview: capacity use, invite counts, serve liveness; --details lists every connection
-awewarm hub config [--data-dir /data]  # set/show the default data dir for serve + hub commands (~/.awewarm-server)
-awewarm hub invite / revoke; hub list users / invites  # hub administration (run on the hub machine)
+awewarm serve [--data-dir /data] [--token awt_...]  # run the always-on server that ticks delegated connections
+                                       #   one server, many invited users: the separate awewarm-hub package
 awewarm remote connect <url>           # pair with a server (token generated + stored locally)
 awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)
 awewarm remote disconnect              # forget the server + release its claim (refuses while delegations exist)

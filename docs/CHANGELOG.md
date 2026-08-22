@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.6.0
 
-Hub tokens are now machine-capped: `serve --max-machines N` (default 1) limits how many machines one token may serve from. Every client install carries a stable machine id (a `machine-id` file next to the config) sent with each authed request; a token used from a second machine gets a clear refusal naming the limit, and headerless (older) clients are told to update. Joining seeds the joining machine; `hub revoke` + `hub restore` clears a tenant's paired machines — the recovery path after an OS reinstall. `hub status` reports paired machines against the cap, and `hub list users --json` carries a per-tenant machines count.
+**Breaking:** hub mode — one server warming connections for many invited users — moved out of this package into **awewarm-hub**, a separate closed-source package on PyPI. The operator installs it on the box (`pip install awewarm-hub`, then `awewarm-hub serve` / `invite` / `list` / `revoke` / `restore` / `config`); an existing `~/.awewarm-server` data dir carries over unchanged. Everything hub *users* need stays here and works exactly as before: pairing (`awewarm remote connect <url> --invite awi_...`) and delegated-connection sync. Solo `awewarm serve` is untouched, and `server._Handler` grew overridable seams — the semi-public extension surface awewarm-hub builds on. The old spellings now die with a tombstone naming their replacement: `awewarm serve --hub` → `awewarm-hub serve`, `awewarm hub ...` → `awewarm-hub ...`; `awewarm serve` also no longer reads a data dir persisted by `hub config --data-dir` (the mechanism moved with the hub commands — pass `--data-dir` instead). Hub-side changes since v0.5.0 (per-token machine pairing with `--max-machines` and earlier hub entries below) never shipped in a release of this package; they ship in awewarm-hub, whose changelog carries them from here on.
+
+`scheduler install` now asks before installing on a machine with nothing to schedule locally — every connection delegated, or none configured yet. The server's `serve` ticks delegated connections itself, so a local scheduler there is dead weight (typically hit on the hub box, where installing awewarm-hub also brings this CLI). The question comes before `--wake`'s sudo prompt; scripted (non-tty) installs proceed with a notice.
 
 ## v0.5.0
 

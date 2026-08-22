@@ -197,7 +197,7 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 ssh my-server
 pip3 install awewarm
 awewarm serve                                 # 监听 127.0.0.1:8790，数据在 ~/.awewarm-server
-awewarm hub config --data-dir /data/awewarm   # ……或一次性设置默认数据目录，之后无需再传 flag
+awewarm serve --data-dir /data/awewarm        # ……或把配置/状态/日志放到别处
 ```
 
 用 systemd user unit 常驻（`~/.config/systemd/user/awewarm.service`）：
@@ -238,34 +238,14 @@ awewarm status --local                            # 只看本地调度的连接
 
 ## Hub 模式 —— 一台服务器，多个用户
 
-`awewarm serve --hub` 把同一台服务器变成共享保温点：团队、家人或社区共用一台常开机器，每个人的秘密仍留在各自电脑上。配对改走一次性邀请码，而不是"第一个 token 认领"——单用户模式里那个不能分享的抢跑竞态不复存在。
+多租户保温——一台常开机器为团队、家人或社区保温，用一次性邀请码配对——已拆分为独立包：**awewarm-hub**（`pip install awewarm-hub`；闭源，PyPI 可装）。运营者改用 `awewarm-hub serve` 运行并管理租户（`awewarm-hub invite / list / revoke / restore / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。
+
+hub 的用户继续使用本包，方式完全不变：
 
 ```bash
-# hub 机器上（cloudflared 隧道配置与上文相同）
-awewarm serve --hub                  # 数据在 ~/.awewarm-server（或先 hub config --data-dir 设置）
-awewarm hub invite --note alice      # 打印: awi_... （一次性，48 小时有效）
-
-# 每个用户自己的机器上
 awewarm remote connect https://warm.example.com --invite awi_...
 awewarm config set glm --remote      # 委托方式与单用户模式完全相同
 ```
-
-`remote connect` 在加入成功那一刻会明文打印一次个人 token（已自动存入 `secrets.json`）：邀请码随即作废，自己保存的 token（配合 `remote connect <url> --token <token>` 复用）是不找运营者要新码的唯一回归途径。一个 token 默认只允许**一台机器**使用（`serve --max-machines N` 放宽）：每个安装用一个持久的机器身份随每次请求上报，把 token 抄到第二台笔记本会得到明确的拒绝——`hub revoke` + `hub restore` 会清空已配对的机器（重装系统后的恢复路径）。
-
-每个租户有独立的工作区：连接、状态、密钥对其他租户不可见（别人的 `glm` 和你的互不干扰），单用户模式的一切照常——改动自动推送、`run` 远程执行、`--local` 收回、fixed 时间跟随**用户自己**的时区。管理命令在服务器上运行：
-
-```bash
-awewarm hub status [--details]        # 总览：租户/连接配额（N/max）、邀请码统计、serve 存活探测；--details 追加每条委托连接
-awewarm hub list users [--api|--reveal]  # 租户表格：健康状态、用量、最近在线；--api 追加 API 端点，--reveal 显示配对用的邀请码
-awewarm hub list invites [--reveal]     # 所有已签发的邀请码：待用/已撤销/已用/已停用/过期；--reveal 显示明文
-awewarm hub revoke <tenant>|awi_...  # 停用一个租户或作废一个邀请码：token 立即失效，数据全部保留
-awewarm hub restore <tenant>|awi_... # 撤销之反悔：token/码重新生效（恢复的租户会重新占用名额）
-awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5 --max-machines 1
-```
-
-与单用户模式的两点不同。配对可跨重启：`tenants.json` 只存租户 token 的 **SHA-256 哈希**（绝不存明文，API key 依然不落盘），hub 重启不必等所有用户重新认领——只有内存里的 key 丢失、照常重推。邀请码则明文留在磁盘上，方便运营者找回已发出的码（`hub list invites --reveal`）——能读到数据目录的人就能使用待用的邀请码，注意保护好目录权限（误发或泄漏的码可用 `hub revoke awi_...` 当场作废，常驻服务器无需重启即生效）。`serve` 启动时会把生效的配额（max-tenants / max-conns-per-tenant）与监听端点记进 `tenants.json`，`hub status` 据此显示 "N/max" 用量并对本机 serve 做存活探测——数据目录里没有记录（serve 从未在此启动）时显示 caps unknown。常驻服务器与运营命令之间的 registry 修改会串行执行，因此并发的用量更新不会撤销吊销。吊销是**停用**而非删除：被撤销的邀请码或被停用的租户（撤销已用的码会连带停用它换出的租户——同一个停用状态，两个把手）保留全部连接与状态，`hub restore` 一键恢复；停用的租户释放名额，恢复时重新占用，名额满则拒绝。一个轻量的每租户限流（每分钟 60 次请求）防止失控客户端刷爆进程。
-
-一条信任规则必须说清楚：hub 用用户的 API key 发请求，明文 key 必然经过它的内存。Hub 适合**信任机器运营者（及其 root）**的人群——团队、朋友、自己家的设备；和陌生人合用一台 VPS 不属于这种场景。
 
 ## 配置
 
@@ -345,11 +325,8 @@ awewarm status --remote / --local     # 只看委托连接（含服务器健康�
 awewarm run [--force]                 # 立即触发所有启用的连接（无视调度计划；会确认提示，--force 跳过）
 awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动原计划，--reset-due 才重算下次到期）
 awewarm scheduler install [--wake] / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）；--wake 额外启用合盖睡眠 RTC 唤醒
-awewarm serve                          # 运行常驻服务器，调度已委托的连接
-awewarm serve --hub                    # 多租户服务器：用户凭一次性邀请码配对
-awewarm hub status [--details]         # hub 总览：配额用量、邀请码统计、serve 存活；--details 列出每条委托连接
-awewarm hub config [--data-dir /data]  # 设置/查看 serve 与 hub 命令的默认数据目录（~/.awewarm-server）
-awewarm hub invite / revoke; hub list users / invites  # hub 管理（在 hub 机器上运行）
+awewarm serve [--data-dir /data] [--token awt_...]  # 运行常驻服务器，调度已委托的连接
+                                       #   一台服务器、多个受邀用户：独立包 awewarm-hub
 awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
 awewarm remote push [<id>]             # 向服务器重新同步委托连接（配置 + 密钥）
 awewarm remote disconnect              # 忘掉服务器并释放 claim（仍有委托连接时拒绝）
