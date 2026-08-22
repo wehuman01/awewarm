@@ -86,8 +86,10 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS):
         raise RemoteError(f"{url} answered, but not like an awewarm server (invalid JSON)")
 
 
-def healthz(url):
-    return _request(url, "GET", "/healthz")
+def healthz(url, timeout=TIMEOUT_SECONDS):
+    # `hub status` probes a loopback serve with a short timeout — it must not
+    # hang the command when the box firewalls the port instead of refusing.
+    return _request(url, "GET", "/healthz", timeout=timeout)
 
 
 def claim(url, token):

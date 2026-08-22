@@ -2,6 +2,10 @@
 
 ## v0.4.8
 
+`awewarm status` gains `--remote` / `--local` filters: the merged view keeps showing everything by default, `--remote` narrows it to delegated connections and leads with the server health line (version, uptime, last tick) that used to live in `remote status`, `--local` shows only locally scheduled connections. A filter that names a connection of the other kind dies with the matching `config set <id> --remote/--local` fix instead of rendering it; `--remote` with no server paired or nothing delegated prints a friendly pointer instead of failing. `awewarm remote status` is now a hidden alias for `status --remote` (migration note, removed in v1.0), same treatment as the pre-0.3 names.
+
+`awewarm hub status` gives the operator a one-glance dashboard: active/suspended tenants against the max, delegated connections against the per-tenant cap, invite counts by fate, the data dir, and a best-effort liveness probe of the local `serve` (its recorded endpoint, short timeout, "NOT reachable" is information, not an error). `--details` appends every delegated connection across tenants with its mode, next due moment, and timezone; without it a hint points there. The numbers come from a `serve` record `tenants.json` now carries: at launch the server stamps its effective caps (max-tenants, max-conns-per-tenant), bind address, port, version, and start time; one-shot hub CLI processes adopt those caps when they construct a Hub, and a data dir whose serve never launched says "caps unknown" instead of guessing.
+
 Local commands now share one cross-process transaction lock, preventing the local scheduler tick and an interactive edit/run from overwriting each other's `state.json` updates. A busy background tick exits for the next minute to catch up; an interactive command waits up to five seconds and then reports the conflict. `awewarm serve` keeps its separate server data directory and coordination model.
 
 `secrets.json` writes now use the same atomic replace path as config and state. Malformed, unreadable, or non-object secret files are refused with a repair hint instead of being treated as empty and overwritten.
@@ -10,9 +14,11 @@ HTTP integration tests now close their listening sockets and join server threads
 
 Hub registry mutations now hold a cross-process transaction lock shared by the resident server and operator CLI. A stale usage/last-seen write can no longer overwrite a concurrent revoke and revive the tenant's token.
 
-`awewarm hub revoke` now also accepts an invite code (`awi_...`): a pending code is killed on the spot — honored by the running serve without a restart — instead of waiting out its expiry. Used codes are refused with a pointer to the tenant revoke that kills the token they produced; expired ones are swept as stale rows.
+Hub revocation is now suspension, not deletion, and works from either handle. `awewarm hub revoke` accepts a tenant (`t_...`) or an invite code (`awi_...`): a pending code stops pairing on the spot, a used one suspends the tenant it produced — its token stops authenticating and its connections stop ticking, while everything stays on disk. The new `awewarm hub restore` undoes either. A suspended tenant frees its capacity slot; restoring re-takes one and refuses when the hub is full. `--max-tenants` defaults to 10 (was 50), counting active tenants only. `hub list users` marks suspended tenants and `hub list invites` shows revoked codes — a used code reads `suspended` while its tenant is suspended.
 
 `awewarm hub list users` gains an INVITE column with the code each tenant joined with (masked by default, full text with `--reveal`, mirroring `hub list invites`) — no more cross-referencing USED BY to map a tenant back to its code.
+
+`awewarm remote connect --invite` now prints the personal token once at join (it is auto-saved to `secrets.json`): the invite is spent, so a saved copy — reused with `remote connect <url> --token <token>` — is the only way back in without a fresh invite.
 
 ## v0.4.7
 

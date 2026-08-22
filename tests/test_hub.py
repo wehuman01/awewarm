@@ -104,12 +104,19 @@ class PairingTests(HubCase):
         invite = self.hub.mint_invite("alice")
         self.hub.revoke_invite(invite)
         digest = server._hash_secret(invite)
-        self.assertNotIn(digest, self.registry()["invites"])
+        self.assertTrue(self.registry()["invites"][digest].get("revokedAt"))  # kept, flagged
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.join(self.url, invite)
-        self.assertIn("403", str(ctx.exception))
+        self.assertIn("revoked", str(ctx.exception))
 
-    def test_revoke_invite_sweeps_an_expired_entry(self):
+    def test_restored_invite_pairs_again(self):
+        invite = self.hub.mint_invite("alice")
+        self.hub.revoke_invite(invite)
+        self.hub.restore_invite(invite)
+        joined = remote_client.join(self.url, invite)
+        self.assertTrue(joined["token"].startswith("awt_"))
+
+    def test_revoke_invite_flags_an_expired_entry(self):
         invite = self.hub.mint_invite("alice")
         digest = server._hash_secret(invite)
         from awewarm import schedule
@@ -118,16 +125,20 @@ class PairingTests(HubCase):
         )
         result = self.hub.revoke_invite(invite)
         self.assertEqual(result["status"], "expired")
-        self.assertNotIn(digest, self.registry()["invites"])
+        self.assertTrue(self.registry()["invites"][digest].get("revokedAt"))
 
-    def test_revoke_invite_refuses_a_used_code_and_keeps_its_record(self):
+    def test_revoke_invite_suspends_the_tenant_it_produced(self):
         invite = self.hub.mint_invite("alice")
         joined = remote_client.join(self.url, invite)
-        with self.assertRaises(server.ApiError) as ctx:
-            self.hub.revoke_invite(invite)
-        self.assertEqual(ctx.exception.status, 403)
-        self.assertIn(joined["tenantId"], str(ctx.exception))
-        self.assertIn(server._hash_secret(invite), self.registry()["invites"])  # the audit row stays
+        result = self.hub.revoke_invite(invite)
+        self.assertEqual(result["status"], "used")
+        self.assertEqual(result["tenant"], joined["tenantId"])
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.fetch_state(self.url, joined["token"])
+        self.assertIn("suspended", str(ctx.exception))
+        self.assertIn(server._hash_secret(invite), self.registry()["invites"])  # the ledger row stays
+        self.hub.restore_invite(invite)  # the code is a handle for the same suspension
+        self.assertEqual(remote_client.fetch_state(self.url, joined["token"])["connections"], {})
 
     def test_malformed_invite_is_a_400(self):
         with self.assertRaises(remote_client.RemoteError) as ctx:
@@ -213,15 +224,22 @@ class LifecycleTests(HubCase):
         remote_client.push_keys(self.url, token, {"glm": "sk-test"})
         self.assertFalse(remote_client.fetch_state(self.url, token)["connections"]["glm"]["keyMissing"])
 
-    def test_revoke_kills_the_token_and_the_workspace(self):
+    def test_revoke_suspends_the_token_and_keeps_the_workspace(self):
         token, tenant_id = self.join("alice")
         self.push_plan(token)
         self.hub.revoke(tenant_id)
-        self.assertFalse((self.data_dir / "tenants" / tenant_id).exists())
+        self.assertTrue((self.data_dir / "tenants" / tenant_id).exists())  # kept on disk
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.fetch_state(self.url, token)
-        self.assertIn("401", str(ctx.exception))
-        self.assertNotIn(tenant_id, self.registry()["tenants"])
+        self.assertIn("suspended", str(ctx.exception))
+        self.assertTrue(self.registry()["tenants"][tenant_id].get("suspendedAt"))
+
+    def test_restore_brings_the_token_back(self):
+        token, tenant_id = self.join("alice")
+        self.hub.revoke(tenant_id)
+        self.hub.restore(tenant_id)
+        self.assertEqual(remote_client.fetch_state(self.url, token)["connections"], {})
+        self.assertFalse(self.registry()["tenants"][tenant_id].get("suspendedAt"))
 
     def test_release_keeps_the_pairing(self):
         token, _ = self.join("alice")
@@ -263,20 +281,21 @@ class CrossProcessTests(HubCase):
             remote_client.join(self.url, code)  # against the long-lived serve
         self.assertIn("403", str(ctx.exception))
 
-    def test_stale_usage_write_cannot_revive_a_revoked_tenant(self):
+    def test_stale_usage_write_cannot_lift_a_suspension(self):
         token, tenant_id = self.join("alice")
         stale_tenant = self.hub.tenants[tenant_id]
         server.Hub(self.data_dir).revoke(tenant_id)
 
         self.hub._bump_usage(stale_tenant, 1)
 
-        self.assertNotIn(tenant_id, server.Hub(self.data_dir).registry["tenants"])
+        record = server.Hub(self.data_dir).registry["tenants"][tenant_id]
+        self.assertTrue(record.get("suspendedAt"))  # the bump must not clear it
         with self.assertRaises(server.ApiError) as ctx:
             self.hub.auth(token)
         self.assertEqual(ctx.exception.status, 401)
 
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
-    def test_tick_does_not_fire_a_tenant_revoked_by_another_process(self, _send):
+    def test_tick_does_not_fire_a_suspended_tenant(self, _send):
         token, tenant_id = self.join("alice")
         self.push_plan(token)
         workspace = self.data_dir / "tenants" / tenant_id
@@ -285,7 +304,17 @@ class CrossProcessTests(HubCase):
         result = self.hub.tick(now_fn=lambda conn: at("03:00", seconds=30))
 
         self.assertEqual(result["fired"], 0)
-        self.assertFalse(workspace.exists())
+        self.assertTrue(workspace.exists())  # suspension keeps the workspace
+
+    def test_suspension_frees_a_slot_and_restore_retakes_it(self):
+        self.make_hub(max_tenants=1)
+        token, tenant_id = self.join("alice")
+        server.Hub(self.data_dir).revoke(tenant_id)  # frees the only slot
+        bob_token, _ = self.join("bob")  # joins while alice is suspended
+        self.assertTrue(bob_token.startswith("awt_"))
+        with self.assertRaises(server.ApiError) as ctx:
+            self.hub.restore(tenant_id)  # no room left for alice
+        self.assertIn("full", str(ctx.exception))
 
     def test_reload_uses_disk_record_but_keeps_runtime_tenant_state(self):
         token, tenant_id = self.join("alice")
@@ -430,13 +459,74 @@ class HubCliTests(IsolatedTestCase):
         self.assertNotIn("Traceback", result.output)
         self.assertIn("—", result.output)
 
-    def test_revoke_removes_the_tenant(self):
+    def paired_hub_with_connection(self, note="alice", conn_id="glm"):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite(note))
+        engine.tenants[joined["tenantId"]].warm.put_connection(conn_id, {
+            "connection": plan_connection(), "apiKey": "sk-test", "timezone": TZ,
+        })
+        return engine, joined
+
+    def test_status_shows_capacity_invites_and_tenants(self):
+        engine, joined = self.paired_hub_with_connection()
+        engine.record_launch("127.0.0.1", 1)  # nothing listens on port 1
+        result = invoke(["hub", "status"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("tenants: 1/10 active", result.output)
+        self.assertIn("connections: 1 delegated (max 5 per tenant)", result.output)
+        self.assertIn("invites: 1 used", result.output)
+        self.assertIn("NOT reachable", result.output)
+        self.assertIn("alice", result.output)
+        self.assertIn("awewarm-hub.log", result.output)
+        self.assertIn("per-connection detail: awewarm hub status --details", result.output)
+        registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
+        self.assertEqual(registry["serve"]["maxTenants"], 10)  # caps stamped for other processes
+
+    def test_status_details_lists_each_connection(self):
+        engine, _ = self.paired_hub_with_connection()
+        engine.record_launch("127.0.0.1", 1)
+        result = invoke(["hub", "status"] + self.dir_opt + ["--details"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("CONNECTION", result.output)
+        self.assertIn("glm", result.output)
+        self.assertIn("MODE", result.output)
+        self.assertIn(TZ, result.output)
+        self.assertNotIn("per-connection detail", result.output)  # the hint steps aside
+
+    def test_status_without_a_launch_record_shows_unknown_caps(self):
+        self.paired_hub_with_connection()
+        result = invoke(["hub", "status"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("caps unknown", result.output)
+        self.assertIn("never launched", result.output)
+
+    def test_cli_hub_adopts_the_recorded_caps(self):
+        server.Hub(self.data_dir, max_tenants=3, max_conns_per_tenant=2).record_launch("127.0.0.1", 1)
+        fresh = server.Hub(self.data_dir)  # what a one-shot hub CLI process constructs
+        self.assertEqual(fresh.max_tenants, 3)
+        self.assertEqual(fresh.max_conns_per_tenant, 2)
+
+    def test_status_reports_a_reachable_serve(self):
+        hub_engine, httpd = server.make_server(self.data_dir, "127.0.0.1", 0, hub=True)
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
+        hub_engine.record_launch("127.0.0.1", httpd.server_address[1])
+        self.paired_hub_with_connection()
+        result = invoke(["hub", "status"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("reachable", result.output)
+        self.assertIn(f"v{awewarm.__version__}, hub", result.output)
+
+    def test_revoke_suspends_the_tenant(self):
         engine = server.Hub(self.data_dir)
         joined = engine.join(engine.mint_invite("alice"))
         result = invoke(["hub", "revoke", joined["tenantId"]] + self.dir_opt, input="y\n")
         self.assertEqual(result.exit_code, 0)
+        self.assertIn("suspended", result.output)
+        self.assertIn("hub restore", result.output)
         registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
-        self.assertNotIn(joined["tenantId"], registry["tenants"])
+        record = registry["tenants"][joined["tenantId"]]
+        self.assertTrue(record.get("suspendedAt"))  # kept, flagged — nothing deleted
 
     def test_revoke_reports_a_busy_registry_without_a_traceback(self):
         engine = server.Hub(self.data_dir)
@@ -456,7 +546,7 @@ class HubCliTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("invite revoked for alice", result.output)
         registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
-        self.assertNotIn(server._hash_secret(code), registry["invites"])
+        self.assertTrue(registry["invites"][server._hash_secret(code)].get("revokedAt"))
         with self.assertRaises(server.ApiError):
             engine.join(code)
 
@@ -468,16 +558,68 @@ class HubCliTests(IsolatedTestCase):
         self.assertIn("aborted", result.output)
         self.assertTrue(engine.join(code)["token"].startswith("awt_"))
 
-    def test_revoke_invite_reports_a_used_code_without_deleting_it(self):
+    def test_revoke_used_invite_suspends_its_tenant(self):
         engine = server.Hub(self.data_dir)
         code = engine.mint_invite("alice")
         joined = engine.join(code)
         result = invoke(["hub", "revoke", code] + self.dir_opt, input="y\n")
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("already used", result.output)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("suspended", result.output)
         self.assertIn(joined["tenantId"], result.output)
+        self.assertIn("hub restore", result.output)
         registry = json.loads(Path(self.data_dir, "tenants.json").read_text())
-        self.assertIn(server._hash_secret(code), registry["invites"])  # the audit row stays
+        self.assertIn(server._hash_secret(code), registry["invites"])  # the ledger row stays
+        self.assertTrue(registry["tenants"][joined["tenantId"]].get("suspendedAt"))
+
+    def test_restore_revives_a_suspended_tenant(self):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite("alice"))
+        engine.revoke(joined["tenantId"])
+        result = invoke(["hub", "restore", joined["tenantId"]] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("restored", result.output)
+        self.assertFalse(server.Hub(self.data_dir).registry["tenants"][joined["tenantId"]].get("suspendedAt"))
+
+    def test_restore_of_an_active_tenant_is_refused(self):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite("alice"))
+        result = invoke(["hub", "restore", joined["tenantId"]] + self.dir_opt)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("not suspended", result.output)
+
+    def test_restore_revives_a_revoked_invite(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        engine.revoke_invite(code)
+        result = invoke(["hub", "restore", code] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("pairs again", result.output)
+        self.assertTrue(engine.join(code)["token"].startswith("awt_"))
+
+    def test_list_users_marks_suspended_tenants(self):
+        engine = server.Hub(self.data_dir)
+        joined = engine.join(engine.mint_invite("alice"))
+        engine.revoke(joined["tenantId"])
+        result = invoke(["hub", "list", "users"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("suspended", result.output)
+
+    def test_invites_shows_a_revoked_code(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        engine.revoke_invite(code)
+        result = invoke(["hub", "list", "invites"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("revoked", result.output)
+
+    def test_invites_shows_a_suspended_tenant_behind_a_used_code(self):
+        engine = server.Hub(self.data_dir)
+        code = engine.mint_invite("alice")
+        joined = engine.join(code)
+        engine.revoke(joined["tenantId"])  # suspending the tenant must surface on its code's row
+        result = invoke(["hub", "list", "invites"] + self.dir_opt)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("suspended", result.output)
 
     def test_revoke_invite_reports_an_unknown_code(self):
         result = invoke(["hub", "revoke", "awi_" + "x" * 20] + self.dir_opt, input="y\n")
@@ -583,6 +725,23 @@ class ConnectHubTests(IsolatedTestCase):
         self.assertEqual(cfg.load_config()["remote"]["url"], self.url)
         view = remote_client.ensure_session(cfg.load_config())  # no invite needed anymore
         self.assertTrue(view["tenant"].startswith("t_"))
+
+    def test_connect_prints_the_token_for_safekeeping(self):
+        code = self.hub.mint_invite("alice")
+        result = invoke(["remote", "connect", self.url, "--invite", code])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("keep a copy", result.output)
+        shown = next(line.strip() for line in result.output.splitlines() if line.strip().startswith("awt_"))
+        self.assertEqual(shown, remote_client.load_token())  # what you see is what got stored
+
+    def test_connect_recovers_with_a_saved_token_after_loss(self):
+        joined = remote_client.join(self.url, self.hub.mint_invite("alice"))
+        from awewarm import keystore
+        keystore._write_secrets({})  # the local copy is gone
+        result = invoke(["remote", "connect", self.url, "--token", joined["token"]])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("already paired", result.output)
+        self.assertEqual(keystore.load_api_key(f"file:{remote_client.TOKEN_SECRET_ID}"), joined["token"])
 
     def test_connect_prompts_for_the_invite_when_not_given(self):
         code = self.hub.mint_invite("alice")

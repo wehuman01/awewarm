@@ -96,8 +96,8 @@ class SurfaceTests(IsolatedTestCase):
     def test_group_help_lists_subcommands(self):
         self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show", "template"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
-        self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push", "status"])
-        self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "revoke"])
+        self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push"])
+        self.assertEqual(command_names(invoke(["hub", "--help"]).output), ["config", "invite", "list", "restore", "revoke", "status"])
         self.assertEqual(command_names(invoke(["hub", "list", "--help"]).output), ["invites", "users"])
 
     def test_update_command_is_gone(self):
@@ -1606,6 +1606,60 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertEqual(local["lastActivationAt"], "2026-08-20T10:00:00+08:00")
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
         self.assertNotIn("location", on_disk["connections"]["local"]["glm"])
+
+    def add_local_account(self):
+        data = cfg.load_config()
+        data["connections"]["claude-code-main"] = account_connection(mode="fixed")
+        cfg.save_config(data)
+
+    def test_status_filters_split_local_and_delegated(self):
+        self.delegate()
+        self.add_local_account()
+        remote_view = invoke(["status", "--remote"])
+        self.assertEqual(remote_view.exit_code, 0, output_of(remote_view))
+        self.assertIn("awewarm server", remote_view.output)  # the health line moved here
+        self.assertIn(self.url, remote_view.output)
+        self.assertIn("(glm)", remote_view.output)
+        self.assertNotIn("claude-code-main", remote_view.output)
+        local_view = invoke(["status", "--local"])
+        self.assertEqual(local_view.exit_code, 0, output_of(local_view))
+        self.assertNotIn("awewarm server", local_view.output)
+        self.assertIn("claude-code-main", local_view.output)
+        self.assertNotIn("(glm)", local_view.output)
+
+    def test_status_filter_mismatch_points_at_the_fix(self):
+        self.delegate()
+        self.add_local_account()
+        result = invoke(["status", "glm", "--local"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("glm is not local", output_of(result))
+        self.assertIn("awewarm config set glm --local", output_of(result))
+        result = invoke(["status", "claude-code-main", "--remote"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("claude-code-main is not remote", output_of(result))
+
+    def test_status_remote_without_pairing_is_friendly(self):
+        write_config(plan_connection())
+        result = invoke(["status", "--remote"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("No remote server paired", result.output)
+        self.assertIn("awewarm remote connect", result.output)
+
+    def test_status_local_with_everything_delegated(self):
+        self.delegate()
+        result = invoke(["status", "--local"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("every connection is delegated", result.output)
+        self.assertIn("awewarm status --remote", result.output)
+
+    def test_remote_status_alias_points_at_status_remote(self):
+        self.delegate()
+        result = invoke(["remote", "status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("moved to", output_of(result))
+        self.assertIn("status --remote", output_of(result))
+        self.assertIn("awewarm server", result.output)  # and the new view renders
+
 
     def test_tick_skips_remote_and_rekeys_after_server_restart(self):
         self.delegate(plan_connection(fixed_at=("03:00",), days="every-day"))

@@ -1111,9 +1111,17 @@ def config_edit_command():
 @cli.command("status")
 @click.argument("connection", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
-def status_command(connection, as_json):
-    """Show connections and what fires next."""
-    _show_status(connection, as_json)
+@click.option("--remote/--local", "location", default=None,
+              help="Show only delegated (--remote) or only locally scheduled (--local) connections.")
+def status_command(connection, as_json, location):
+    """Show connections and what fires next.
+
+    \\b
+      awewarm status               everything: local + delegated (server truth)
+      awewarm status --remote      delegated only, with the server health line
+      awewarm status --local       locally scheduled only
+    """
+    _show_status(connection, as_json, location)
 
 
 @cli.command("tick", hidden=True)
@@ -1386,53 +1394,26 @@ def _remote_connect_hub(url, token_opt, invite_opt, health):
     config["remote"] = {"url": url, "tokenRef": f"file:{remote.TOKEN_SECRET_ID}"}
     save_config(config)
     click.echo(f"✓ Joined awewarm hub {health.get('version')} at {url} (tenant {joined['tenantId']})")
+    click.echo(f"  your token (auto-saved to secrets.json — keep a copy yourself, it is the only way back in):")
+    click.echo(f"  {joined['token']}")
+    click.echo(f"  reuse a saved token with: awewarm remote connect {url} --token <token>")
     click.echo("  Delegate a connection with: awewarm config set <id> --remote")
 
 
 @remote_group.command("connect")
 @click.argument("url")
-@click.option("--token", "token_opt", default=None, help="Use this token when the server runs `serve --token`.")
+@click.option("--token", "token_opt", default=None, help="Pair with this token: claim a `serve --token` server, or reuse a saved hub token.")
 @click.option("--invite", "invite_opt", default=None, help="One-time invite code when the server runs `serve --hub`.")
 def remote_connect_command(url, token_opt, invite_opt):
     """Pair with an `awewarm serve` process (URL + token stored locally)."""
     _remote_connect(url, token_opt, invite_opt)
 
 
-def _remote_status():
-    config = load_config()
-    if not remote.remote_url(config):
-        die("no remote server connected\nfix: awewarm remote connect <url>")
-    try:
-        view = remote.ensure_session(config)
-    except remote.RemoteError as exc:
-        die(str(exc))
-    now = datetime.now().astimezone()
-    started = schedule.parse_ts(view.get("startedAt"))
-    ticked = schedule.parse_ts(view.get("lastTickAt"))
-    click.echo(f"awewarm server {view.get('version')} — up since {_fmt_moment(started, now)}")
-    click.echo(f"  last tick: {_fmt_moment(ticked, now)}")
-    conns = view.get("connections") or {}
-    if not conns:
-        click.echo("  no delegated connections — delegate one with: awewarm config set <id> --remote")
-        return
-    for conn_id, entry in conns.items():
-        conn = entry.get("config") or {}
-        cs = entry.get("state") or {}
-        mode = (conn.get("schedule") or {}).get("mode", "fixed")
-        tz_name = conn.get("timezone")
-        try:
-            conn_now = datetime.now(timezone_for(tz_name)) if tz_name else now
-        except Exception:
-            conn_now = now
-        due_at, _ = schedule.next_due(conn, cs, conn_now)
-        note = " — key missing, rerun: awewarm remote push" if entry.get("keyMissing") else ""
-        click.echo(f"  {conn_id}: {mode}, next due {_fmt_moment(due_at, conn_now)}{note}")
-
-
-@remote_group.command("status")
+@remote_group.command("status", hidden=True)
 def remote_status_command():
-    """Show the server's view: uptime, last tick, delegated connections."""
-    _remote_status()
+    """Legacy alias: status --remote (removed in v1.0)."""
+    _moved("remote status", "status --remote")
+    _show_status(None, False, location=True)
 
 
 def _remote_push(connection):
@@ -1577,6 +1558,108 @@ def hub_config_command(data_dir, unset_dir):
     click.echo("  used by awewarm serve and awewarm hub commands; override once with --data-dir")
 
 
+def _hub_probe_serve(record):
+    """Best-effort /healthz against the endpoint the serve launch recorded.
+    Unreachable is itself the answer `hub status` reports — never fatal."""
+    if not record or not record.get("port"):
+        return None, None
+    bind = record.get("bind") or "127.0.0.1"
+    host = "127.0.0.1" if bind in ("", "0.0.0.0", "::", "[::]") else bind
+    url = f"http://{host}:{record['port']}"
+    try:
+        return url, remote.healthz(url, timeout=1.5)
+    except remote.RemoteError:
+        return url, None
+
+
+@hub.command("status")
+@click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
+@click.option("--details", "show_details", is_flag=True,
+              help="Also list every delegated connection with its mode and next due moment.")
+def hub_status_command(data_dir, show_details):
+    """Hub overview: capacity, invites, tenants, and the serve process.
+
+    \b
+      awewarm hub status             one-glance dashboard
+      awewarm hub status --details   plus every connection of every tenant
+    """
+    data_dir = _resolve_server_data_dir(data_dir)
+    engine = _load_hub(data_dir)
+    rows = engine.summarize()
+    invite_counts = {}
+    for invite_row in engine.list_invites():
+        invite_counts[invite_row["status"]] = invite_counts.get(invite_row["status"], 0) + 1
+    active = sum(1 for row in rows if not row["suspended"])
+    suspended = len(rows) - active
+    total_conns = sum(len(row["connections"]) for row in rows)
+    record = engine.serve_record
+
+    click.echo("awewarm hub")
+    if record.get("maxTenants") is not None:
+        click.echo(f"  tenants: {active}/{record['maxTenants']} active")
+    else:
+        click.echo(f"  tenants: {active} active (caps unknown — recorded when serve launches)")
+    if suspended:
+        click.echo(f"             {suspended} suspended (slot free; restore: awewarm hub restore <tenant>)")
+    conn_cap = record.get("maxConnsPerTenant")
+    click.echo(
+        f"  connections: {total_conns} delegated"
+        + (f" (max {conn_cap} per tenant)" if conn_cap else "")
+    )
+    invites_line = ", ".join(f"{invite_counts[k]} {k}" for k in ("pending", "used", "expired", "revoked") if invite_counts.get(k))
+    click.echo(f"  invites: {invites_line or 'none minted'} (mint: awewarm hub invite)")
+    if not record:
+        click.echo("  serve: never launched against this data dir")
+    else:
+        probe_url, probe = _hub_probe_serve(record)
+        if probe:
+            mode = "hub" if probe.get("hub") else "single-tenant"
+            click.echo(f"  serve: reachable at {probe_url} (v{probe.get('version')}, {mode})")
+        else:
+            click.echo(f"  serve: NOT reachable at {probe_url} — is `awewarm serve --hub` running?")
+    click.echo(f"  data dir: {data_dir} (log: {Path(engine.log_path).name})")
+
+    if not rows:
+        click.echo("\nNo tenants paired yet — hand out: awewarm hub invite")
+        return
+    now = datetime.now().astimezone()
+    tenant_rows = []
+    for row in rows:
+        conns = row["connections"]
+        usage = row["usage"] or {}
+        seen = _fmt_moment(schedule.parse_ts(row["lastSeenAt"]), now) if row["lastSeenAt"] else "never"
+        tenant_rows.append([
+            row["tenant"],
+            row["note"] or "—",
+            str(len(conns)),
+            "suspended" if row["suspended"] else _hub_tenant_status(conns),
+            str(usage.get("today", 0)),
+            seen,
+        ])
+    click.echo()
+    _print_table(["TENANT", "NOTE", "CONNS", "STATUS", "TODAY", "LAST SEEN"], tenant_rows)
+
+    conn_rows = []
+    for row in rows:
+        for entry in row["connections"]:
+            conn_rows.append([
+                row["tenant"],
+                entry["id"],
+                entry["status"],
+                entry.get("mode") or "fixed",
+                _hub_conn_moment(entry, now),
+                entry.get("timezone") or "—",
+            ])
+    if show_details:
+        if conn_rows:
+            click.echo()
+            _print_table(["TENANT", "CONNECTION", "STATUS", "MODE", "NEXT DUE", "TIMEZONE"], conn_rows)
+        else:
+            click.echo("\nNo delegated connections yet")
+    elif conn_rows:
+        click.echo("\nper-connection detail: awewarm hub status --details")
+
+
 @hub.command("invite")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 @click.option("--note", default=None, help="Who this invite is for (shown in hub list users).")
@@ -1617,7 +1700,7 @@ def _print_table(headers, rows):
 def _hub_tenant_status(conns):
     """Worst health rung across a tenant's connections. Key presence is
     deliberately absent: RAM keys are only knowable inside the serve process,
-    not from this one — tenants see it via their own `remote status`."""
+    not from this one — tenants see it via their own `status --remote`."""
     for word in ("invalid", "auto-disabled", "degraded", "failing"):
         if any(c["status"] == word for c in conns):
             return word
@@ -1676,7 +1759,7 @@ def hub_list_users_command(data_dir, show_api, show_codes, as_json):
             row["note"] or "—",
             (row["invite"] or "—") if show_codes else _mask_invite(row["invite"]),
             str(len(conns)),
-            _hub_tenant_status(conns),
+            "suspended" if row["suspended"] else _hub_tenant_status(conns),
             str(usage.get("today", 0)),
             str(usage.get("total", 0)),
             seen,
@@ -1753,27 +1836,33 @@ def hub_list_invites_command(data_dir, show_codes, as_json):
 
 
 def _hub_revoke_invite(engine, code):
-    """`hub revoke awi_...`: the code dies now instead of at its expiry."""
+    """`hub revoke awi_...`: the code dies now instead of at its expiry.
+
+    A used code additionally suspends the tenant it produced."""
     if not click.confirm(f"Revoke invite {code}? It stops pairing immediately.", default=False):
         click.echo("aborted — nothing revoked")
         return
     from .server import ApiError
     try:
         result = engine.revoke_invite(code)
-    except ApiError as exc:  # registry busy, unknown, or already used
+    except ApiError as exc:  # registry busy, unknown, or already revoked
         die(f"could not revoke the invite:\n{exc}")
-    if result["status"] == "expired":
-        click.echo("✓ invite had already expired — stale entry removed")
+    note = f" for {result['note']}" if result["note"] else ""
+    status = result["status"]
+    if status == "used":
+        click.echo(f"✓ invite revoked{note} — tenant {result['tenant']} suspended, its token no longer works")
+    elif status == "expired":
+        click.echo(f"✓ invite revoked{note} (it had already expired — the ledger row is kept)")
     else:
-        note = f" for {result['note']}" if result["note"] else ""
         click.echo(f"✓ invite revoked{note} — the code no longer pairs; a fresh one: awewarm hub invite")
+    click.echo(f"  undo: awewarm hub restore {code}")
 
 
 @hub.command("revoke")
 @click.argument("tenant")
 @click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
 def hub_revoke_command(tenant, data_dir):
-    """Drop a tenant (t_...): its token, connections, and their state. Or kill an unused invite (awi_...)."""
+    """Suspend a tenant (t_...): token dead, connections kept, reversible. Or kill an invite (awi_...)."""
     engine = _load_hub(_resolve_server_data_dir(data_dir))
     if tenant.startswith("awi_"):
         _hub_revoke_invite(engine, tenant)
@@ -1784,15 +1873,40 @@ def hub_revoke_command(tenant, data_dir):
     row = known[tenant]
     label = f" ({row['note']})" if row["note"] else ""
     conns = ", ".join(entry["id"] for entry in row["connections"]) or "no connections"
-    if not click.confirm(f"Revoke {tenant}{label}? Its delegated connections stop being ticked: {conns}", default=False):
+    if row["suspended"]:
+        die(f"{tenant}{label} is already suspended\nundo it with: awewarm hub restore {tenant}")
+    if not click.confirm(f"Revoke {tenant}{label}? Its token stops working and these stop being ticked: {conns}", default=False):
         click.echo("aborted — nothing revoked")
         return
     from .server import ApiError
     try:
         engine.revoke(tenant)
-    except ApiError as exc:  # registry busy (serve mid-update) or revoked in another process
+    except ApiError as exc:  # registry busy (serve mid-update) or suspended in another process
         die(f"could not revoke {tenant}:\n{exc}")
-    click.echo(f"✓ {tenant} revoked — its token no longer works; connections and state removed")
+    click.echo(f"✓ {tenant} suspended — its token no longer works; connections and state are kept on disk")
+    click.echo(f"  undo: awewarm hub restore {tenant}")
+
+
+@hub.command("restore")
+@click.argument("target")
+@click.option("--data-dir", default=None, help="The hub's data directory (default: ~/.awewarm-server, or the one `hub config --data-dir` saved).")
+def hub_restore_command(target, data_dir):
+    """Undo a revoke: a suspended tenant's (t_...) token works again, a revoked invite (awi_...) pairs again."""
+    engine = _load_hub(_resolve_server_data_dir(data_dir))
+    from .server import ApiError
+    try:
+        if target.startswith("awi_"):
+            result = engine.restore_invite(target)
+            if result["tenant"]:
+                click.echo(f"✓ invite restored — tenant {result['tenant']} is back (capacity permitting)")
+            else:
+                click.echo("✓ invite restored — the code pairs again")
+                click.echo("  it still obeys its original expiry; a fresh one: awewarm hub invite")
+        else:
+            engine.restore(target)
+            click.echo(f"✓ {target} restored — its token works again and its slot is re-taken")
+    except ApiError as exc:  # registry busy, unknown, not suspended, or hub full
+        die(f"could not restore {target}:\n{exc}")
 
 
 @cli.command("serve")
@@ -1801,7 +1915,7 @@ def hub_revoke_command(tenant, data_dir):
 @click.option("--port", default=8790, show_default=True, type=int, help="Port to listen on (0 picks a free one).")
 @click.option("--token", "fixed_token", default=None, help="Require exactly this token instead of the first-connect claim.")
 @click.option("--hub", is_flag=True, help="Multi-tenant mode: users pair with one-time invites (awewarm hub invite).")
-@click.option("--max-tenants", "max_tenants", default=50, show_default=True, type=int, help="Hub mode: tenant cap (joining refuses past it).")
+@click.option("--max-tenants", "max_tenants", default=10, show_default=True, type=int, help="Hub mode: cap on active tenants (suspended ones free their slot).")
 @click.option("--max-conns-per-tenant", "max_conns_per_tenant", default=5, show_default=True, type=int, help="Hub mode: delegated connections each tenant may keep.")
 @click.option("--tick-seconds", default=60, show_default=True, type=int, help="Seconds between scheduling passes.")
 def serve_command(data_dir, bind, port, fixed_token, hub, max_tenants, max_conns_per_tenant, tick_seconds):

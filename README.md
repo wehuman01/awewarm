@@ -230,6 +230,8 @@ awewarm remote connect https://warm.example.com   # token generated + stored loc
 awewarm config set glm --remote                   # the server takes over this connection
 awewarm config set glm --duplicate --remote       # ...or keep glm local and delegate a copy of it
 awewarm status                                    # merged view: local + delegated truth
+awewarm status --remote                           # delegated only, plus the server health line (version/uptime/last tick)
+awewarm status --local                            # locally scheduled connections only
 ```
 
 `--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. `--duplicate` copies a connection under a fresh id (`glm-copy`) — the API key is re-stored under the new id, runtime state starts blank — and with `--remote` the copy is delegated and the original disabled, so one subscription is never ticked twice. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back — and, same as locally, a successful manual run clears an auto-disabled ladder — and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` refuses while anything is still delegated, then forgets the server and releases its claim (another machine can pair immediately); the pairing token stays in `secrets.json`, so reconnecting later is instant even against a server that kept the old claim. Fixed times run in the delegating machine's timezone (it travels with the push; machines whose zone has no IANA name, e.g. Windows, push a fixed `UTC±HH:MM` offset instead); wake-from-sleep does not apply on a server that never sleeps.
@@ -248,16 +250,20 @@ awewarm remote connect https://warm.example.com --invite awi_...
 awewarm config set glm --remote      # same delegation as single-user mode
 ```
 
+`remote connect` prints the personal token once at join (it is auto-saved to `secrets.json`): the invite is spent, so a saved copy of that token — reused with `remote connect <url> --token <token>` — is the only way back in without asking the operator for a fresh invite.
+
 Each tenant gets a private workspace: connections, state, and keys are invisible to other tenants (their `glm` and yours never collide), and everything from single-user delegation works unchanged — edits push, `run` fires remotely, `--local` takes back, fixed times follow the *user's* timezone. Hub administration lives on the server:
 
 ```bash
+awewarm hub status [--details]        # overview: tenant/connection capacity (N/max), invite counts, a serve liveness probe; --details lists every delegated connection
 awewarm hub list users [--api|--reveal]  # tenant table: health, usage, last seen; --api adds endpoints, --reveal the joining invite code
-awewarm hub list invites [--reveal]     # every minted invite: pending/used/expired; --reveal shows the full code
-awewarm hub revoke <tenant>|awi_...   # drop a tenant (token, connections, state) or kill a pending invite
-awewarm serve --hub --max-tenants 50 --max-conns-per-tenant 5
+awewarm hub list invites [--reveal]     # every minted invite: pending/revoked/used/suspended/expired; --reveal shows the full code
+awewarm hub revoke <tenant>|awi_...   # suspend a tenant or kill an invite: the token stops working now, everything kept on disk
+awewarm hub restore <tenant>|awi_...  # undo a revoke: token/code works again (a restored tenant re-takes a slot)
+awewarm serve --hub --max-tenants 10 --max-conns-per-tenant 5
 ```
 
-Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly (a leaked code can be killed on the spot with `hub revoke awi_...`; the running serve honors it without a restart). Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a tenant revocation. And a `remote disconnect` does not free a hub slot — the kept token re-pairs on reconnect; capacity is the operator's call via `hub revoke`. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
+Two rules differ from single-user mode. Pairings persist across restarts: `tenants.json` stores **SHA-256 hashes** of tenant tokens (never plaintext, still no API keys on disk), so a hub reboot doesn't wait for every user to re-claim — only the RAM keys are lost and re-pushed as usual. Invite codes, in contrast, are kept on disk in the clear so the operator can recover one already sent (`hub list invites --reveal`) — anyone who can read the data dir can use a pending invite, so guard it accordingly (a leaked code can be killed on the spot with `hub revoke awi_...`; the running serve honors it without a restart). At launch `serve` stamps its effective caps (max-tenants / max-conns-per-tenant) and listening endpoint into `tenants.json`; `hub status` reads that to show "N/max" usage and probe the local serve for liveness — with no record yet (serve never launched against the data dir) it says caps unknown. Registry changes are serialized across the resident server and operator commands, so a concurrent usage update cannot undo a revocation. Revocation is suspension, not deletion: a revoked invite or a suspended tenant (revoking a used code suspends the tenant it produced — the two are the same state seen from either handle) keeps its connections and state, and `hub restore` brings it back; a suspended tenant frees its capacity slot, and restoring re-takes one, refusing when the hub is full. A light per-tenant rate limit (60 requests/minute) stops a looping client from monopolizing the process.
 
 One trust rule to state plainly: the hub fires requests with its users' API keys, so their plaintext keys pass through its RAM. Hub for people who trust the machine's operator (and root); a shared VPS with strangers is not that.
 
@@ -335,21 +341,22 @@ awewarm config remove <id>            # delete a connection, its state, and its 
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
+awewarm status --remote / --local     # delegated connections only (with the server health line) / locally scheduled only
 awewarm run [--force]                 # fire every enabled connection now, ignoring the schedule (prompts; --force skips)
 awewarm run <id> [--reset-due]        # fire one connection now (schedule untouched unless --reset-due)
 awewarm scheduler install [--wake] / uninstall # background scheduler (launchd / Task Scheduler / systemd); --wake also arms RTC wake-from-sleep
 awewarm serve                          # run the always-on server that ticks delegated connections
 awewarm serve --hub                    # multi-tenant server: users pair with one-time invites
+awewarm hub status [--details]         # hub overview: capacity use, invite counts, serve liveness; --details lists every connection
 awewarm hub config [--data-dir /data]  # set/show the default data dir for serve + hub commands (~/.awewarm-server)
 awewarm hub invite / revoke; hub list users / invites  # hub administration (run on the hub machine)
 awewarm remote connect <url>           # pair with a server (token generated + stored locally)
-awewarm remote status                  # server view: uptime, last tick, delegated connections
 awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)
 awewarm remote disconnect              # forget the server + release its claim (refuses while delegations exist)
 awewarm self-update [--check]         # upgrade to the latest PyPI release
 ```
 
-Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`) still work as hidden aliases; they print their new spelling and will be removed in v1.0. `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
+Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `disable`, `verify`, `anchor`, `activate`, `remove`, `install`, `uninstall`, `inspect`) still work as hidden aliases; they print their new spelling and will be removed in v1.0. `remote status` folded into `status --remote` (kept as a hidden alias the same way). `awewarm update` was removed outright in v0.4.8 — use `awewarm self-update`.
 
 ## Self-Update
 

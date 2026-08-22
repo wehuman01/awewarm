@@ -103,18 +103,31 @@ def _fetch_remote_view(config, state):
         return None, f"server unreachable ({exc})"
 
 
-def _show_status(connection, as_json):
+def _show_status(connection, as_json, location=None):
+    """Render status; `location` filters — True shows only delegated
+    connections, False only locally scheduled ones, None shows both."""
     from . import cli
     config = load_config()
     if connection:
         # An explicit ask always shows the connection, hidden or not.
-        cli._find_connection(config, connection)
+        conn = cli._find_connection(config, connection)[1]
+        if location is not None and (conn.get("location") == "remote") != location:
+            where = "remote" if location else "local"
+            cli.die(
+                f"{connection} is not {where}\n"
+                f"fix: awewarm config set {connection} --{where}"
+            )
         conns = {connection: config["connections"][connection]}
     else:
         conns = {
             cid: conn for cid, conn in config["connections"].items()
             if not conn.get("hide")
         }
+        if location is not None:
+            conns = {
+                cid: conn for cid, conn in conns.items()
+                if (conn.get("location") == "remote") == location
+            }
     state = load_state()
     remote_view, remote_note = (None, None)
     if remote.remote_url(config) and any(c.get("location") == "remote" for c in conns.values()):
@@ -141,7 +154,24 @@ def _show_status(connection, as_json):
         click.echo(json.dumps(transport.redact(view), indent=2))
         return
     if not conns:
-        if config["connections"]:
+        if location:
+            if not remote.remote_url(config):
+                click.echo("No remote server paired — pair with: awewarm remote connect <url>")
+            elif config["connections"]:
+                click.echo("No delegated connections — delegate one with: awewarm config set <id> --remote")
+            else:
+                click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
+        elif location is False:
+            if any(c.get("location") == "remote" for c in config["connections"].values()):
+                click.echo("No local connections — every connection is delegated (view them: awewarm status --remote)")
+            elif config["connections"]:
+                click.echo(
+                    "No visible connections — all are hidden from status.\n"
+                    "unhide with: awewarm config set <id> --show"
+                )
+            else:
+                click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
+        elif config["connections"]:
             click.echo(
                 "No visible connections — all are hidden from status.\n"
                 "unhide with: awewarm config set <id> --show"
@@ -150,6 +180,13 @@ def _show_status(connection, as_json):
             click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
         return
     now = cli._now(config)
+    if location and remote_view:
+        started = schedule.parse_ts(remote_view.get("startedAt"))
+        ticked = schedule.parse_ts(remote_view.get("lastTickAt"))
+        click.echo(
+            f"awewarm server {remote_view.get('version')} at {remote.remote_url(config)} — "
+            f"up since {cli._fmt_moment(started, now)}, last tick {cli._fmt_moment(ticked, now)}"
+        )
     for conn_id in sorted(conns):
         conn = conns[conn_id]
         if conn.get("location") == "remote" and remote_view:

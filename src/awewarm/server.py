@@ -17,8 +17,9 @@ each tenant gets a private WarmServer workspace and pairs through a one-time
 invite (`awewarm hub invite`) exchanged at /v1/join for a personal token.
 tenants.json stores SHA-256 hashes of tenant tokens plus the invite codes
 themselves — the operator can re-read a sent code (`awewarm hub list
-invites --token`) — so hub pairings survive a restart without every user re-claiming;
-API keys remain the only secret that never touches disk.
+invites --reveal`) — and a serve record with the launch's caps and endpoint
+for `awewarm hub status`; hub pairings survive a restart without every user
+re-claiming; API keys remain the only secret that never touches disk.
 
 Wire protocol (JSON over HTTP, Bearer token):
   GET    /healthz                    no auth; {ok, version, claimed[, hub]}
@@ -36,7 +37,6 @@ import hmac
 import json
 import re
 import secrets
-import shutil
 import threading
 import time
 import urllib.parse
@@ -58,8 +58,9 @@ BODY_LIMIT_BYTES = 256 * 1024
 # local CLI allows (delegated connections are always HTTP subscriptions).
 ACTIVATION_TIMEOUT_SECONDS = 15
 
-# Hub-mode knobs (`awewarm serve --hub`); the two caps are also serve flags.
-DEFAULT_MAX_TENANTS = 50
+# Hub-mode knobs (`awewarm serve --hub`); the two caps are also serve flags,
+# stamped into the registry at launch so `hub status` can report them.
+DEFAULT_MAX_TENANTS = 10
 DEFAULT_MAX_CONNS_PER_TENANT = 5
 INVITE_TTL_HOURS = 48
 # Generous for honest clients (status + sync make a handful of calls an hour)
@@ -375,16 +376,26 @@ class Hub:
     for every user to come back online.
     """
 
-    def __init__(self, data_dir, max_tenants=DEFAULT_MAX_TENANTS,
-                 max_conns_per_tenant=DEFAULT_MAX_CONNS_PER_TENANT):
+    def __init__(self, data_dir, max_tenants=None, max_conns_per_tenant=None):
         self.data_dir = Path(data_dir).expanduser()
         self.registry_path = self.data_dir / "tenants.json"
         self.registry_lock_path = self.data_dir / "tenants.lock"
         self.log_path = self.data_dir / "awewarm-hub.log"
         self.lock = threading.RLock()
-        self.max_tenants = max_tenants
-        self.max_conns_per_tenant = max_conns_per_tenant
         self.registry = self._load()
+        # Serve always passes its flag values; one-shot CLI processes (hub
+        # invite / status) pass None and adopt what the running serve stamped
+        # into the registry — so `hub status` reports the live caps, not the
+        # defaults. Nothing recorded yet falls back to the code defaults.
+        self.serve_record = self.registry.get("serve") or {}
+        self.max_tenants = (
+            max_tenants if max_tenants is not None
+            else self.serve_record.get("maxTenants", DEFAULT_MAX_TENANTS)
+        )
+        self.max_conns_per_tenant = (
+            max_conns_per_tenant if max_conns_per_tenant is not None
+            else self.serve_record.get("maxConnsPerTenant", DEFAULT_MAX_CONNS_PER_TENANT)
+        )
         self._registry_stamp = self._stamp()
         self.tenants = {
             tenant_id: Tenant(tenant_id, record, self.data_dir / "tenants")
@@ -469,6 +480,24 @@ class Hub:
     def log(self, message):
         append_log(self.log_path, message)
 
+    def record_launch(self, bind, port):
+        """Stamp the effective knobs into the registry so `hub status` (a
+        separate process) can report caps and find the live endpoint. Last
+        launch wins; nothing here is secret."""
+        record = {
+            "version": __version__,
+            "startedAt": schedule.iso(datetime.now().astimezone()),
+            "bind": bind,
+            "port": port,
+            "maxTenants": self.max_tenants,
+            "maxConnsPerTenant": self.max_conns_per_tenant,
+        }
+        with self._registry_transaction():
+            self.registry["serve"] = record
+            self._save()
+        self.serve_record = record
+        self.log(f"serve up on {bind}:{port} — caps {self.max_tenants} tenants, {self.max_conns_per_tenant} conns each")
+
     # --- pairing ---
 
     def mint_invite(self, note=None, ttl_hours=INVITE_TTL_HOURS):
@@ -494,7 +523,10 @@ class Hub:
             expires = schedule.parse_ts(entry.get("expiresAt"))
             used_by = entry.get("usedBy")
             if used_by:
-                status = "used"
+                tenant_record = self.registry["tenants"].get(used_by)
+                status = "suspended" if tenant_record and tenant_record.get("suspendedAt") else "used"
+            elif entry.get("revokedAt"):
+                status = "revoked"
             elif expires is not None and expires <= now:
                 status = "expired"
             else:
@@ -521,13 +553,14 @@ class Hub:
             entry = self.registry["invites"].get(digest)
             if entry is None or entry.get("usedBy"):
                 raise ApiError(403, "unknown or already-used invite — ask the hub operator for a fresh one")
+            if entry.get("revokedAt"):
+                raise ApiError(403, "invite revoked by the operator — ask them to restore it before reusing the code")
             now = datetime.now().astimezone()
             if schedule.parse_ts(entry.get("expiresAt")) <= now:
                 del self.registry["invites"][digest]
                 self._save()
                 raise ApiError(403, "invite expired — ask the hub operator for a fresh one")
-            if len(self.registry["tenants"]) >= self.max_tenants:
-                raise ApiError(403, f"hub is full ({self.max_tenants} tenants) — ask the operator for capacity")
+            self._require_capacity()
             tenant_id = "t_" + secrets.token_hex(4)
             while tenant_id in self.registry["tenants"]:
                 tenant_id = "t_" + secrets.token_hex(4)
@@ -546,42 +579,108 @@ class Hub:
             self.log(f"{tenant_id} joined ({self.tenants[tenant_id].note or 'no note'})")
             return {"ok": True, "token": token, "tenantId": tenant_id}
 
+    def _require_capacity(self):
+        """Suspended tenants free their slot; taking one back needs room."""
+        active = sum(1 for r in self.registry["tenants"].values() if not r.get("suspendedAt"))
+        if active >= self.max_tenants:
+            raise ApiError(
+                403,
+                f"hub is full ({self.max_tenants} active tenants) — "
+                "the operator must suspend one first: awewarm hub revoke <tenant>",
+            )
+
+    def _invite_of(self, tenant_id):
+        """The registry entry of the invite that produced this tenant, if any."""
+        for entry in self.registry["invites"].values():
+            if entry.get("usedBy") == tenant_id:
+                return entry
+        return None
+
     def revoke(self, tenant_id):
-        """Drop a tenant: its token, connections, and their state on disk."""
+        """Suspend a tenant (`hub revoke t_...`): its token stops authenticating
+        and its connections stop ticking, but everything stays on disk —
+        reversible with `hub restore`. A suspended tenant frees its slot."""
         with self._registry_transaction():
-            tenant = self.tenants.get(tenant_id)
-            if tenant is None:
+            record = self.registry["tenants"].get(tenant_id)
+            if record is None:
                 raise ApiError(404, f"no such tenant: {tenant_id} (see: awewarm hub list users)")
-            del self.registry["tenants"][tenant_id]
-            self.tenants.pop(tenant_id, None)
+            if record.get("suspendedAt"):
+                raise ApiError(403, f"{tenant_id} is already suspended — restore it instead: awewarm hub restore {tenant_id}")
+            record["suspendedAt"] = schedule.iso(datetime.now().astimezone())
+            invite = self._invite_of(tenant_id)
+            if invite is not None:
+                invite["revokedAt"] = record["suspendedAt"]
             self._save()
-        shutil.rmtree(tenant.workspace_dir, ignore_errors=True)
-        self.log(f"{tenant_id} revoked")
+        self.log(f"{tenant_id} suspended")
+        return {"ok": True}
+
+    def restore(self, tenant_id):
+        """Reverse `revoke`: the tenant's token works again, capacity permitting."""
+        with self._registry_transaction():
+            record = self.registry["tenants"].get(tenant_id)
+            if record is None:
+                raise ApiError(404, f"no such tenant: {tenant_id} (see: awewarm hub list users)")
+            if not record.get("suspendedAt"):
+                raise ApiError(403, f"{tenant_id} is not suspended — nothing to restore")
+            self._require_capacity()
+            record.pop("suspendedAt", None)
+            invite = self._invite_of(tenant_id)
+            if invite is not None:
+                invite.pop("revokedAt", None)
+            self._save()
+        self.log(f"{tenant_id} restored")
         return {"ok": True}
 
     def revoke_invite(self, code):
-        """Kill an unused invite now instead of at its expiry (`hub revoke awi_...`).
+        """Kill an invite now instead of at its expiry (`hub revoke awi_...`).
 
-        A used invite keeps its record (who joined, when) — the code itself is
-        spent; an expired one is swept as a stale row.
+        A pending code stops pairing on the spot; a used one suspends the
+        tenant it produced (its token dies with it). Both are reversible via
+        `hub restore`; nothing is deleted — the ledger keeps every row.
         """
         with self._registry_transaction():
             digest = _hash_secret(code)
             entry = self.registry["invites"].get(digest)
             if entry is None:
                 raise ApiError(404, f"no such invite: {code}\nfix: list codes with: awewarm hub list invites --reveal")
-            if entry.get("usedBy"):
-                raise ApiError(
-                    403,
-                    f"invite already used by {entry['usedBy']} — the code is spent, its token lives on;\n"
-                    f"revoke that instead: awewarm hub revoke {entry['usedBy']}",
-                )
+            if entry.get("revokedAt"):
+                raise ApiError(403, f"invite already revoked — restore it instead: awewarm hub restore {code}")
+            now_text = schedule.iso(datetime.now().astimezone())
+            used_by = entry.get("usedBy")
+            tenant_record = self.registry["tenants"].get(used_by) if used_by else None
+            if used_by and tenant_record is None:
+                raise ApiError(404, f"invite was used by {used_by}, which no longer exists — nothing to suspend")
             expires = schedule.parse_ts(entry.get("expiresAt"))
             was_expired = expires is not None and expires <= datetime.now().astimezone()
-            del self.registry["invites"][digest]
+            entry["revokedAt"] = now_text
+            if tenant_record is not None and not tenant_record.get("suspendedAt"):
+                tenant_record["suspendedAt"] = now_text
             self._save()
         self.log(f"invite revoked ({entry.get('note') or 'no note'})")
-        return {"ok": True, "status": "expired" if was_expired else "pending", "note": entry.get("note")}
+        status = "used" if used_by else ("expired" if was_expired else "pending")
+        return {"ok": True, "status": status, "tenant": used_by, "note": entry.get("note")}
+
+    def restore_invite(self, code):
+        """Reverse `revoke_invite`: a pending code pairs again; a used one
+        brings its tenant back, capacity permitting."""
+        with self._registry_transaction():
+            digest = _hash_secret(code)
+            entry = self.registry["invites"].get(digest)
+            if entry is None:
+                raise ApiError(404, f"no such invite: {code}\nfix: list codes with: awewarm hub list invites --reveal")
+            if not entry.get("revokedAt"):
+                raise ApiError(403, f"invite is not revoked — nothing to restore")
+            used_by = entry.get("usedBy")
+            if used_by:
+                tenant_record = self.registry["tenants"].get(used_by)
+                if tenant_record is None:
+                    raise ApiError(404, f"invite was used by {used_by}, which no longer exists — nothing to restore")
+                self._require_capacity()
+                tenant_record.pop("suspendedAt", None)
+            entry.pop("revokedAt", None)
+            self._save()
+        self.log(f"invite restored ({entry.get('note') or 'no note'})")
+        return {"ok": True, "tenant": used_by}
 
     def auth(self, bearer):
         """Bearer token → tenant, behind the per-tenant rate-limit gate."""
@@ -595,7 +694,12 @@ class Hub:
             if tenant is None:
                 raise ApiError(
                     401,
-                    "invalid hub token (revoked?) — re-pair with a fresh invite: awewarm remote connect <url>",
+                    "invalid hub token — re-pair with an invite, or reuse a saved token: awewarm remote connect <url> --token <saved>",
+                )
+            if tenant.record.get("suspendedAt"):
+                raise ApiError(
+                    401,
+                    f"hub token suspended by the operator — ask them to restore it: awewarm hub restore {tenant.id}",
                 )
             now = time.monotonic()
             while tenant.requests and now - tenant.requests[0] >= 60:
@@ -661,6 +765,7 @@ class Hub:
                 connections.append({
                     "id": cid,
                     "status": schedule.status_word(cid, conn, cs),
+                    "mode": (conn.get("schedule") or {}).get("mode", "fixed"),
                     "api": transport.get("baseUrl"),
                     "protocol": transport.get("kind"),
                     "model": (conn.get("activation") or {}).get("model"),
@@ -672,6 +777,7 @@ class Hub:
                 "tenant": tenant_id,
                 "note": tenant.note,
                 "invite": joined_with.get(tenant_id),
+                "suspended": bool(tenant.record.get("suspendedAt")),
                 "createdAt": tenant.record.get("createdAt"),
                 "lastSeenAt": tenant.record.get("lastSeenAt"),
                 "connections": connections,
@@ -684,7 +790,10 @@ class Hub:
     def tick(self, now_fn=None):
         fired, held = 0, []
         with self._registry_transaction():
-            tenants = [self.tenants[tenant_id] for tenant_id in sorted(self.tenants)]
+            tenants = [
+                self.tenants[tenant_id] for tenant_id in sorted(self.tenants)
+                if not self.tenants[tenant_id].record.get("suspendedAt")
+            ]
         for tenant in tenants:
             result = tenant.warm.tick(now_fn=now_fn)
             fired += result["fired"]
@@ -863,6 +972,8 @@ def run(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, tick_seconds=60
         max_tenants=max_tenants, max_conns_per_tenant=max_conns_per_tenant,
     )
     actual = httpd.server_address[1]
+    if hub:
+        engine.record_launch(bind, actual)
 
     def _loop():
         while True:
