@@ -8,6 +8,10 @@ from helpers import IsolatedTestCase
 
 from awewarm import keystore
 
+# IsolatedTestCase pins sys.platform to "darwin" for the duration of each
+# test; capture the real platform at import time for POSIX-only assertions.
+IS_WINDOWS = sys.platform == "win32"
+
 
 class EnvRefTests(unittest.TestCase):
     def test_env_ref_dies_with_migration_hint(self):
@@ -84,7 +88,7 @@ class SecretsFileTests(IsolatedTestCase):
         # POSIX mkstemp creates the temp file 0600, so a secret is never
         # group/world-readable mid-write; Windows has no POSIX permission
         # bits to assert (its mkstemp reports 0o666).
-        if sys.platform != "win32":
+        if not IS_WINDOWS:
             self.assertEqual(temp_modes, [0o600])
         self.assertEqual(keystore.load_api_key("file:glm"), "old-key")
         self.assertIsNone(keystore.load_api_key("file:other"))
