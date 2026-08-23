@@ -78,7 +78,7 @@ awewarm config add
 
 awewarm 是 AI 编程 agent 工具家族的一员：
 
-- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** —— 多租户配套服务器：一台常驻服务器通过一次性邀请码，让整个团队的窗口保持温热。同一组织、同样的 MPL-2.0,版本号与本包同步。
+- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** —— 多租户配套服务器：一台常驻服务器通过一次性邀请码，让整个团队的窗口保持温热。同一组织、同样的 MPL-2.0；底层引擎就是本包，锁定其 minor 版本。
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** —— Claude Code / Codex / OpenCode 的 agent profile 切换器。aweswitch 管理会话用哪个 provider 启动；awewarm 让该 provider 的订阅窗口在底下一直开着。如果你用 aweswitch 启动 coding-plan 套餐，awewarm 就是让这些 5 小时窗口夜里不凉掉的那一块拼图。
 - **[aweskill](https://github.com/Webioinfo01/aweskill)** —— AI agent 的 CLI skill 包管理器（支持 47+ agent）。
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** —— Claude Code / Codex 的会话书签管理器。
@@ -178,7 +178,7 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
 ### Sleeping PCs — wake tasks (Windows)
 
-日历触发/唤醒的镜像分工：`scheduler install` 为每个 fixed 时间点注册一个额外的 Task Scheduler 任务 —— 在时间点触发日任务并启用 *Wake to run*，执行 `awewarm tick`。interval 续期的唤醒走一次性 `-Once` 任务，由与 macOS 相同的 tick 尾部收敛排定（无需任何授权 —— 普通用户即可注册唤醒任务）。每分钟的 tick 任务本身不会唤醒机器（否则机器永远无法入睡）；只有时间点和续期时刻会唤醒。`schtasks.exe` 无法设置 *Wake to run*，因此这些任务通过 PowerShell 的 `Register-ScheduledTask` 注册。添加流程会询问 fixed 时间点是否允许唤醒机器（默认允许，与 macOS 相同），`awewarm config set <id> --no-wake` 可以让单个连接退出唤醒，install / uninstall / refresh / self-heal 都会保持任务集与配置同步。
+日历触发/唤醒的镜像分工：`scheduler install` 为每个 fixed 时间点注册一个额外的 Task Scheduler 任务 —— 在时间点触发日任务并启用 *Wake to run*，执行 `awewarm tick`。interval 续期的唤醒走一次性 `-Once` 任务，由与 macOS 相同的 tick 尾部收敛排定（无需任何授权 —— 普通用户即可注册唤醒任务）。每分钟的 tick 任务本身不会唤醒机器（否则机器永远无法入睡）；只有时间点和续期时刻会唤醒。`schtasks.exe` 无法设置 *Wake to run*，因此这些任务通过 PowerShell 的 `Register-ScheduledTask` 注册。添加流程会询问 fixed 时间点是否允许唤醒机器（默认不唤醒，与 macOS 相同），`awewarm config set <id> --no-wake` 可以让单个连接退出唤醒，install / uninstall / refresh / self-heal 都会保持任务集与配置同步。
 
 ### Always-on servers (Linux)
 
@@ -330,6 +330,7 @@ awewarm config settings [scope] [flags]  # 查看或修改 settings 层：scope 
                                        #   --max-tokens、--times、--days、--mode、--wake/--no-wake、--reset
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
+awewarm config template               # 打印参考配置结构（手工调整对照用）
 awewarm config path                   # 配置 / 状态 / 日志路径
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
 awewarm status --remote / --local     # 只看委托连接（含服务器健康行）/ 只看本地调度的连接

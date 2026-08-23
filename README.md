@@ -78,7 +78,7 @@ You will be asked for the protocol, API base URL, API key, and model; awewarm te
 
 awewarm is part of a small tool family for AI coding agents:
 
-- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0, versions in lockstep with this package.
+- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0; its engine is this package, pinned to its minor version.
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath. If you launch coding-plan profiles with aweswitch, awewarm is the piece that keeps those 5-hour windows from going cold overnight.
 - **[aweskill](https://github.com/Webioinfo01/aweskill)** — CLI skill package manager for AI agents (47+ agents).
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — session bookmark manager for Claude Code and Codex.
@@ -86,7 +86,7 @@ awewarm is part of a small tool family for AI coding agents:
 
 ## Scheduling Modes
 
-Both modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm config set <id> --mode fixed|interval`; see the current mode and next due moment with `awewarm status`. The old `hybrid` mode was removed — a fixed grid spaced one window apart already keeps windows chained all day, with calendar wake coverage interval cannot offer. Existing hybrid configs migrate to `fixed` on first load.
+Both modes send the same one minimal request — what differs is *when* it fires. Switch with `awewarm config set <id> --mode fixed|interval`; see the current mode and next due moment with `awewarm status`. The old `hybrid` mode was removed — a fixed grid spaced one window apart already keeps windows chained all day, with calendar wake coverage interval cannot offer.
 
 | Mode | Fires when | Needs a verified window | Best for |
 | --- | --- | --- | --- |
@@ -330,6 +330,7 @@ awewarm config settings [scope] [flags]  # show or change the settings layers: s
                                        #   --prompt, --max-tokens, --times, --days, --mode, --wake/--no-wake, --reset
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
+awewarm config template               # print the reference config shape (what hand-edits must match)
 awewarm config path                   # config / state / log locations
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
 awewarm status --remote / --local     # delegated connections only (with the server health line) / locally scheduled only
