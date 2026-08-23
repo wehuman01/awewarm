@@ -64,5 +64,21 @@ CLI 面收敛为：`invite [--machines N]` / `list invites` / `list users` / `re
 
 ## 四、待定项
 
-- [ ] 生产台账老邀请行检查（3b 前置）
-- [ ] 客户端机器超限提示：remote.py 透传服务端文案，确认无需客户端改动
+- [x] 生产台账老邀请行检查（3b 前置）→ 落定：不需要人工前置检查。v1→v2 迁移自动删除无明文
+  `code` 的邀请行**及其产出的租户**（其 token 随之失效，否则将成为永远无法撤销的租户）；
+  工作区保留在磁盘上，受影响用户发新码重新配对。升级后用 `awewarm-hub list users` 核对即可。
+- [x] 客户端机器超限提示 → 落定：`remote.py` 的 `RemoteError` 逐字透传服务端文案
+  （机器超限 403、撤销后 401 均直读），无需客户端改动。
+
+## 五、落地记录（2026-08-23）
+
+实现落在 awewarm-hub v0.6.0（breaking，CLI 单入口 + registry v2 一次性迁移）。
+评审补充的三处细节均已吸收：
+
+1. 无码老行删除时连租户一起删（token 失效、容量释放）；迁移在 `Hub.__init__` 内、
+   跨进程事务锁下执行一次，幂等。
+2. 挂起推导的改动面覆盖 `auth`/`tick`/`_require_capacity`/`summarize`/`list_invites`
+   以及全量操作员文案（401/403、status、serve help）。
+3. "改那行授权记录"的落定：调整在线用户机器上限 = 手改 `tenants.json` 中其邀请码行的
+   `machines` 值（运行中的 serve 经 refresh 采纳磁盘改动），或发新码；README/SKILL 已写明。
+   重装换机的正规出路 = 发新码（撤销不再清机器配对，撤销/恢复完全无损可逆）。
