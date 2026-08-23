@@ -1721,6 +1721,17 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertIn("status --remote", output_of(result))
         self.assertIn("awewarm server", result.output)  # and the new view renders
 
+    def test_status_health_line_renders_server_moments_in_the_viewers_timezone(self):
+        self.delegate()
+        # a UTC box serving a UTC+8 viewer: 04:00/04:05Z must show as 12:00/12:05
+        self.warm.started_at = datetime(2026, 8, 20, 4, 0, tzinfo=timezone.utc)
+        self.warm.last_tick_at = schedule.iso(datetime(2026, 8, 20, 4, 5, tzinfo=timezone.utc))
+        viewer_now = datetime(2026, 8, 20, 12, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with mock.patch("awewarm.cli._now", return_value=viewer_now):
+            result = invoke(["status", "--remote"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("up since today 12:00", result.output)
+        self.assertIn("last tick today 12:05", result.output)
 
     def test_tick_skips_remote_and_rekeys_after_server_restart(self):
         self.delegate(plan_connection(fixed_at=("03:00",), days="every-day"))

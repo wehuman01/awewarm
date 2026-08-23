@@ -181,8 +181,15 @@ def _show_status(connection, as_json, location=None):
         return
     now = cli._now(config)
     if location and remote_view:
+        # Server stamps arrive in the server's timezone; the health line sits
+        # next to viewer-local times, so render both in the viewer's zone —
+        # one screen, one time basis.
         started = schedule.parse_ts(remote_view.get("startedAt"))
+        if started is not None:
+            started = started.astimezone(now.tzinfo)
         ticked = schedule.parse_ts(remote_view.get("lastTickAt"))
+        if ticked is not None:
+            ticked = ticked.astimezone(now.tzinfo)
         click.echo(
             f"awewarm server {remote_view.get('version')} at {remote.remote_url(config)} — "
             f"up since {cli._fmt_moment(started, now)}, last tick {cli._fmt_moment(ticked, now)}"
