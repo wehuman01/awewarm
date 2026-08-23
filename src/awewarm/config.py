@@ -5,9 +5,12 @@ commands, never by hand-editing. Path env overrides (AWEWARM_CONFIG etc.) are
 also the primary test seam.
 
 On-disk format (v3) groups connections under `connections.local` and
-`connections.remote`, each carrying a `settings` block with the tuning knobs
-and a `schedule` block; the top-level `settings` block is the global layer,
-which always names its schedule's `mode`. The group a connection sits under
+`connections.remote`. The location groups and the top-level `settings` block
+are the layers: each carries knobs and a `schedule` block (the global layer
+always names its schedule's `mode`). A connection's own overrides sit
+directly on the connection — `schedule` plus any knob — with no `settings`
+wrapper; that wrapped spelling is a legacy read that folds away on load.
+The group a connection sits under
 is its location — a per-connection `location` field is a legacy spelling
 that must agree with its group or refuses to load.
 The split is semantic: the schedule block answers when a connection fires
@@ -107,10 +110,14 @@ SCHEDULE_SETTINGS_KEYS = (
 SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 # Fields a flat v3 connection may carry on disk; anything else is a hand-edit
-# typo or a leftover from an older format and refuses to load.
+# typo or a leftover from an older format and refuses to load. A connection's
+# own overrides sit directly on it — `schedule` plus any knob — while
+# `settings` (the wrapped spelling), `location`, and a top-level
+# `windowMinutes` are legacy reads that fold away on load.
 KNOWN_CONN_KEYS = frozenset({
     "label", "url", "protocol", "apiKey", "cli", "model",
-    "windowMinutes", "settings", "enabled", "hide", "location",
+    "schedule", "enabled", "hide", *KNOB_KEYS,
+    "settings", "location", "windowMinutes",
 })
 
 # The reference shape of a valid config, printed by `awewarm config template`
@@ -145,7 +152,7 @@ CONFIG_TEMPLATE = """\
       "claude-code": {
         "label": "Claude Code",
         "cli": "/usr/local/bin/claude",
-        "settings": {"schedule": {"times": ["06:35"]}}
+        "schedule": {"times": ["06:35"], "mode": "fixed"}
       }
     },
     "remote": {
@@ -647,15 +654,28 @@ def _expand_conn(conn_id, flat, group, global_settings, connection_defaults):
         kind, auth, transport = KIND_ACCOUNT, (
             {"type": "local-cli", "status": "valid", "apiKeyRef": None}
         ), {"kind": transport_kind, "baseUrl": None, "cliCommand": cli}
-    own = _fold_legacy_settings(dict(flat.get("settings") or {}) if isinstance(flat.get("settings"), dict) else {})
-    # A top-level windowMinutes is the pre-knob spelling of an own override
-    # (still read so old files load); it folds into the settings block's
-    # schedule, where compaction writes it from now on.
-    if "windowMinutes" not in _schedule_of(own) and isinstance(flat.get("windowMinutes"), int):
-        own.setdefault("schedule", {})["windowMinutes"] = flat["windowMinutes"]
+    own = {}
+    # The wrapped `settings` block is the pre-reshuffle spelling of a
+    # connection's own overrides (still read so old files load); flat fields
+    # win key-by-key where both spellings exist (a hand edit).
+    legacy = _fold_legacy_settings(
+        dict(flat.get("settings") or {}) if isinstance(flat.get("settings"), dict) else {}
+    )
+    for key in KNOB_KEYS:
+        if key in flat:
+            own[key] = flat[key]
+        elif key in legacy:
+            own[key] = legacy[key]
+    schedule = dict(flat["schedule"]) if isinstance(flat.get("schedule"), dict) else {}
+    for key, value in (legacy.get("schedule") or {}).items():
+        schedule.setdefault(key, value)
+    # A top-level windowMinutes is the pre-knob spelling of an own override;
+    # it folds into the schedule, where compaction writes it from now on.
+    if "windowMinutes" not in schedule and isinstance(flat.get("windowMinutes"), int):
+        schedule["windowMinutes"] = flat["windowMinutes"]
     # An explicit (possibly empty) schedule marker records "this connection
     # has no own overrides" — compaction then never pins inherited values.
-    own.setdefault("schedule", {})
+    own["schedule"] = schedule
     conn = {
         "label": flat.get("label") or conn_id,
         "kind": kind,
@@ -738,10 +758,25 @@ def _compact_conn(conn, global_settings, connection_defaults):
         key: value for key, value in own_schedule.items()
         if value != inherited_schedule.get(key)
     }
+    # mode is the one schedule field always written, even when it matches the
+    # chain: it is each connection's headline fact, and the file must show it
+    # without running status. The costs are deliberate — a layer's mode change
+    # never re-modes an existing connection (switch each one explicitly), and
+    # an inherited interval whose window is unverified pins the fixed it
+    # actually runs on (the load-time fallback, frozen at its resolved value).
+    written_mode = own_schedule.get("mode") or inherited_schedule.get("mode", "fixed")
+    if (
+        written_mode == "interval"
+        and "mode" not in own_schedule
+        and not _window_allows_interval(_resolve_window(conn, own, inherited_schedule))
+    ):
+        written_mode = "fixed"
+    schedule_overrides.setdefault("mode", written_mode)
     if schedule_overrides:
         overrides["schedule"] = schedule_overrides
-    if overrides:
-        flat["settings"] = overrides
+    # own overrides sit directly on the connection — `schedule` plus knobs —
+    # no `settings` wrapper (that spelling folds away on load)
+    flat.update(overrides)
     if conn.get("enabled") is False:
         flat["enabled"] = False
     if conn.get("hide"):

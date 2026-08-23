@@ -495,8 +495,11 @@ def _show_settings(config, conn_id, conn):
     location = conn.get("location", "local")
     where = f" ({remote.remote_url(config)})" if location == "remote" else ""
     own_schedule = (conn.get("settings") or {}).get("schedule") or {}
-    if own_schedule:
-        source = f"own overrides ({', '.join(sorted(own_schedule))})"
+    # mode is always written on every connection (self-documenting file) —
+    # only the fields beyond it count as real own overrides
+    own_fields = sorted(set(own_schedule) - {"mode"})
+    if own_fields:
+        source = f"own overrides ({', '.join(own_fields)})"
     elif location == "remote":
         source = "remote defaults (a delegated connection never follows the global schedule)"
     else:
@@ -507,7 +510,7 @@ def _show_settings(config, conn_id, conn):
     click.echo(f"  location: {location}{where}")
     click.echo(f"  mode: {conn['schedule']['mode']}")
     click.echo(f"  fixed times: {', '.join(fixed.get('at') or []) or 'none'} ({fixed.get('days', 'weekday')})")
-    click.echo(f"  schedule source: {source}" + (f" — inherit everything with: awewarm config set {conn_id} --inherit-schedule" if own_schedule else ""))
+    click.echo(f"  schedule source: {source}" + (f" — inherit everything with: awewarm config set {conn_id} --inherit-schedule" if own_fields else ""))
     click.echo(f"  window: {duration}")
     catchup = conn.get("catchup") or {}
     click.echo(

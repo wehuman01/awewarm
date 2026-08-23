@@ -549,7 +549,8 @@ class CatchupFlagTests(IsolatedTestCase):
         self.assertEqual(conn["catchup"]["attempts"], 5)
         file = json.loads(Path(cfg.config_path()).read_text())
         self.assertEqual(file["settings"]["catchupMinutes"], 60)
-        self.assertEqual(file["connections"]["local"]["claude-code-main"]["settings"], {"catchupMinutes": 15})
+        self.assertEqual(file["connections"]["local"]["claude-code-main"]["settings"],
+                         {"catchupMinutes": 15, "schedule": {"mode": "fixed"}})
 
     def test_out_of_range_rejected(self):
         write_config(account_connection(mode="fixed"))
@@ -1950,9 +1951,19 @@ class NewKnobLayerTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("vouches for a 300-minute window", output_of(result))
         loaded = cfg.load_config()["connections"]["glm-coding-plan"]
+        # the layer's mode never re-modes an existing connection — its own
+        # pinned mode stands; the layer's window unlocks an explicit switch
+        self.assertEqual(loaded["schedule"]["mode"], "fixed")
+        result = invoke(["config", "set", "glm-coding-plan", "--mode", "interval"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        loaded = cfg.load_config()["connections"]["glm-coding-plan"]
         self.assertEqual(loaded["schedule"]["mode"], "interval")
         self.assertEqual(loaded["window"]["durationMinutes"], 300)
         self.assertFalse(cfg.connection_errors(loaded, "glm-coding-plan"))
+        on_disk = json.loads(Path(cfg.config_path()).read_text())
+        self.assertEqual(
+            on_disk["connections"]["local"]["glm-coding-plan"]["settings"]["schedule"]["mode"],
+            "interval")
 
     def test_window_flag_persists_as_own_override(self):
         write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")

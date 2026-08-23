@@ -205,8 +205,8 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         on_disk = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(on_disk["version"], 3)
-        self.assertEqual(on_disk["connections"]["local"]["glm"]["settings"]["schedule"], {
-            "times": ["06:00"], "days": "every-day", "windowMinutes": 300})
+        self.assertEqual(on_disk["connections"]["local"]["glm"]["schedule"], {
+            "mode": "fixed", "times": ["06:00"], "days": "every-day", "windowMinutes": 300})
 
     def test_load_refuses_flat_v2(self):
         Path(config.config_path()).write_text(json.dumps({
@@ -286,9 +286,10 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 1441})
         self.assertEqual(loaded["degradeAfterNodes"], 5)
         file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["connections"]["local"]["glm"]["settings"], {
+        self.assertEqual(file["connections"]["local"]["glm"], {
+            "label": "GLM Coding Plan",
             "catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5,
-            "schedule": {"times": ["06:00"], "days": "every-day"},
+            "schedule": {"mode": "fixed", "times": ["06:00"], "days": "every-day"},
         })
 
     def test_global_settings_inherited_by_connections(self):
@@ -306,7 +307,7 @@ class V2FormatTests(IsolatedTestCase):
             "prompt": "Reply with exactly: ok", "maxTokens": 4,
             "schedule": {"mode": "fixed"},
         })
-        self.assertFalse(set(file["connections"]["local"]["glm"]["settings"]) - {"schedule"})
+        self.assertEqual(file["connections"]["local"]["glm"]["schedule"], {"mode": "fixed"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 45})
         self.assertEqual(loaded["degradeAfterNodes"], 6)
@@ -320,8 +321,8 @@ class V2FormatTests(IsolatedTestCase):
         conf["connections"]["glm"] = conn
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["connections"]["local"]["glm"]["settings"]["catchupMinutes"], 60)
-        self.assertNotIn("catchupAttempts", file["connections"]["local"]["glm"]["settings"])
+        self.assertEqual(file["connections"]["local"]["glm"]["catchupMinutes"], 60)
+        self.assertNotIn("catchupAttempts", file["connections"]["local"]["glm"])
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 60})
 
@@ -331,7 +332,7 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], {**config.default_settings(), "schedule": {"mode": "fixed"}})
-        self.assertFalse(set(file["connections"]["local"]["glm"]["settings"]) - {"schedule"})
+        self.assertEqual(file["connections"]["local"]["glm"]["schedule"], {"mode": "fixed"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 5, "withinMinutes": 30})
         self.assertEqual(loaded["degradeAfterNodes"], 3)
@@ -486,7 +487,7 @@ class SettingsLayerTests(IsolatedTestCase):
         )
         self.assertEqual(loaded["connections"]["glm"]["schedule"]["fixed"]["at"], ["09:00"])
         on_disk = json.loads(Path(config.config_path()).read_text())
-        own = (on_disk["connections"]["local"]["glm"].get("settings") or {}).get("schedule") or {}
+        own = (on_disk["connections"]["local"]["glm"].get("schedule") or {})
         self.assertNotIn("times", own)  # nothing pinned: it follows the global times
 
     def test_settings_block_errors_catch_typos_and_bad_values(self):
@@ -539,10 +540,10 @@ class SettingsLayerTests(IsolatedTestCase):
         loaded = self._config_with(global_settings={"schedule": {"windowMinutes": 300}}, glm=conn)
         self.assertEqual(loaded["connections"]["glm"]["window"]["durationMinutes"], 300)
         on_disk = json.loads(Path(config.config_path()).read_text())
-        own = on_disk["connections"]["local"]["glm"].get("settings") or {}
-        self.assertNotIn("windowMinutes", own.get("schedule") or {})  # follows the layer, nothing frozen
+        own = on_disk["connections"]["local"]["glm"].get("schedule") or {}
+        self.assertNotIn("windowMinutes", own)  # follows the layer, nothing frozen
 
-    def test_top_level_window_minutes_folds_into_settings(self):
+    def test_top_level_window_minutes_folds_into_schedule(self):
         Path(config.config_path()).write_text(json.dumps({
             "version": 3,
             "settings": {},
@@ -560,7 +561,34 @@ class SettingsLayerTests(IsolatedTestCase):
         on_disk = json.loads(Path(config.config_path()).read_text())
         flat = on_disk["connections"]["local"]["glm"]
         self.assertNotIn("windowMinutes", flat)  # old spelling gone
-        self.assertEqual(flat["settings"]["schedule"]["windowMinutes"], 300)  # new spelling
+        self.assertEqual(flat["schedule"]["windowMinutes"], 300)  # new spelling
+
+    def test_wrapped_settings_block_folds_into_flat_fields(self):
+        # a connection's own overrides once lived under a `settings` wrapper;
+        # those files fold into the flat spelling on load and never wrap again
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {},
+            "connections": {"local": {"glm": {
+                "label": "glm",
+                "url": "https://example.com/api",
+                "protocol": "openai-chat",
+                "apiKey": "file:glm",
+                "settings": {"catchupMinutes": 45, "wakeWhenAsleep": True,
+                             "schedule": {"times": ["07:30"], "mode": "fixed"}},
+            }}},
+        }))
+        loaded = config.load_config()
+        conn = loaded["connections"]["glm"]
+        self.assertEqual(conn["catchup"]["withinMinutes"], 45)
+        self.assertTrue(conn["schedule"]["wakeWhenAsleep"])
+        self.assertEqual(conn["schedule"]["fixed"]["at"], ["07:30"])
+        config.save_config(loaded)
+        flat = json.loads(Path(config.config_path()).read_text())["connections"]["local"]["glm"]
+        self.assertNotIn("settings", flat)  # the wrapper never comes back
+        self.assertEqual(flat["catchupMinutes"], 45)
+        self.assertEqual(flat["wakeWhenAsleep"], True)
+        self.assertEqual(flat["schedule"]["times"], ["07:30"])
 
     def test_layer_window_does_not_override_builtin_account_window(self):
         account = account_connection()
