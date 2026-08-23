@@ -265,6 +265,10 @@ awewarm status --local                            # locally scheduled connection
 
 `--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. `--duplicate` copies a connection under a fresh id (`glm-copy`) — the API key is re-stored under the new id, runtime state starts blank — and with `--remote` the copy is delegated and the original disabled, so one subscription is never ticked twice. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back — and, same as locally, a successful manual run clears an auto-disabled ladder — and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` refuses while anything is still delegated, then forgets the server and releases its claim (another machine can pair immediately); the pairing token stays in `secrets.json`, so reconnecting later is instant even against a server that kept the old claim. Fixed times run in the delegating machine's timezone (it travels with the push; machines whose zone has no IANA name, e.g. Windows, push a fixed `UTC±HH:MM` offset instead); wake-from-sleep does not apply on a server that never sleeps.
 
+## Security
+
+Local mode: your API keys never leave your machine (`secrets.json`, 0600). Delegating hands a key to that server's RAM — solo is your own box; a hub means trusting its operator (and root). Every other ordinary path is closed by design: no secrets on the server's disk, none in its logs, none readable back over the API, tenants invisible to one another. Delegate a dedicated, revocable key — and see the [hub README → Security](https://github.com/wehuman01/awewarm-hub#security) for the full picture.
+
 ## Config
 
 Users never hand-edit config; `init` / `config add` generate it at `~/.config/awewarm/config.json` (state at `~/.local/state/awewarm/state.json`). The shape, for reference:

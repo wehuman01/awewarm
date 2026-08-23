@@ -265,6 +265,10 @@ awewarm status --local                            # 只看本地调度的连接
 
 `--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。`--duplicate` 把连接复制成新 id（`glm-copy`）——API key 在新 id 下另存一份、运行状态从零开始；配合 `--remote` 时副本被委托、原连接自动停用，同一份订阅绝不会被双份保温。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果，且和本地一致——一次成功的手动 run 同样会解除 auto-disabled 阶梯；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器并释放其 claim（其他机器可以立即配对），仍有委托连接时拒绝执行；配对 token 保留在 `secrets.json` 里，之后重连即刻完成，即使服务器还留着旧 claim 也不受影响。fixed 时间按委托方机器的时区运行（时区随推送传递；本机时区没有 IANA 名的机器（如 Windows）会推送固定的 `UTC±HH:MM` 偏移）；从不睡觉的服务器谈不上 wake。
 
+## 安全性
+
+本机模式:API key 永不离开你的机器(`secrets.json`,0600)。委托 = 把 key 交给那台服务器的内存 —— 独享是你自己的机器;共享 hub 则意味着信任它的运维者(和 root)。其余常规泄漏路径都已设计堵死:服务器磁盘上没有 secret、日志里没有、API 读不回、租户之间互相不可见。建议委托一把专用的、可随时撤销的 key —— 完整说明见 [hub README 的「安全性」一节](https://github.com/wehuman01/awewarm-hub/blob/main/README_cn.md#安全性)。
+
 ## 配置
 
 用户不需要手改配置；`init` / `config add` 会生成 `~/.config/awewarm/config.json`（状态在 `~/.local/state/awewarm/state.json`）。结构示例：
