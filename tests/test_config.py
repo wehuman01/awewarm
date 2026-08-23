@@ -286,8 +286,9 @@ class V2FormatTests(IsolatedTestCase):
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 1441})
         self.assertEqual(loaded["degradeAfterNodes"], 5)
         file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["connections"]["local"]["glm"], {
-            "label": "GLM Coding Plan",
+        flat = file["connections"]["local"]["glm"]
+        self.assertEqual({k: v for k, v in flat.items()
+                          if k not in ("label", "url", "protocol", "apiKey", "model")}, {
             "catchupAttempts": 2, "catchupMinutes": 1441, "degradeAfterNodes": 5,
             "schedule": {"mode": "fixed", "times": ["06:00"], "days": "every-day"},
         })
@@ -307,7 +308,8 @@ class V2FormatTests(IsolatedTestCase):
             "prompt": "Reply with exactly: ok", "maxTokens": 4,
             "schedule": {"mode": "fixed"},
         })
-        self.assertEqual(file["connections"]["local"]["glm"]["schedule"], {"mode": "fixed"})
+        self.assertEqual(file["connections"]["local"]["glm"]["schedule"],
+                         {"mode": "fixed", "times": ["06:00"], "days": "every-day"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 45})
         self.assertEqual(loaded["degradeAfterNodes"], 6)
@@ -332,7 +334,8 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(file["settings"], {**config.default_settings(), "schedule": {"mode": "fixed"}})
-        self.assertEqual(file["connections"]["local"]["glm"]["schedule"], {"mode": "fixed"})
+        self.assertEqual(file["connections"]["local"]["glm"]["schedule"],
+                         {"mode": "fixed", "times": ["06:00"], "days": "every-day"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 5, "withinMinutes": 30})
         self.assertEqual(loaded["degradeAfterNodes"], 3)
@@ -668,7 +671,10 @@ class SettingsLayerTests(IsolatedTestCase):
         self.assertNotIn("windowMinutes", on_disk["settings"])
         self.assertNotIn("wakeWhenAsleep", on_disk["settings"]["schedule"])
         self.assertNotIn("wakeWhenAsleep", on_disk["connections"]["local"]["settings"]["schedule"])
-        self.assertNotIn("windowMinutes", on_disk["connections"]["local"]["glm"]["settings"])
+        flat_glm = on_disk["connections"]["local"]["glm"]
+        self.assertNotIn("settings", flat_glm)  # the wrapper never comes back
+        self.assertNotIn("windowMinutes", flat_glm)
+        self.assertEqual(flat_glm["schedule"]["windowMinutes"], 120)
 
     def test_legacy_fold_current_spelling_wins_when_both_present(self):
         Path(config.config_path()).write_text(json.dumps({

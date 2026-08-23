@@ -549,7 +549,8 @@ class CatchupFlagTests(IsolatedTestCase):
         self.assertEqual(conn["catchup"]["attempts"], 5)
         file = json.loads(Path(cfg.config_path()).read_text())
         self.assertEqual(file["settings"]["catchupMinutes"], 60)
-        self.assertEqual(file["connections"]["local"]["claude-code-main"]["settings"],
+        flat = file["connections"]["local"]["claude-code-main"]
+        self.assertEqual({k: v for k, v in flat.items() if k not in ("label", "cli", "model")},
                          {"catchupMinutes": 15, "schedule": {"mode": "fixed"}})
 
     def test_out_of_range_rejected(self):
@@ -1629,7 +1630,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         entry = self.server_view()["connections"]["glm"]
         self.assertEqual(entry["config"]["schedule"]["fixed"]["at"], ["09:00"])
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["remote"]["glm"]["settings"]["schedule"]["times"], ["09:00"])  # pinned
+        self.assertEqual(on_disk["connections"]["remote"]["glm"]["schedule"]["times"], ["09:00"])  # pinned
         invoke(["config", "settings", "--times", "10:10"])
         entry = self.server_view()["connections"]["glm"]
         self.assertEqual(entry["config"]["schedule"]["fixed"]["at"], ["09:00"])  # server untouched
@@ -1802,7 +1803,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         state = cfg.load_state()
         self.assertIn("glm", state.get("pendingPush") or {})
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["remote"]["glm"]["settings"]["schedule"]["times"], ["07:07"])
+        self.assertEqual(on_disk["connections"]["remote"]["glm"]["schedule"]["times"], ["07:07"])
 
 
 class PlainHttpConnectTests(IsolatedTestCase):
@@ -1929,7 +1930,7 @@ class SettingsScopeTests(IsolatedTestCase):
         on_disk = json.loads(Path(cfg.config_path()).read_text())
         self.assertEqual(on_disk["connections"]["local"]["settings"], {"wakeWhenAsleep": True})
         self.assertEqual(
-            on_disk["connections"]["local"]["claude-code-main"]["settings"]["schedule"]["times"],
+            on_disk["connections"]["local"]["claude-code-main"]["schedule"]["times"],
             ["07:07"])
 
     def test_reset_clears_a_scope(self):
@@ -1962,7 +1963,7 @@ class NewKnobLayerTests(IsolatedTestCase):
         self.assertFalse(cfg.connection_errors(loaded, "glm-coding-plan"))
         on_disk = json.loads(Path(cfg.config_path()).read_text())
         self.assertEqual(
-            on_disk["connections"]["local"]["glm-coding-plan"]["settings"]["schedule"]["mode"],
+            on_disk["connections"]["local"]["glm-coding-plan"]["schedule"]["mode"],
             "interval")
 
     def test_window_flag_persists_as_own_override(self):
@@ -1973,7 +1974,7 @@ class NewKnobLayerTests(IsolatedTestCase):
         on_disk = json.loads(Path(cfg.config_path()).read_text())
         flat = on_disk["connections"]["local"]["glm-coding-plan"]
         self.assertNotIn("windowMinutes", flat)  # old top-level spelling gone
-        self.assertEqual(flat["settings"]["schedule"]["windowMinutes"], 240)
+        self.assertEqual(flat["schedule"]["windowMinutes"], 240)
         loaded = cfg.load_config()["connections"]["glm-coding-plan"]
         self.assertEqual(loaded["window"]["durationMinutes"], 240)
 
@@ -1996,7 +1997,7 @@ class ProfileScheduleTests(IsolatedTestCase):
         result = invoke(["config", "set", "claude-code-main", "--times", "07:07"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         on_disk = json.loads(Path(cfg.config_path()).read_text())
-        self.assertEqual(on_disk["connections"]["local"]["claude-code-main"]["settings"]["schedule"]["times"], ["07:07"])
+        self.assertEqual(on_disk["connections"]["local"]["claude-code-main"]["schedule"]["times"], ["07:07"])
         loaded = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(loaded["schedule"]["fixed"]["at"], ["07:07"])
 

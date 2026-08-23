@@ -811,7 +811,10 @@ def _compact_config(config):
 
         block = {}
         if loc_settings is not None:
-            block["settings"] = loc_settings
+            # a schedule emptied by a fold is a no-op — never write it back
+            cleaned = {k: v for k, v in loc_settings.items() if not (k == "schedule" and not v)}
+            if cleaned:
+                block["settings"] = cleaned
 
         for conn_id, conn in location_conns.items():
             flat = _compact_conn(conn, settings, defaults)

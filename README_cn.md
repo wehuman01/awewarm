@@ -282,7 +282,7 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
         "label": "Claude Code",
         "cli": "/usr/local/bin/claude",
         "model": "haiku",
-        "settings": {"schedule": {"times": ["06:35"]}}
+        "schedule": {"times": ["06:35"], "mode": "fixed"}
       }
     },
     "remote": {
@@ -311,7 +311,7 @@ settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每�
 
 1. **global** —— 顶层 `settings`：所有连接继承的 knobs，以及默认的 schedule 字段（保存后的全局块总是写明 `mode`，文件里看得到默认是 `fixed` 还是 `interval`）。
 2. **connections.local / connections.remote** —— 按 local / remote 嵌套在各自位置组下的中间层。
-3. **profile** —— 连接自己的 `settings`（由 `awewarm config set <id>` 写入）；永远优先，`--inherit-schedule` 可丢弃它、回落到上层。这里有一个字段恒在：`mode`。每个保存过的连接都写明自己的模式（`fixed` 或 `interval`），即使与上层一致——文件里不用跑 `status` 就能看到；代价是刻意的：改某一层的 mode 不会翻转既有连接，要切换就逐个显式切换。
+3. **profile** —— 连接自己的覆盖项，直接写在连接上（`schedule` 加任意 knob，不再有 `settings` 包装——global/local 层需要这个包装是因为要与连接 id 共用一个字典，连接本身不需要）；永远优先，`--inherit-schedule` 可丢弃它、回落到上层。这里有一个字段恒在：`mode`。每个保存过的连接都写明自己的模式（`fixed` 或 `interval`），即使与上层一致——文件里不用跑 `status` 就能看到；代价是刻意的：改某一层的 mode 不会翻转既有连接，要切换就逐个显式切换。
 
 一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connections.remote.settings`（knobs 仍全局继承），唯一例外是 `windowMinutes`——窗口时长是套餐事实而非某台机器的一天，global 层的窗口时长同样到达 remote 连接。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。旧版程序保存的配置（knob 位置的 `windowMinutes`、schedule 位置的 `wakeWhenAsleep`）在首次加载时折入当前位置，且不再以旧拼写写出。
 
