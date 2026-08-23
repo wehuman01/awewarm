@@ -298,11 +298,13 @@ class V2FormatTests(IsolatedTestCase):
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
         # saving materializes the wakeWhenAsleep/prompt/maxTokens code defaults
-        # into the global block (documenting them); windowMinutes stays unset
+        # and the schedule's mode discriminator into the global block
+        # (documenting them); windowMinutes stays unset
         self.assertEqual(file["settings"], {
             "catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6,
             "wakeWhenAsleep": False,
             "prompt": "Reply with exactly: ok", "maxTokens": 4,
+            "schedule": {"mode": "fixed"},
         })
         self.assertFalse(set(file["connections"]["local"]["glm"]["settings"]) - {"schedule"})
         loaded = config.load_config()["connections"]["glm"]
@@ -328,7 +330,7 @@ class V2FormatTests(IsolatedTestCase):
         conf["connections"]["glm"] = plan_connection(mode="fixed", fixed_at=("06:00",), days="every-day")
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["settings"], config.default_settings())
+        self.assertEqual(file["settings"], {**config.default_settings(), "schedule": {"mode": "fixed"}})
         self.assertFalse(set(file["connections"]["local"]["glm"]["settings"]) - {"schedule"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 5, "withinMinutes": 30})
@@ -621,7 +623,8 @@ class SettingsLayerTests(IsolatedTestCase):
             },
         }))
         loaded = config.load_config()
-        self.assertEqual(loaded["settings"]["schedule"], {"times": ["09:00"], "windowMinutes": 300})
+        self.assertEqual(loaded["settings"]["schedule"],
+                         {"mode": "fixed", "times": ["09:00"], "windowMinutes": 300})
         self.assertEqual(loaded["settings"]["wakeWhenAsleep"], False)
         self.assertEqual(loaded["connectionDefaults"]["local"],
                          {"wakeWhenAsleep": True, "schedule": {"windowMinutes": 200}})
@@ -678,7 +681,36 @@ class LocationTests(IsolatedTestCase):
         self._write_conn(conn)
         self.assertEqual(config.load_config()["connections"]["glm"]["location"], "remote")
         on_disk = json.loads(Path(config.config_path()).read_text())["connections"]["remote"]["glm"]
-        self.assertEqual(on_disk["location"], "remote")
+        self.assertNotIn("location", on_disk)  # the group alone carries it
+
+    def test_legacy_location_field_folds_into_the_group(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {},
+            "connections": {"remote": {"glm": {
+                "label": "glm", "url": "https://example.com/api", "protocol": "openai-chat",
+                "apiKey": "file:glm", "location": "remote",
+            }}},
+        }))
+        loaded = config.load_config()
+        self.assertEqual(loaded["connections"]["glm"]["location"], "remote")
+        config.save_config(loaded)
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        self.assertNotIn("location", on_disk["connections"]["remote"]["glm"])  # old spelling gone
+        self.assertEqual(config.load_config()["connections"]["glm"]["location"], "remote")
+
+    def test_location_field_contradicting_the_group_refuses_to_load(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {},
+            "connections": {"local": {"glm": {
+                "label": "glm", "url": "https://example.com/api", "protocol": "openai-chat",
+                "apiKey": "file:glm", "location": "remote",
+            }}},
+        }))
+        with self.assertRaises(SystemExit) as ctx:
+            config.load_config()
+        self.assertIn("sits under connections.local", str(ctx.exception))
 
     def test_remote_location_rejects_cli_accounts(self):
         conn = account_connection()

@@ -305,11 +305,11 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。窗口时长（`windowMinutes`）是 schedule 字段、按层继承（见下），存在已确认的窗口即解锁 interval 续期——它只在 interval 模式下生效，fixed 连接仅作记录。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。嵌套在 `connections.remote` 分组下的连接由已配对的 `awewarm serve` 服务器调度（服务器地址和 token 引用存于顶层 `remote` 块）——分组本身就是标记，连接上不再有 location 字段。窗口时长（`windowMinutes`）是 schedule 字段、按层继承（见下），存在已确认的窗口即解锁 interval 续期——它只在 interval 模式下生效，fixed 连接仅作记录。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
 
 settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每个字段按层解析。分组按语义划分：`schedule` 块回答"什么时候触发"（`mode`、`times`、`days`、`skipIfActivatedMinutes`、`windowMinutes`、`graceSeconds`、`jitterSeconds`）；knobs 回答"一次激活怎么执行"——`catchupMinutes`/`catchupAttempts`/`degradeAfterNodes`（补跑与降级）、`wakeWhenAsleep`（fixed 时间点可否唤醒睡眠中的机器）、`prompt`/`maxTokens`（保温请求的提示词与 token 上限）。某层设了 `windowMinutes`，等于为该层下所有没有自己记录的连接担保窗口并解锁 interval；CLI 账号的 builtin 窗口不受层值覆盖：
 
-1. **global** —— 顶层 `settings`：所有连接继承的 knobs，以及默认的 schedule 字段。
+1. **global** —— 顶层 `settings`：所有连接继承的 knobs，以及默认的 schedule 字段（保存后的全局块总是写明 `mode`，文件里看得到默认是 `fixed` 还是 `interval`）。
 2. **connections.local / connections.remote** —— 按 local / remote 嵌套在各自位置组下的中间层。
 3. **profile** —— 连接自己的 `settings`（由 `awewarm config set <id>` 写入）；永远优先，`--inherit-schedule` 可丢弃它、回落到上层。
 

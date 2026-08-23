@@ -6,7 +6,10 @@ also the primary test seam.
 
 On-disk format (v3) groups connections under `connections.local` and
 `connections.remote`, each carrying a `settings` block with the tuning knobs
-and a `schedule` block; the top-level `settings` block is the global layer.
+and a `schedule` block; the top-level `settings` block is the global layer,
+which always names its schedule's `mode`. The group a connection sits under
+is its location — a per-connection `location` field is a legacy spelling
+that must agree with its group or refuses to load.
 The split is semantic: the schedule block answers when a connection fires
 (mode, times, days, and the interval clock — windowMinutes included); the
 knobs answer how an activation behaves (request content, failure policy,
@@ -251,12 +254,12 @@ def default_schedule():
 def _resolve_settings(raw):
     """Fill in code defaults for missing knobs so the block is always complete.
 
-    A `schedule` sub-block passes through untouched (its fields resolve
-    per-connection against the layers above, not here)."""
+    A `schedule` sub-block keeps its own fields (they resolve per-connection
+    against the layers above, not here) — except `mode`, which materializes
+    its code default so every saved global block names the default mode."""
     resolved = {**default_settings(), **(raw if isinstance(raw, dict) else {})}
     schedule = raw.get("schedule") if isinstance(raw, dict) else None
-    if isinstance(schedule, dict):
-        resolved["schedule"] = schedule
+    resolved["schedule"] = {**{"mode": "fixed"}, **(schedule if isinstance(schedule, dict) else {})}
     return resolved
 
 
@@ -592,7 +595,7 @@ def load_config(path=None):
                     "  (schedule fields live under settings.schedule since version 3)\n"
                     + _template_fix(path or config_path())
                 )
-            flat_connections[conn_id] = flat
+            flat_connections[conn_id] = (location_block_id, flat)
 
     global_settings_raw = _fold_legacy_settings(data.get("settings"))
     if global_settings_raw is not None:
@@ -611,17 +614,27 @@ def load_config(path=None):
         "connectionDefaults": connection_defaults,
         "remote": data.get("remote") or {},
         "connections": {
-            conn_id: _expand_conn(conn_id, conn, global_settings, connection_defaults)
-            for conn_id, conn in flat_connections.items()
+            conn_id: _expand_conn(conn_id, flat, group, global_settings, connection_defaults)
+            for conn_id, (group, flat) in flat_connections.items()
         },
     }
 
 
-def _expand_conn(conn_id, flat, global_settings, connection_defaults):
+def _expand_conn(conn_id, flat, group, global_settings, connection_defaults):
     """Flat v3 fields → the nested runtime shape the codebase reads.
 
+    The location group the connection sits under decides where it ticks; a
+    `location` field is the pre-reshuffle spelling (still read so old files
+    load, then dropped — a contradicting one is a hand edit and refuses).
     Schedule and knobs resolve own-overrides first, then the location's
     defaults, then the global block (schedule: local connections only)."""
+    explicit = flat.get("location")
+    if explicit is not None and explicit != group:
+        die(
+            f"connection '{conn_id}' sits under connections.{group} but its location field says '{explicit}'\n"
+            "  (the group decides where a connection ticks — remove the stray field)\n"
+            + _template_fix(config_path())
+        )
     subscription = bool(flat.get("url"))
     if subscription:
         kind, auth, transport = KIND_SUBSCRIPTION, (
@@ -649,8 +662,9 @@ def _expand_conn(conn_id, flat, global_settings, connection_defaults):
         "enabled": flat.get("enabled", True),
         # display-only: hidden connections keep warming, status just omits them
         "hide": bool(flat.get("hide", False)),
-        # where this connection ticks: here (default) or on the remote server
-        "location": flat.get("location") or "local",
+        # where this connection ticks: the group it was loaded from
+        # (connections.local / connections.remote)
+        "location": group,
         "auth": auth,
         "transport": transport,
         "activation": {"model": flat.get("model")},
@@ -732,8 +746,7 @@ def _compact_conn(conn, global_settings, connection_defaults):
         flat["enabled"] = False
     if conn.get("hide"):
         flat["hide"] = True
-    if conn.get("location") == "remote":
-        flat["location"] = "remote"
+    # location rides on the group the connection is nested under, never a field
     return flat
 
 

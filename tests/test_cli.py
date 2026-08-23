@@ -1595,7 +1595,7 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertTrue(entry["config"]["timezone"])  # IANA name traveled with the push
         self.assertFalse(entry["keyMissing"])
         on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
-        self.assertEqual(on_disk["connections"]["remote"]["glm"]["location"], "remote")
+        self.assertNotIn("location", on_disk["connections"]["remote"]["glm"])  # the group alone carries it
 
     def test_duplicate_remote_delegates_the_copy_and_disables_the_original(self):
         self.paired_config(plan_connection(fixed_at=("23:58",)))
