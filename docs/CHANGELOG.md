@@ -6,6 +6,8 @@
 
 **`awewarm config backup` / `config restore` — the device-migration path.** One archive (tar.gz, 0600) carries config.json, secrets.json, state.json, and `machine-id`; restoring it on a new machine makes the hub treat that machine as the same one — no new pairing slot, no operator involvement. Restore refuses to overwrite existing files without `--force`, validates the manifest (format 1), and rejects archives holding unexpected members. The archive contains API keys and the pairing token in plaintext — the command says so and leaves transit encryption to you (e.g. gpg). A backup containing `--persist-key on` connections asks before restore re-establishes their server-side storage.
 
+**`awewarm status` names the server it talks to.** A delegated connection on a hub reads `awewarm-hub <version> (engine awewarm <version>)` — the hub's `/v1/state` view now carries `hubVersion` — while a solo server keeps the old `awewarm server <version>` line.
+
 ## v0.5.9
 
 `serve` closes a keep-alive connection that sits unread for 30 s (`server.IDLE_TIMEOUT_SECONDS`). HTTP/1.1 keep-alive parks a thread per idle connection and the socket has no default timeout, so on a long-lived serve a proxy pooling origin connections (cloudflared, the recommended tunnel) parks threads for good; awewarm's own clients close after every request and never notice. awewarm-hub serves inherit the same bound through `server._Handler`.
