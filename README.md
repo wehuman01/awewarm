@@ -247,7 +247,7 @@ awewarm-hub serve                              # same ~/.awewarm-server data dir
 awewarm-hub invite --name alice                # prints awi_... (one use, 48 h)
 ```
 
-Admin lives there too (`awewarm-hub status / list / revoke / restore / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement. No always-on box of your own? The project's developer runs a community hub at **https://awewarm.wehuman.top** (invite-based — request a code at peng@wehuman.top); [docs/community-hub/](./docs/community-hub/README.md) is a step-by-step user tutorial that starts from installing awewarm and setting up your first connection (中文版).
+Admin lives there too (`awewarm-hub status / list / invite revoke|restore|rename / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement. No always-on box of your own? The project's developer runs a community hub at **https://awewarm.wehuman.top** (invite-based — request a code at peng@wehuman.top); [docs/community-hub/](./docs/community-hub/README.md) is a step-by-step user tutorial that starts from installing awewarm and setting up your first connection (中文版).
 
 ### Delegate from the laptop
 

@@ -247,7 +247,7 @@ awewarm-hub serve                              # 同一个 ~/.awewarm-server 数
 awewarm-hub invite --name alice                # 打印 awi_...（一次性，48 小时）
 ```
 
-管理命令也在那里（`awewarm-hub status / list / revoke / restore / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。自己没有常开机器？项目开发者运营着一个社区 hub：**https://awewarm.wehuman.top**（邀请制——邀请码发邮件到 peng@wehuman.top 申请）；[docs/community-hub/](./docs/community-hub/README_cn.md) 是一份从安装 awewarm、配置第一个连接开始的用户教程（英文版）。
+管理命令也在那里（`awewarm-hub status / list / invite revoke|restore|rename / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。自己没有常开机器？项目开发者运营着一个社区 hub：**https://awewarm.wehuman.top**（邀请制——邀请码发邮件到 peng@wehuman.top 申请）；[docs/community-hub/](./docs/community-hub/README_cn.md) 是一份从安装 awewarm、配置第一个连接开始的用户教程（英文版）。
 
 ### 从笔记本委托
 
