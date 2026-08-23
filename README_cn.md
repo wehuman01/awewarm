@@ -184,15 +184,28 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
 不需要唤醒机制，机器从不睡眠 —— `awewarm scheduler install` 直接设置 systemd user timer（每分钟 tick；`Persistent=true` 在开机时补跑错过的 tick）。把 `config.json` 和 `secrets.json` 复制过去（或重新运行 `init`），注意 CLI 连接需要在服务器上也安装对应 CLI。`loginctl enable-linger $USER` 在无桌面/SSH 账号上是必需的。Linux 本质上无法唤醒挂起的机器：添加流程不会询问唤醒偏好，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
 
-## 远程服务器 —— 委托给一台 24/7 在线的机器
+## 远程服务器 —— 独享自己的盒子，或共享 hub
 
-合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把订阅连接委托给任意常开机器（VPS、NAS、树莓派）上的 `awewarm serve` 进程。CLI 账号连接无法委托 —— 登录态在你本机上，继续由本地调度。
+合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把订阅连接委托给任意常开机器（VPS、NAS、树莓派）—— 自己的盒子跑 `awewarm serve`，或与团队/家人/社区共享一台 `awewarm-hub serve`。CLI 账号连接无法委托 —— 登录态在你本机上，继续由本地调度。
 
-服务器**磁盘上不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
+两种形态一眼对比：
 
-两条配对安全须知。未认领的服务器信任**第一个**到达的 token —— 在你连接之前拿到 URL 的人会抢先认领（你随后连接会以 403 明确失败）。请保管好 URL，`serve` 启动后尽快连接，或用 `awewarm serve --token awt_...` 预先固定 token。另外请经 **https** 配对（如下文的 cloudflared 隧道）：对非本机主机的明文 `http://` 地址，`remote connect` 会先要求确认才发送 token 和 API key。
+| | 独享 —— `awewarm serve` | 共享 —— `awewarm-hub serve` |
+| --- | --- | --- |
+| 谁运维服务器 | 你自己 | 一名运营者；其余人都以用户身份配对 |
+| 谁能配对 | 只有你 —— 未认领的服务器信任**第一个**到达的 token | 多个用户，使用运营者签发的一次性邀请码（`awi_...`） |
+| 服务器上装的软件 | 本包（`pip install awewarm`） | 独立包 **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)**（`pip install awewarm-hub`；同样 MPL-2.0） |
+| 从你的机器配对 | `awewarm remote connect <url>` | `awewarm remote connect <url> --invite awi_...` |
+| 信任 | key 在你自己的盒子里 | 所有用户的 API key 都经过运营者的内存 —— hub 用户必须信任运营者和 root |
+| 什么时候选它 | 你有（或方便租到）任意常开机器，想完全自己掌控 | 自己没有常开机器，或想多人共用一台 |
 
-**搭建服务器（一次性）：**
+配对之后，两种形态在笔记本侧完全一致：同样的委托命令、同样的 `status --remote` 视图、同样的 `--local` 收回。
+
+两种形态的服务器**磁盘上都不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
+
+### 搭建服务器（一次性）
+
+**独享** —— 在盒子上装本包并运行：
 
 ```bash
 ssh my-server
@@ -224,10 +237,25 @@ cloudflared tunnel route dns awewarm warm.example.com
 cloudflared tunnel run --url http://127.0.0.1:8790 awewarm
 ```
 
-**从笔记本委托：**
+独享配对安全须知：未认领的服务器信任**第一个**到达的 token —— 在你连接之前拿到 URL 的人会抢先认领（你随后连接会以 403 明确失败）。请保管好 URL，`serve` 启动后尽快连接，或用 `awewarm serve --token awt_...` 预先固定 token。
+
+**共享** —— 运营者在盒子上装独立包、分发邀请码：
 
 ```bash
-awewarm remote connect https://warm.example.com   # 本地生成并保存 token，认领服务器
+pip3 install awewarm-hub
+awewarm-hub serve                              # 同一个 ~/.awewarm-server 数据目录，变为多租户
+awewarm-hub invite --name alice                # 打印 awi_...（一次性，48 小时）
+```
+
+管理命令也在那里（`awewarm-hub status / list / revoke / restore / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。自己没有常开机器？项目开发者运营着一个社区 hub：**https://awewarm.wehuman.top**（邀请制——邀请码发邮件到 peng@wehuman.top 申请）；[docs/community-hub/](./docs/community-hub/README_cn.md) 是一份从安装 awewarm、配置第一个连接开始的用户教程（英文版）。
+
+### 从笔记本委托
+
+两种形态都请经 **https** 配对（如上文的 cloudflared 隧道）：对非本机主机的明文 `http://` 地址，`remote connect` 会先要求确认才发送 token 和 API key。
+
+```bash
+awewarm remote connect https://warm.example.com              # 独享：本地生成并保存 token，认领服务器
+awewarm remote connect https://warm.example.com --invite awi_...   # 共享：用邀请码换取个人 token
 awewarm config set glm --remote                   # 服务器接管这条连接
 awewarm config set glm --duplicate --remote       # ……或者 glm 留在本地，委托它的一份副本
 awewarm status                                    # 合并视图：本地 + 委托真值
@@ -236,17 +264,6 @@ awewarm status --local                            # 只看本地调度的连接
 ```
 
 `--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。`--duplicate` 把连接复制成新 id（`glm-copy`）——API key 在新 id 下另存一份、运行状态从零开始；配合 `--remote` 时副本被委托、原连接自动停用，同一份订阅绝不会被双份保温。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果，且和本地一致——一次成功的手动 run 同样会解除 auto-disabled 阶梯；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器并释放其 claim（其他机器可以立即配对），仍有委托连接时拒绝执行；配对 token 保留在 `secrets.json` 里，之后重连即刻完成，即使服务器还留着旧 claim 也不受影响。fixed 时间按委托方机器的时区运行（时区随推送传递；本机时区没有 IANA 名的机器（如 Windows）会推送固定的 `UTC±HH:MM` 偏移）；从不睡觉的服务器谈不上 wake。
-
-## Hub 模式 —— 一台服务器，多个用户
-
-多租户保温——一台常开机器为团队、家人或社区保温，用一次性邀请码配对——已拆分为独立包：**[awewarm-hub](https://github.com/wehuman01/awewarm-hub)**（`pip install awewarm-hub`；同样以 MPL-2.0 开源，PyPI 可装）。运营者改用 `awewarm-hub serve` 运行并管理租户（`awewarm-hub invite / list / revoke / restore / config`）；既有的 `~/.awewarm-server` 数据目录无需迁移、直接可用。旧的写法（`awewarm serve --hub`、`awewarm hub ...`）现在会报错并给出替代命令。
-
-hub 的用户继续使用本包，方式完全不变：
-
-```bash
-awewarm remote connect https://warm.example.com --invite awi_...
-awewarm config set glm --remote      # 委托方式与单用户模式完全相同
-```
 
 ## 配置
 

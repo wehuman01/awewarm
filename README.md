@@ -184,15 +184,28 @@ The calendar-fire/wake split, mirrored: `scheduler install` registers one extra 
 
 No wake machinery exists or is needed on a machine that never sleeps — `awewarm scheduler install` sets up the systemd user timer directly (tick every minute; `Persistent=true` fires a missed tick at boot). Copy `config.json` and `secrets.json` over (or re-run `init`), and note that CLI-based connections need their CLI installed on the server. `loginctl enable-linger $USER` first on headless/SSH accounts. Linux simply cannot wake a suspended machine: the setup flow never asks, connections default to `wakeWhenAsleep: false`, and missed slots catch up within their catch-up windows once the machine wakes.
 
-## Remote Server — delegation to a 24/7 box
+## Remote Server — your own box, or a shared hub
 
-A lid-closed laptop on battery eventually enters standby, where no scheduled wake can reach it — and an off machine fires nothing at all. For around-the-clock warmth regardless of power state, delegate subscription connections to an `awewarm serve` process on any always-on machine (VPS, NAS, Raspberry Pi). CLI-account connections cannot be delegated — their login lives on your machine and keeps ticking locally.
+A lid-closed laptop on battery eventually enters standby, where no scheduled wake can reach it — and an off machine fires nothing at all. For around-the-clock warmth regardless of power state, delegate subscription connections to an always-on machine (VPS, NAS, Raspberry Pi) — `awewarm serve` for a box of your own, or `awewarm-hub serve` shared with a team, a family, or a community. CLI-account connections cannot be delegated — their login lives on your machine and keeps ticking locally.
 
-The server holds **no secrets on disk**. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
+The two flavors at a glance:
 
-Two pairing safety notes. An unclaimed server trusts the **first** token that reaches it — anyone who finds the URL before you connect could claim it instead (your own connect then fails loudly with 403). Keep the URL private, connect promptly after starting `serve`, or pin the token ahead of time with `awewarm serve --token awt_...`. And pair over **https** (e.g. via the cloudflared tunnel below): `remote connect` asks for confirmation before sending the token and any API keys over plain `http://` to a non-local host.
+| | Solo — `awewarm serve` | Hub — `awewarm-hub serve` |
+| --- | --- | --- |
+| Who runs the box | you | one operator; everyone else pairs as a user |
+| Who may pair | just you — the **first** token to reach an unclaimed server claims it | many users, one-time invites (`awi_...`) the operator mints |
+| Software on the box | this package (`pip install awewarm`) | the separate **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** package (`pip install awewarm-hub`; same MPL-2.0) |
+| Pair from your machine | `awewarm remote connect <url>` | `awewarm remote connect <url> --invite awi_...` |
+| Trust | your keys, your box | every user's API keys pass through the operator's RAM — hub users must trust the operator and root |
+| The right pick when… | you have, or can cheaply rent, any always-on box and want it fully yours | you have no always-on box of your own, or want to share one with several people |
 
-**Set up the server (once):**
+Once paired, the two flavors are identical from your laptop: the same delegation commands, the same `status --remote` view, the same takeback with `--local`.
+
+Both hold **no secrets on disk**. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
+
+### Set up the server (once)
+
+**Solo** — install this package on the box and run it:
 
 ```bash
 ssh my-server
@@ -224,10 +237,25 @@ cloudflared tunnel route dns awewarm warm.example.com
 cloudflared tunnel run --url http://127.0.0.1:8790 awewarm
 ```
 
-**Delegate from the laptop:**
+Solo pairing safety: an unclaimed server trusts the **first** token that reaches it — anyone who finds the URL before you connect could claim it instead (your own connect then fails loudly with 403). Keep the URL private, connect promptly after starting `serve`, or pin the token ahead of time with `awewarm serve --token awt_...`.
+
+**Hub** — the operator installs the separate package on the box and hands out invite codes:
 
 ```bash
-awewarm remote connect https://warm.example.com   # token generated + stored locally, server claimed
+pip3 install awewarm-hub
+awewarm-hub serve                              # same ~/.awewarm-server data dir, now multi-tenant
+awewarm-hub invite --name alice                # prints awi_... (one use, 48 h)
+```
+
+Admin lives there too (`awewarm-hub status / list / revoke / restore / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement. No always-on box of your own? The project's developer runs a community hub at **https://awewarm.wehuman.top** (invite-based — request a code at peng@wehuman.top); [docs/community-hub/](./docs/community-hub/README.md) is a step-by-step user tutorial that starts from installing awewarm and setting up your first connection (中文版).
+
+### Delegate from the laptop
+
+Both flavors pair over **https** (e.g. via the cloudflared tunnel): `remote connect` asks for confirmation before sending the token and any API keys over plain `http://` to a non-local host.
+
+```bash
+awewarm remote connect https://warm.example.com              # solo: token generated + stored locally, server claimed
+awewarm remote connect https://warm.example.com --invite awi_...   # hub: burn an invite for a personal token
 awewarm config set glm --remote                   # the server takes over this connection
 awewarm config set glm --duplicate --remote       # ...or keep glm local and delegate a copy of it
 awewarm status                                    # merged view: local + delegated truth
@@ -236,17 +264,6 @@ awewarm status --local                            # locally scheduled connection
 ```
 
 `--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. `--duplicate` copies a connection under a fresh id (`glm-copy`) — the API key is re-stored under the new id, runtime state starts blank — and with `--remote` the copy is delegated and the original disabled, so one subscription is never ticked twice. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back — and, same as locally, a successful manual run clears an auto-disabled ladder — and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` refuses while anything is still delegated, then forgets the server and releases its claim (another machine can pair immediately); the pairing token stays in `secrets.json`, so reconnecting later is instant even against a server that kept the old claim. Fixed times run in the delegating machine's timezone (it travels with the push; machines whose zone has no IANA name, e.g. Windows, push a fixed `UTC±HH:MM` offset instead); wake-from-sleep does not apply on a server that never sleeps.
-
-## Hub mode — one server, many users
-
-Multi-tenant serving — one box warming connections for a team, a family, or a community, paired through one-time invites — is a separate package: **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** (`pip install awewarm-hub`; open-source under the same MPL-2.0, on PyPI). The operator runs `awewarm-hub serve` and administers tenants there (`awewarm-hub invite / list / revoke / restore / config`); an existing `~/.awewarm-server` data dir carries over unchanged. The old spellings (`awewarm serve --hub`, `awewarm hub ...`) now die with a tombstone naming their replacement.
-
-Users of a hub keep using this package exactly as before:
-
-```bash
-awewarm remote connect https://warm.example.com --invite awi_...
-awewarm config set glm --remote      # same delegation as single-user mode
-```
 
 ## Config
 

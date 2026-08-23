@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+The developer's community hub (https://awewarm.wehuman.top) is now documented for its users: `docs/community-hub/` (README + README_cn) walks a first-time user from `pip install awewarm` through pairing by invite to delegation — trust rule first, FAQ included — and the READMEs and README.ai.md link to it.
+
 ## v0.5.7
 
 Windows was broken at import since the RTC wake layer landed in v0.4.3: `install.py` imported the Unix-only `pwd` module at top level, so every command there died with `ModuleNotFoundError` before doing anything (CI's Windows legs have been red since). The import now happens inside the macOS-only `install_wake_grant`, and a regression test imports the CLI in a subprocess with `pwd` blocked so a top-level import cannot slip back in.
