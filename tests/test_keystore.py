@@ -1,4 +1,5 @@
 import os
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -80,7 +81,11 @@ class SecretsFileTests(IsolatedTestCase):
             with self.assertRaises(OSError):
                 keystore.store_api_key("other", "new-key")
 
-        self.assertEqual(temp_modes, [0o600])
+        # POSIX mkstemp creates the temp file 0600, so a secret is never
+        # group/world-readable mid-write; Windows has no POSIX permission
+        # bits to assert (its mkstemp reports 0o666).
+        if sys.platform != "win32":
+            self.assertEqual(temp_modes, [0o600])
         self.assertEqual(keystore.load_api_key("file:glm"), "old-key")
         self.assertIsNone(keystore.load_api_key("file:other"))
         self.assertEqual(list(path.parent.glob(path.name + ".*.tmp")), [])

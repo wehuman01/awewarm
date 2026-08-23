@@ -1,6 +1,8 @@
 """RTC wake layer: target-set computation, pmset convergence, sudoers grant."""
+import sys
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -291,6 +293,19 @@ class OrphanReclaimTests(IsolatedTestCase):
 
 
 class SudoersTests(IsolatedTestCase):
+    def setUp(self):
+        super().setUp()
+        # install_wake_grant reads the username through os.getuid + pwd —
+        # both POSIX-only, like the posix_uid patch in test_install; fake
+        # them so Windows runners take the same path.
+        getuid = mock.patch("awewarm.install.os.getuid", return_value=501, create=True)
+        getuid.start()
+        self.addCleanup(getuid.stop)
+        fake_pwd = SimpleNamespace(getpwuid=lambda uid: SimpleNamespace(pw_name="tester"))
+        pwd_module = mock.patch.dict(sys.modules, {"pwd": fake_pwd})
+        pwd_module.start()
+        self.addCleanup(pwd_module.stop)
+
     def test_rule_is_scoped_to_wake_events_only(self):
         self.assertEqual(
             install.sudoers_rule("peng"),
