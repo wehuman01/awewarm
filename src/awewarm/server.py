@@ -4,13 +4,22 @@ One resident process that (a) serves an authenticated sync API to the local
 machine and (b) ticks the delegated connections once a minute with the same
 pure planner (`schedule.plan_actions`) and transports the local CLI uses.
 
-Nothing secret is ever written to disk here. The access token and connection
-API keys live in RAM only, pushed by the local machine, which owns them in its
-own secrets.json. A restart therefore loses them: the local side re-claims and
-re-pushes automatically whenever it is online, and any slot that came due
-while its key was missing is held (not failed) — it still fires inside the
-catch-up window once the key returns; past it, it is recorded as skipped.
-That is exactly how the local tick already treats a machine that was asleep.
+Nothing secret is written to disk here by default. The access token and
+connection API keys live in RAM only, pushed by the local machine, which owns
+them in its own secrets.json. A restart therefore loses them: the local side
+re-claims and re-pushes automatically whenever it is online, and any slot that
+came due while its key was missing is held (not failed) — it still fires
+inside the catch-up window once the key returns; past it, it is recorded as
+skipped. That is exactly how the local tick already treats a machine that was
+asleep.
+
+The one opt-in exception is `persistKey`: a connection whose owner confirmed
+it (the client gates every enabling action behind a prompt) stores its key in
+`keys.json` inside the data dir (0600, plaintext — the same trust level as a
+hub's tenants.json) so a restart keeps ticking it without the owner online.
+The flag travels on the push body; a later push without it removes the key
+from disk again, and a re-key (`PUT /v1/keys`) writes through to the
+persisted set.
 
 Wire protocol (JSON over HTTP, Bearer token):
   GET    /healthz                    no auth; {ok, version, claimed}
@@ -62,7 +71,8 @@ class ApiError(Exception):
 
 
 class WarmServer:
-    """All server state: config + state on disk, token + keys in RAM."""
+    """All server state: config + state on disk, token in RAM, keys in RAM
+    plus an owner-opt-in keys.json (see the module docstring)."""
 
     def __init__(self, data_dir, fixed_token=None):
         self.data_dir = Path(data_dir).expanduser()
@@ -70,16 +80,19 @@ class WarmServer:
         self.config_path = self.data_dir / "config.json"
         self.state_path = self.data_dir / "state.json"
         self.log_path = self.data_dir / "awewarm-server.log"
+        self.keys_path = self.data_dir / "keys.json"
         self.lock = threading.RLock()
         self.fixed_token = fixed_token
         self.claimed_token = fixed_token  # RAM only; lost on restart (by design)
-        self.keys = {}  # conn_id → API key, RAM only
+        self.persisted = self._load_keys()  # conn_id → key, the opted-in on-disk keyring
+        self.keys = dict(self.persisted)  # conn_id → API key, RAM only (seeded from disk)
         self.config = self._load(self.config_path, {"version": 2, "connections": {}})
         self.state = self._load(self.state_path, {"version": 1, "connections": {}})
         self.started_at = datetime.now().astimezone()
         self.last_tick_at = None
 
-    # --- storage (config/state shapes match the local files; keys never land here) ---
+    # --- storage (config/state shapes match the local files; keys land only in
+    # keys.json, and only for connections whose owner opted in) ---
 
     def _load(self, path, default):
         try:
@@ -92,8 +105,38 @@ class WarmServer:
                 "fix: delete the file — the local machine re-pushes everything"
             )
 
+    def _load_keys(self):
+        data = self._load(self.keys_path, {})
+        if not isinstance(data, dict) or not all(
+            isinstance(key, str) for key in data.values()
+        ):
+            raise SystemExit(
+                f"awewarm serve: {self.keys_path} is malformed\n"
+                "fix: delete the file — the local machine re-pushes every key"
+            )
+        return data
+
     def _save(self, path, data):
         _write_json(path, data)
+
+    def _save_persisted(self):
+        if self.persisted:
+            self._save(self.keys_path, self.persisted)
+        else:
+            self.keys_path.unlink(missing_ok=True)
+
+    def purge_persisted_keys(self, reason):
+        """Drop every persisted key from disk (RAM copies stay — no interruption).
+
+        The operator paths call this: a hub switching storage off, a revoked
+        tenant. `reason` rides the log line; no key material is ever logged.
+        """
+        with self.lock:
+            if not self.persisted:
+                return
+            self.persisted = {}
+            self._save_persisted()
+            self.log(f"persisted keys purged ({reason})")
 
     def log(self, message):
         append_log(self.log_path, message)
@@ -174,6 +217,19 @@ class WarmServer:
             self.config["connections"][conn_id] = conn
             self.state["connections"][conn_id] = default_conn_state()
             self.keys[conn_id] = api_key
+            # The push body is the owner's standing answer: persistKey on →
+            # the key lands in keys.json (a changed key overwrites); off or
+            # absent while persisted → it leaves the disk. RAM always gets it.
+            if payload.get("persistKey"):
+                newly = conn_id not in self.persisted or self.persisted[conn_id] != api_key
+                if newly:
+                    self.persisted[conn_id] = api_key
+                    self._save_persisted()
+                    self.log(f"{conn_id} key persisted (owner opted in)")
+            elif conn_id in self.persisted:
+                del self.persisted[conn_id]
+                self._save_persisted()
+                self.log(f"{conn_id} persisted key removed (owner opted out)")
             self._save(self.config_path, self.config)
             self._save(self.state_path, self.state)
             due_at, _ = schedule.next_due(conn, self.state["connections"][conn_id], self._now(conn))
@@ -187,6 +243,9 @@ class WarmServer:
             del self.config["connections"][conn_id]
             self.state["connections"].pop(conn_id, None)
             self.keys.pop(conn_id, None)
+            if conn_id in self.persisted:  # takeback: the disk copy leaves too
+                del self.persisted[conn_id]
+                self._save_persisted()
             self._save(self.config_path, self.config)
             self._save(self.state_path, self.state)
             self.log(f"{conn_id} removed")
@@ -203,6 +262,10 @@ class WarmServer:
                 if not isinstance(key, str) or not key.strip():
                     raise ApiError(400, f"empty key for {conn_id}")
                 self.keys[conn_id] = key
+                if conn_id in self.persisted:  # rotation writes through
+                    self.persisted[conn_id] = key
+            if any(cid in self.persisted for cid in mapping):
+                self._save_persisted()
             self.log(f"keys restored: {', '.join(sorted(mapping))}")
             return {"ok": True, "missing": self.missing_keys()}
 
@@ -226,6 +289,7 @@ class WarmServer:
                         "config": conn,
                         "state": self.state["connections"].get(cid) or default_conn_state(),
                         "keyMissing": cid in missing,
+                        "keyPersisted": cid in self.persisted,
                     }
                     for cid, conn in sorted(self.config["connections"].items())
                 },

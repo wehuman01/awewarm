@@ -228,6 +228,8 @@ Commands from pre-0.3 releases (`add plan`, `times`, `enable`, `verify`, `anchor
 - Never run `run <id>` or bare `run` unless the user explicitly asks — they consume plan quota.
 - Do not run `init` or `config add` inside the agent — they are interactive.
 - API keys live in `secrets.json` (0600), never in config files. Never ask the user to paste an API key into chat; all awewarm output is redacted.
+- `config set <id> --persist-key on` (store the key on the server's disk, plaintext) asks for confirmation and is discouraged by design — if the user asks for it, state the trade-off (readable by whoever reads the server box) and let them run it in their own terminal; the same applies to `config restore` of a backup containing persisted-key connections.
+- `config backup` writes API keys and the pairing token in plaintext into one archive — never create, move, or transmit one for the user without saying so.
 - Read config through `status`; never hand-edit config.json or state.json.
 - If any command fails, report the exact command and error message. Do not silently retry.
 

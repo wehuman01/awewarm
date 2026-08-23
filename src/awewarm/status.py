@@ -213,6 +213,10 @@ def _show_status(connection, as_json, location=None):
                 )
                 if entry.get("keyMissing"):
                     click.echo("  ⚠ the server lost its key (restarted?) — rerun: awewarm remote push")
+                elif entry.get("keyPersisted"):
+                    click.echo("  key: stored on the server (you opted in; plaintext in its keys.json)")
+                else:
+                    click.echo("  key: server RAM only (re-pushed automatically after a server restart)")
                 continue
             # Reachable server, but the connection is missing from its view
             # (wiped data dir, never-healed pending push): show the local copy

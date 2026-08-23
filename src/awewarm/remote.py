@@ -138,8 +138,14 @@ def release(url, token):
     return _request(url, "POST", "/v1/release", {}, token)
 
 
-def push_connection(url, token, conn_id, conn, api_key, timezone):
+def push_connection(url, token, conn_id, conn, api_key, timezone, persist=False):
+    """Deliver a connection and its key. `persist` (owner-confirmed) asks the
+    server to also store the key in its keys.json; the field is omitted when
+    false so old servers see the exact body they always did — and treat its
+    absence as "remove any previously persisted copy" (new servers)."""
     payload = {"connection": conn, "apiKey": api_key, "timezone": timezone}
+    if persist:
+        payload["persistKey"] = True
     return _request(url, "PUT", f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}", payload, token)
 
 

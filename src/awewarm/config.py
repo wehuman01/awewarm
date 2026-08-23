@@ -116,7 +116,7 @@ SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 # `windowMinutes` are legacy reads that fold away on load.
 KNOWN_CONN_KEYS = frozenset({
     "label", "url", "protocol", "apiKey", "cli", "model",
-    "schedule", "enabled", "hide", *KNOB_KEYS,
+    "schedule", "enabled", "hide", "persistKey", *KNOB_KEYS,
     "settings", "location", "windowMinutes",
 })
 
@@ -692,6 +692,7 @@ def _expand_conn(conn_id, flat, group, global_settings, connection_defaults):
         # pure inheritance) — window/schedule/catchup/degrade/activation below
         # are the resolved values the rest of the code reads
         "settings": own,
+        **({"persistKey": True} if flat.get("persistKey") else {}),
     }
     return _apply_resolved(conn, global_settings, connection_defaults)
 
@@ -781,6 +782,8 @@ def _compact_conn(conn, global_settings, connection_defaults):
         flat["enabled"] = False
     if conn.get("hide"):
         flat["hide"] = True
+    if conn.get("persistKey"):
+        flat["persistKey"] = True
     # location rides on the group the connection is nested under, never a field
     return flat
 

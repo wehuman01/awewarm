@@ -4,12 +4,14 @@ self-update (plus tick, hidden). Older command names still work as hidden
 aliases (removed in v1.0); the scheduler's `awewarm tick` invocation is fixed
 because installed scheduler agents run it verbatim and self-heal if outdated."""
 import copy
+import io
 import ipaddress
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.parse
 from contextlib import nullcontext
 from datetime import datetime, timedelta
@@ -340,6 +342,38 @@ def _require_api_key(conn, conn_id):
     return api_key
 
 
+PERSIST_KEY_ON_NOTICE = (
+    "  its API key will be stored in PLAINTEXT on the server's disk\n"
+    "  (keys.json, 0600) — readable by the hub operator and anyone with disk\n"
+    "  access there. Worth it only if this machine is rarely online: without\n"
+    "  it, a server restart while this machine is away holds the warm-ups\n"
+    "  (skipped past the 30-minute catch-up window) until the machine returns."
+)
+PERSIST_KEY_OFF_NOTICE = (
+    "  the server deletes the key from its disk right away (the key stays in\n"
+    "  secrets.json here and in the server's RAM — warm-ups continue), and\n"
+    "  from then on a server restart while this machine is offline holds the\n"
+    "  warm-ups (skipped past the 30-minute catch-up window) until it returns."
+)
+
+
+def _stdin_is_interactive():
+    """Separated so tests can flip it: the gates refuse to prompt a pipe."""
+    return sys.stdin.isatty()
+
+
+def _confirm_persist_change(conn_id, prompt, notice, default, assume_yes):
+    """One persistence confirmation gate. Every user action that changes
+    whether a key lives on a server's disk passes through here; background
+    sync never does (it maintains choices already confirmed at a gate)."""
+    click.echo(f"{conn_id}: {notice}")
+    if assume_yes:
+        return True
+    if not _stdin_is_interactive():
+        die("pass --yes to confirm this in non-interactive shells")
+    return click.confirm(prompt, default=default)
+
+
 def _sync_remote(config, state, force_ids=()):
     """Bring the server's copy back in line with local truth.
 
@@ -360,7 +394,10 @@ def _sync_remote(config, state, force_ids=()):
             continue
         server = have.get(conn_id)
         if conn_id in force_ids or conn_id in pending or server is None:
-            remote.push_connection(url, token, conn_id, conn, _require_api_key(conn, conn_id), tz)
+            remote.push_connection(
+                url, token, conn_id, conn, _require_api_key(conn, conn_id), tz,
+                persist=bool(conn.get("persistKey")),
+            )
             pending.pop(conn_id, None)
             pushed.append(conn_id)
         elif server.get("keyMissing"):
@@ -395,7 +432,7 @@ def _maybe_sync_remote(config, state):
         log_event(f"remote sync skipped: {exc}")
 
 
-def _delegate_remote(config, conn_id, conn):
+def _delegate_remote(config, conn_id, conn, assume_yes=False):
     """Hand one connection to the remote server (`config set <id> --remote`).
 
     The flag only lands after the server accepted the push — otherwise neither
@@ -403,7 +440,9 @@ def _delegate_remote(config, conn_id, conn):
     handover (its own overrides, or whatever it inherited as a local
     connection) is pinned as its own settings: a delegated connection never
     follows the global schedule, so this is the one moment those values may
-    carry over.
+    carry over. A connection flagged persistKey gets its confirmation here —
+    this is the moment the key would start living on the server's disk;
+    declining downgrades to RAM-only and clears the flag.
     """
     if conn.get("location") == "remote":
         return
@@ -417,6 +456,14 @@ def _delegate_remote(config, conn_id, conn):
     api_key = _resolve_api_key(conn)
     if api_key is None:
         die(f"{conn_id} has no stored API key\nfix: awewarm config set {conn_id} --api-key <key>")
+    persist = bool(conn.get("persistKey"))
+    if persist and not _confirm_persist_change(
+        conn_id, "Store this key on the server's disk too?", PERSIST_KEY_ON_NOTICE,
+        default=False, assume_yes=assume_yes,
+    ):
+        conn.pop("persistKey", None)
+        persist = False
+        click.echo(f"✓ {conn_id} delegated with its key in server RAM only (persistence declined)")
     flattened = flatten_schedule(conn.get("schedule"))
     own = conn.setdefault("settings", {})
     own["schedule"] = {key: value for key, value in flattened.items() if key != "wakeWhenAsleep"}
@@ -426,22 +473,25 @@ def _delegate_remote(config, conn_id, conn):
         remote.ensure_session(config)
         remote.push_connection(
             remote.remote_url(config), remote.load_token(), conn_id, conn, api_key,
-            _push_timezone(config),
+            _push_timezone(config), persist=persist,
         )
     except remote.RemoteError as exc:
         die(f"could not hand {conn_id} to the remote server — it stays local:\n{exc}")
     conn["location"] = "remote"
     resolve_connection(conn, config)
     click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")
+    if persist:
+        click.echo("  its key persists on the server (plaintext keys.json) — survives its restarts")
 
 
-def _config_duplicate(config, conn_id, conn, delegate):
+def _config_duplicate(config, conn_id, conn, delegate, assume_yes=False):
     """Copy a connection under a fresh id (`config set <id> --duplicate`).
 
     The key is re-stored under the new id — a shared ref would let removing
     either connection delete the other's — and runtime state starts blank.
     With --remote the copy is delegated and the original disabled: one
-    subscription, one ticker."""
+    subscription, one ticker. The copy inherits persistKey, and with it the
+    confirmation gate inside _delegate_remote — naming the copy's id."""
     new_id = f"{conn_id}-copy"
     suffix = 2
     while new_id in config["connections"]:
@@ -458,7 +508,7 @@ def _config_duplicate(config, conn_id, conn, delegate):
     if not delegate:
         click.echo(f"  tweak it with: awewarm config set {new_id} ...")
         return
-    _delegate_remote(config, new_id, clone)  # on failure its die() guides; the copy stays local
+    _delegate_remote(config, new_id, clone, assume_yes=assume_yes)  # on failure its die() guides; the copy stays local
     conn["enabled"] = False
     save_config(config)
     if conn.get("location") == "remote":  # a delegated original keeps ticking server-side
@@ -614,7 +664,7 @@ class _SetOptions:
         "times", "days", "mode", "enabled", "hide", "anchor_hhmm", "start_hhmm",
         "window_minutes", "api_key", "wake", "catchup_minutes",
         "catchup_attempts", "degrade_after_nodes", "location",
-        "inherit_schedule", "duplicate",
+        "inherit_schedule", "duplicate", "persist_key",
     )
 
     def __init__(self, **kwargs):
@@ -643,7 +693,7 @@ def _config_set(connection, opts):
         for field in _SetOptions.FIELDS:
             if field not in ("duplicate", "location") and getattr(opts, field) is not None:
                 die(f"--duplicate combines only with --remote/--local — tweak the copy itself with: awewarm config set <new-id> ...")
-        _config_duplicate(config, conn_id, conn, delegate=opts.location is True)
+        _config_duplicate(config, conn_id, conn, delegate=opts.location is True, assume_yes=opts.assume_yes)
         return
     slots = []
     if opts.times:
@@ -719,6 +769,28 @@ def _config_set(connection, opts):
         # Display-only: hidden connections keep their schedule and keep warming;
         # status listings omit them, asking by id still shows them.
         conn["hide"] = opts.hide
+    persist_applied = None  # "on"/"off" once a gate approved an actual change
+    if opts.persist_key is not None:
+        if conn.get("kind") != "subscription":
+            die(f"--persist-key applies to subscription connections only; {conn_id} is a local CLI account")
+        wanted = opts.persist_key == "on"
+        if wanted != bool(conn.get("persistKey")):
+            prompt, notice, default = (
+                ("Store this key on the server's disk?", PERSIST_KEY_ON_NOTICE, False)
+                if wanted else
+                ("Stop storing the key on the server's disk?", PERSIST_KEY_OFF_NOTICE, True)
+            )
+            if _confirm_persist_change(conn_id, prompt, notice, default, opts.assume_yes):
+                if wanted:
+                    conn["persistKey"] = True
+                else:
+                    conn.pop("persistKey", None)
+                persist_applied = opts.persist_key
+            else:
+                click.echo(
+                    f"✓ {conn_id} unchanged — its key stays "
+                    f"{'on' if conn.get('persistKey') else 'off'} the server's disk"
+                )
     if opts.anchor_hhmm is not None:
         window = conn["window"]
         if window.get("status") not in ("verified", "user-confirmed") or not window.get("durationMinutes"):
@@ -746,7 +818,7 @@ def _config_set(connection, opts):
 
     if opts.location is not None:
         if opts.location:
-            _delegate_remote(config, conn_id, conn)
+            _delegate_remote(config, conn_id, conn, assume_yes=opts.assume_yes)
         else:
             _takeback_remote(config, state, conn_id, conn)
             state_changed = True
@@ -801,10 +873,16 @@ def _config_set(connection, opts):
         location = conn.get("location", "local")
         layers = "remote defaults" if location == "remote" else ("local" if (config.get("connectionDefaults") or {}).get("local") else "global") + " defaults"
         click.echo(f"✓ {conn_id} dropped its own schedule overrides — it follows {layers}")
-    if conn.get("location") == "remote" and opts.location is not True and any(value is not None for value in (
-        opts.times, opts.days, opts.mode, opts.enabled, opts.window_minutes, opts.api_key, opts.wake,
-        opts.catchup_minutes, opts.catchup_attempts, opts.degrade_after_nodes, opts.inherit_schedule,
-    )):
+    if persist_applied is not None:
+        state_word = "persist on the server (plaintext keys.json; survives its restarts)" if persist_applied == "on" \
+            else "no longer persist on the server (a restart while this machine is offline holds its warm-ups)"
+        click.echo(f"✓ {conn_id}'s key will {state_word}")
+    if conn.get("location") == "remote" and opts.location is not True and (
+        persist_applied is not None or any(value is not None for value in (
+            opts.times, opts.days, opts.mode, opts.enabled, opts.window_minutes, opts.api_key, opts.wake,
+            opts.catchup_minutes, opts.catchup_attempts, opts.degrade_after_nodes, opts.inherit_schedule,
+        ))
+    ):
         _push_edits_to_remote(config, state, conn_id)
     if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake, opts.start_hhmm, opts.inherit_schedule)):
         _refresh_wake_after_edit()
@@ -847,18 +925,25 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--remote/--local", "location", default=None, help="Delegate this connection to the remote server (--remote) or resume local scheduling (--local).")
 @click.option("--inherit-schedule", "inherit_schedule", is_flag=True, default=None, help="Drop this connection's own schedule overrides; it follows the location/global defaults instead.")
 @click.option("--duplicate", is_flag=True, default=False, help="Copy this connection under a fresh id (<id>-copy) instead of changing it; with --remote the copy is delegated and this one disabled.")
+@click.option("--persist-key", "persist_key", type=click.Choice(["on", "off"]), default=None,
+              help="Also store this connection's API key on the server's disk, surviving its restarts (asks to confirm; off is the default and recommended).")
+@click.option("--yes", "assume_yes", is_flag=True, default=False, help="Skip the persist-key confirmation prompts (for non-interactive shells).")
 def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
-               catchup_minutes, catchup_attempts, degrade_after_nodes, location, inherit_schedule, duplicate):
+               catchup_minutes, catchup_attempts, degrade_after_nodes, location, inherit_schedule, duplicate,
+               persist_key, assume_yes):
     """Show or change one connection's settings.
 
     With no flags, prints the current settings."""
-    _config_set(connection, _SetOptions(
+    options = _SetOptions(
         times=times, days=days, mode=mode, enabled=enabled, hide=hide, anchor_hhmm=anchor_hhmm,
         start_hhmm=start_hhmm, window_minutes=window_minutes, api_key=api_key, wake=wake,
         catchup_minutes=catchup_minutes, catchup_attempts=catchup_attempts,
         degrade_after_nodes=degrade_after_nodes, location=location, inherit_schedule=inherit_schedule,
         duplicate=duplicate or None,  # is_flag defaults to False; _SetOptions speaks None
-    ))
+        persist_key=persist_key,
+    )
+    options.assume_yes = assume_yes  # a modifier, not an edit: never counts in any()
+    _config_set(connection, options)
 
 
 def _settings_scope_block(config, scope):
@@ -1157,6 +1242,141 @@ def config_edit_command():
             click.echo(f"  {error}")
     else:
         click.echo("✓ config is valid")
+
+
+# --- backup/restore: everything a new machine needs to become this machine ---
+
+BACKUP_FORMAT = 1
+BACKUP_FILES = ("config.json", "secrets.json", "machine-id", "state.json")
+
+
+def _backup_members():
+    """(archive name, target path) for everything a restore needs, in this
+    machine's terms — honors the AWEWARM_* path overrides, so a backup (and
+    a restore) lands exactly where this awewarm reads and writes."""
+    return [
+        ("config.json", config_path()),
+        ("secrets.json", keystore.secrets_path()),
+        ("machine-id", config_path().parent / "machine-id"),
+        ("state.json", state_path()),
+    ]
+
+
+@config.command("backup")
+@click.option("--output", "output_path", default=None, metavar="PATH",
+              help="Where to write the archive (default: awewarm-backup-<timestamp>.tar.gz in the current directory).")
+def config_backup_command(output_path):
+    """Bundle config, secrets, machine-id, and state into one tar.gz.
+
+    \b
+      awewarm config backup                     # ./awewarm-backup-<ts>.tar.gz
+      awewarm config backup --output /safe/dir/awewarm.tar.gz
+
+    The archive carries your machine identity (machine-id), so a restore on
+    a new machine is the SAME machine to any hub — no new pairing slot. It
+    holds API keys and the remote token in plaintext (the file is 0600);
+    encrypt it yourself for transit (e.g. gpg)."""
+    members = [(name, Path(path)) for name, path in _backup_members() if Path(path).exists()]
+    if not any(name == "config.json" for name, _ in members):
+        die(f"no config to back up at {config_path()}\nfix: run: awewarm init")
+    target = Path(output_path).expanduser() if output_path else Path(
+        f"awewarm-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.tar.gz"
+    )
+    manifest = {
+        "format": BACKUP_FORMAT,
+        "createdAt": schedule.iso(datetime.now().astimezone()),
+        "awewarmVersion": __version__,
+        "files": sorted(name for name, _ in members),
+    }
+    try:
+        with tarfile.open(target, "w:gz") as archive:
+            for name, path in members:
+                archive.add(path, arcname=name)
+            info = tarfile.TarInfo("manifest.json")
+            payload = (json.dumps(manifest, indent=2) + "\n").encode()
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    except OSError as exc:
+        die(f"could not write {target}\n{exc}")
+    os.chmod(target, 0o600)
+    click.echo(f"✓ Backup written to {target} (0600)")
+    click.echo(f"  contents: {', '.join(name for name, _ in members)}")
+    click.echo("  ⚠ it contains your API keys and remote token in PLAINTEXT —")
+    click.echo("    keep it somewhere safe; encrypt it yourself for transit (e.g. gpg)")
+    click.echo(f"  restore it with: awewarm config restore {target}")
+
+
+@config.command("restore")
+@click.argument("backup_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--force", is_flag=True, default=False, help="Overwrite existing config/secrets/machine-id/state files.")
+@click.option("--yes", "assume_yes", is_flag=True, default=False, help="Accept the persisted-key notice without its prompt.")
+def config_restore_command(backup_path, force, assume_yes):
+    """Unpack a `config backup` archive onto this machine.
+
+    Refuses to touch existing files unless --force. If the backup contains
+    connections flagged --persist-key on, restoring re-establishes key
+    storage on their servers — that asks (default No; --yes accepts)."""
+    _config_restore(Path(backup_path), force, assume_yes)
+
+
+def _config_restore(backup_path, force, assume_yes):
+    try:
+        archive = tarfile.open(backup_path, "r:gz")
+    except (tarfile.TarError, OSError) as exc:
+        die(f"could not read {backup_path}\n{exc}")
+    with archive:
+        files = {member.name: member for member in archive.getmembers() if member.isfile()}
+        allowed = set(BACKUP_FILES) | {"manifest.json"}
+        unknown = sorted(set(files) - allowed)
+        if unknown:
+            die(f"unexpected file(s) in the archive: {', '.join(unknown)}\nthis does not look like an awewarm backup")
+        if "manifest.json" not in files:
+            die("no manifest inside — not an awewarm backup\nfix: make one with: awewarm config backup")
+        try:
+            manifest = json.loads(archive.extractfile(files["manifest.json"]).read().decode())
+        except ValueError:
+            die("the manifest is corrupt — remake the backup with: awewarm config backup")
+        if manifest.get("format") != BACKUP_FORMAT:
+            die(f"backup format {manifest.get('format')!r} is not what this awewarm understands ({BACKUP_FORMAT})")
+        existing = sorted(name for name, path in _backup_members() if Path(path).exists() and name in files)
+        if existing and not force:
+            die("refusing to overwrite: " + ", ".join(existing) + "\npass --force to overwrite them")
+        if "config.json" in files:
+            try:
+                data = json.loads(archive.extractfile(files["config.json"]).read().decode())
+            except ValueError:
+                die("the backup's config.json is corrupt — remake the backup")
+            flagged = []
+            for key, value in (data.get("connections") or {}).items():
+                if key in ("local", "remote"):  # v3 nests connections by location
+                    flagged.extend(
+                        cid for cid, conn in (value or {}).items()
+                        if (conn or {}).get("persistKey")
+                    )
+                elif (value or {}).get("persistKey"):  # a hand-flattened file
+                    flagged.append(key)
+            if flagged:
+                click.echo("this backup persists keys on servers for: " + ", ".join(flagged))
+                click.echo(PERSIST_KEY_ON_NOTICE)
+                if not assume_yes:
+                    if not _stdin_is_interactive():
+                        die("pass --yes to accept restoring the persisted-key connections")
+                    if not click.confirm("Restore with these keys stored on their servers?", default=False):
+                        die("aborted — nothing restored\n(the flag is per connection in the backup's config.json)")
+        for name, path in _backup_members():
+            if name not in files:
+                continue
+            payload = archive.extractfile(files[name]).read()
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(payload)
+            if name == "secrets.json":
+                os.chmod(path, 0o600)
+    restored = ", ".join(sorted(set(files) - {"manifest.json"}))
+    click.echo(f"✓ Restored {restored}")
+    if "machine-id" in files:
+        click.echo("  machine-id restored — a hub sees this machine as the same one (no new pairing slot)")
+    click.echo("  arm the background tick on a new machine: awewarm scheduler install")
+    click.echo("  then verify with: awewarm status")
 
 
 @cli.command("status")

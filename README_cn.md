@@ -201,7 +201,18 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
 配对之后，两种形态在笔记本侧完全一致：同样的委托命令、同样的 `status --remote` 视图、同样的 `--local` 收回。
 
-两种形态的服务器**磁盘上都不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
+两种形态的服务器**磁盘上默认不保存任何秘密**：配对 token 和 API key 始终留在本地 `secrets.json`，需要时经网络推送；服务器只放在内存里。服务器重启后，本机在下次在线时自动重新认领并补推。缺 key 期间到期的时间点是*挂起*而非失败 —— key 回来后仍在补跑窗口内照常触发（和机器睡眠醒来的语义完全一致），过窗才记为 skip。
+
+如果你的机器长期不在线，这个"重启依赖"会让你错过保温。可以按连接选择让服务器把 key 落盘 —— **不建议开启**（key 以明文存在服务器磁盘上，0600 权限，能读那台盒子的人就能读它），且每一个开启它的命令都会先弹确认：
+
+```bash
+awewarm config set <id> --persist-key on    # 会先询问；直接回车即拒绝
+awewarm config set <id> --persist-key off   # 同样会询问：服务器端随即删除，且此后
+                                            #   服务器重启时若本机离线，保温重新回到
+                                            #   "挂起直到本机回来"的状态
+```
+
+hub 上还需运维者先允许（`awewarm-hub config --persist-keys on`，默认关闭）。`awewarm status` 会标明每条连接在哪一侧（`key: server RAM only` / `key: stored on the server`）。
 
 ### 搭建服务器（一次性）
 
@@ -263,11 +274,21 @@ awewarm status --remote                           # 只看委托连接 + 服务�
 awewarm status --local                            # 只看本地调度的连接
 ```
 
+要换新机器？一条命令带走全部 —— 连接、密钥、调度状态，以及让 hub 把新机器认作同一台机器的 `machine-id`（不占新的配对名额）：
+
+```bash
+awewarm config backup                             # ./awewarm-backup-<ts>.tar.gz（0600，内含明文密钥）
+awewarm config backup --output /safe/path.tar.gz
+awewarm config restore /safe/path.tar.gz          # 在新机器上执行；目标已有文件时需 --force
+```
+
+备份包里的 API key 和配对 token 是明文 —— 存放妥当，传输自行加密（如 gpg）。若包内有 `--persist-key on` 的连接，restore 会先确认才恢复它们的落盘存储。之后在新机器上执行 `awewarm scheduler install`，用 `awewarm status` 验证。
+
 `--remote` 只有在服务器确认接收后才落盘，连接绝不会陷入"两边都没人 tick"的状态。`--duplicate` 把连接复制成新 id（`glm-copy`）——API key 在新 id 下另存一份、运行状态从零开始；配合 `--remote` 时副本被委托、原连接自动停用，同一份订阅绝不会被双份保温。已委托连接的一切照旧：`config set` 修改调度后自动推送（服务器不可达时改动留在本地并标记待推送，之后 `awewarm remote push` 对账）；`awewarm run glm` 在服务器上执行并回报结果，且和本地一致——一次成功的手动 run 同样会解除 auto-disabled 阶梯；`awewarm config set glm --local` 收回连接（先拉回服务器状态，本地调度无缝接续）。`awewarm remote disconnect` 忘掉服务器并释放其 claim（其他机器可以立即配对），仍有委托连接时拒绝执行；配对 token 保留在 `secrets.json` 里，之后重连即刻完成，即使服务器还留着旧 claim 也不受影响。fixed 时间按委托方机器的时区运行（时区随推送传递；本机时区没有 IANA 名的机器（如 Windows）会推送固定的 `UTC±HH:MM` 偏移）；从不睡觉的服务器谈不上 wake。
 
 ## 安全性
 
-本机模式:API key 永不离开你的机器(`secrets.json`,0600)。委托 = 把 key 交给那台服务器的内存 —— 独享是你自己的机器;共享 hub 则意味着信任它的运维者(和 root)。其余常规泄漏路径都已设计堵死:服务器磁盘上没有 secret、日志里没有、API 读不回、租户之间互相不可见。建议委托一把专用的、可随时撤销的 key —— 完整说明见 [hub README 的「安全性」一节](https://github.com/wehuman01/awewarm-hub/blob/main/README_cn.md#安全性)。
+本机模式:API key 永不离开你的机器(`secrets.json`,0600)。委托 = 把 key 交给那台服务器的内存 —— 独享是你自己的机器;共享 hub 则意味着信任它的运维者(和 root)。其余常规泄漏路径都已设计堵死:服务器磁盘上没有 secret(唯一例外是用户主动选择的 `--persist-key`:明文 `keys.json`,0600,不建议开启,且每次开启都要确认)、日志里没有、API 读不回、租户之间互相不可见。建议委托一把专用的、可随时撤销的 key —— 完整说明见 [hub README 的「安全性」一节](https://github.com/wehuman01/awewarm-hub/blob/main/README_cn.md#安全性)。
 
 ## 配置
 

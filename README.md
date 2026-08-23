@@ -201,7 +201,18 @@ The two flavors at a glance:
 
 Once paired, the two flavors are identical from your laptop: the same delegation commands, the same `status --remote` view, the same takeback with `--local`.
 
-Both hold **no secrets on disk**. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
+Both hold **no secrets on disk** by default. The pairing token and your API keys stay in the local `secrets.json` and are pushed over the wire; the server keeps them in RAM only. Restart it and the local machine re-claims and re-pushes automatically the next time it is online. A slot that came due while its key was missing is *held*, not failed — it still fires inside the catch-up window once the key returns, exactly like a machine that was asleep; past the window it is recorded as skipped.
+
+If your machine is rarely online, that restart dependency may cost you warm-ups. Per connection you may opt into server-side key storage instead — **not recommended** (the key lands in plaintext on the server's disk, 0600, readable by whoever can read that box), and gated behind a confirmation on every command that would start it:
+
+```bash
+awewarm config set <id> --persist-key on    # asks; decline with a plain Enter
+awewarm config set <id> --persist-key off   # asks too: the server deletes it, and a
+                                            #   restart while this machine is offline
+                                            #   holds warm-ups again until you're back
+```
+
+On a hub the operator must also allow it (`awewarm-hub config --persist-keys on`, default off). `awewarm status` shows which side of the line each connection is on (`key: server RAM only` / `key: stored on the server`).
 
 ### Set up the server (once)
 
@@ -263,11 +274,21 @@ awewarm status --remote                           # delegated only, plus the ser
 awewarm status --local                            # locally scheduled connections only
 ```
 
+Moving to a new machine? One command carries everything — connections, keys, schedule state, and the `machine-id` that makes the hub treat the new box as the same machine (no new pairing slot):
+
+```bash
+awewarm config backup                             # ./awewarm-backup-<ts>.tar.gz (0600, plaintext secrets inside)
+awewarm config backup --output /safe/path.tar.gz
+awewarm config restore /safe/path.tar.gz          # on the new machine; --force overwrites, refuses collision otherwise
+```
+
+The archive holds your API keys and pairing token in plaintext — store it somewhere safe and encrypt it yourself for transit (e.g. gpg). If it contains `--persist-key on` connections, restore asks before re-establishing key storage on their servers. Afterwards run `awewarm scheduler install` on the new machine and verify with `awewarm status`.
+
 `--remote` only lands after the server accepted the push, so a connection is never left with nobody ticking it. `--duplicate` copies a connection under a fresh id (`glm-copy`) — the API key is re-stored under the new id, runtime state starts blank — and with `--remote` the copy is delegated and the original disabled, so one subscription is never ticked twice. Everything keeps working on delegated connections: `config set` pushes schedule edits automatically (offline edits stay local and pending; `awewarm remote push` reconciles later), `awewarm run glm` fires on the server and reports back — and, same as locally, a successful manual run clears an auto-disabled ladder — and `awewarm config set glm --local` takes a connection back — server state is pulled first so local scheduling resumes where the server left off. `awewarm remote disconnect` refuses while anything is still delegated, then forgets the server and releases its claim (another machine can pair immediately); the pairing token stays in `secrets.json`, so reconnecting later is instant even against a server that kept the old claim. Fixed times run in the delegating machine's timezone (it travels with the push; machines whose zone has no IANA name, e.g. Windows, push a fixed `UTC±HH:MM` offset instead); wake-from-sleep does not apply on a server that never sleeps.
 
 ## Security
 
-Local mode: your API keys never leave your machine (`secrets.json`, 0600). Delegating hands a key to that server's RAM — solo is your own box; a hub means trusting its operator (and root). Every other ordinary path is closed by design: no secrets on the server's disk, none in its logs, none readable back over the API, tenants invisible to one another. Delegate a dedicated, revocable key — and see the [hub README → Security](https://github.com/wehuman01/awewarm-hub#security) for the full picture.
+Local mode: your API keys never leave your machine (`secrets.json`, 0600). Delegating hands a key to that server's RAM — solo is your own box; a hub means trusting its operator (and root). Every other ordinary path is closed by design: no secrets on the server's disk (the one exception is the opt-in `--persist-key`, plaintext `keys.json` 0600, discouraged, confirmed at every enabling command), none in its logs, none readable back over the API, tenants invisible to one another. Delegate a dedicated, revocable key — and see the [hub README → Security](https://github.com/wehuman01/awewarm-hub#security) for the full picture.
 
 ## Config
 

@@ -99,7 +99,7 @@ class SurfaceTests(IsolatedTestCase):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
-        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "edit", "path", "remove", "set", "settings", "show", "template"])
+        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "backup", "edit", "path", "remove", "restore", "set", "settings", "show", "template"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push"])
 
