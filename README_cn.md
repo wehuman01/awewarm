@@ -339,7 +339,9 @@ awewarm run <id> [--reset-due]        # 立即触发单个连接（默认不动�
 awewarm scheduler install [--wake] / uninstall # 后台调度器（launchd / 任务计划程序 / systemd）；--wake 额外启用合盖睡眠 RTC 唤醒
 awewarm serve [--data-dir /data] [--token awt_...]  # 运行常驻服务器，调度已委托的连接
                                        #   一台服务器、多个受邀用户：独立包 awewarm-hub
-awewarm remote connect <url>           # 与服务器配对（token 本地生成并保存）
+awewarm remote connect <url> [--invite awi_...|--token awt_...]
+                                       #   与服务器配对：单用户 serve 生成并保存 token；
+                                       #   hub 用 --invite awi_...（或已保存的 --token）
 awewarm remote push [<id>]             # 向服务器重新同步委托连接（配置 + 密钥）
 awewarm remote disconnect              # 忘掉服务器并释放 claim（仍有委托连接时拒绝）
 awewarm self-update [--check]         # 升级到最新 PyPI 版本

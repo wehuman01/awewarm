@@ -339,7 +339,9 @@ awewarm run <id> [--reset-due]        # fire one connection now (schedule untouc
 awewarm scheduler install [--wake] / uninstall # background scheduler (launchd / Task Scheduler / systemd); --wake also arms RTC wake-from-sleep
 awewarm serve [--data-dir /data] [--token awt_...]  # run the always-on server that ticks delegated connections
                                        #   one server, many invited users: the separate awewarm-hub package
-awewarm remote connect <url>           # pair with a server (token generated + stored locally)
+awewarm remote connect <url> [--invite awi_...|--token awt_...]
+                                       #   pair with a server: solo serve generates + stores a token;
+                                       #   a hub takes --invite awi_... (or a saved --token)
 awewarm remote push [<id>]             # re-sync delegated connections to the server (config + keys)
 awewarm remote disconnect              # forget the server + release its claim (refuses while delegations exist)
 awewarm self-update [--check]         # upgrade to the latest PyPI release
