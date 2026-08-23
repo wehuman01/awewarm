@@ -36,6 +36,14 @@ hub 用**你的 API key** 发送保温请求，因此 key 的明文会经过服�
 pip3 install awewarm
 ```
 
+在 Claude Code、Codex 或其他编程 agent 里？让 agent 代劳——对它说：
+
+```text
+阅读 https://github.com/wehuman01/awewarm/blob/main/README.ai.md 并按其指引安装和配置 awewarm。
+```
+
+这会装好 CLI **和 `awewarm` skill**——之后你直接开口就能操作 awewarm（"下次保温是什么时候？""把 glm 委托给社区 hub"）。本指南里的只读步骤也都可以由 agent 代跑；只有下面交互式的 `config add` 留在你自己的终端里完成。
+
 ### 2. 添加第一个连接
 
 `awewarm config add` 会引导你完成：

@@ -36,6 +36,14 @@ Python ≥ 3.9:
 pip3 install awewarm
 ```
 
+Working in Claude Code, Codex, or another coding agent? Let it do the setup — tell it:
+
+```text
+Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm.
+```
+
+That installs the CLI **and the `awewarm` skill** — afterwards you operate awewarm by just asking ("when is the next warm-up?", "delegate glm to the community hub"). The agent also runs every read-only step of this guide for you; only the interactive `config add` below stays in your terminal.
+
 ### 2. Add your first connection
 
 `awewarm config add` walks you through it:
