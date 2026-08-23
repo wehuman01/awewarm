@@ -36,6 +36,7 @@ alongside; it is not part of this spec.
 | Who may enable | Per-connection user opt-in AND a hub operator global switch | The key's owner decides per connection; the disk's owner decides at all. |
 | Defaults | OFF at every layer: client flag off, hub switch off | Owner directive 2026-08-23. The feature is a last resort, not a recommendation; the previous "hub default allow" choice was overruled. |
 | UX stance | Actively discourage | Client turns it on only behind a confirmation gate (default No) that states the consequence; hub `--persist-keys on` prints a warning; docs frame it as "only if your machine is rarely online and you accept the key living on the server's disk". |
+| Confirmation boundary | Gate every user action that starts persistence; never gate background maintenance | The confirm fires at the four entry points below. The background sync / re-key / tick (up to every 30 minutes) maintains an already-confirmed choice and never prompts — a recurring prompt would train blind confirming. `remote connect` pushes no keys and does not prompt either. |
 | Hub switch off | Purge every tenant's keys.json immediately | "No keys on my disk" must be true the moment it is said. Clients re-push keys to RAM on their next sync, so no warm-up is lost. |
 | Revoke / delete invite / v1→v2 migration | Purge that tenant's keys.json; the workspace otherwise stays as today | A revoked tenant's keys must not linger on disk forever — a leak surface this feature creates, closed at every path that removes a tenant's authorization. |
 | `/v1/keys` protocol | Unchanged | Persistence is server-side state declared at push time; re-key writes through for the already-persisted set. The flat `{id: key}` body must survive because old servers validate every top-level value as a string — any added top-level field would 400. |
@@ -72,12 +73,27 @@ alongside; it is not part of this spec.
 - `conn["persistKey"] = true`, set via `awewarm config set <id>
   --persist-key on|off` (subscription connections only; a local connection
   errors with a hint).
-- Turning **on** requires `click.confirm` (default No) stating: the key will
-  live in plaintext on the server's disk (0600, readable by the operator and
-  anyone with disk access) — only accept if the machine is rarely online.
-  Non-interactive shells must pass the same command's `--yes` flag or it
-  dies with that same text. Turning **off** needs no confirmation and
-  removes the key from the server's disk on the spot.
+- **Confirmation gates** — every user action that would start persistence
+  asks first (`click.confirm`, default No; non-interactive shells must pass
+  the same command's `--yes` or it dies with the same text). The prompt
+  states: the key will live in plaintext on the server's disk (0600,
+  readable by the operator and anyone with disk access) — only accept if
+  the machine is rarely online. Four entry points:
+  1. `config set <id> --persist-key on` — decline leaves the flag off.
+  2. `config set <id> --remote` on a connection that already carries
+     `persistKey: true` — decline still delegates, but downgrades that
+     connection to RAM-only (flag cleared, push omits `persistKey`) and
+     says so. Implemented as one gate inside `_delegate_remote`, so
+  3. `config set <id> --duplicate --remote` (the copy inherits the flag)
+     gets the same prompt and decline behavior for the copy.
+  4. `config restore` when the archive's config.json contains
+     persistKey-on connections — the prompt lists them by id; decline
+     aborts the restore entirely (a migration moment, not a silent
+     downgrade); re-run with `--yes` to accept.
+  Turning **off** needs no confirmation and removes the key from the
+  server's disk on the spot.
+- The background sync / re-key / tick never prompts: it maintains choices
+  already confirmed at one of the four gates above.
 - Both toggles trigger an immediate forced re-push (existing edit-push
   path); delegation (`--remote`) carries the flag at handover.
 - `awewarm status`: connection line shows `key: server (persisted)` or
@@ -125,8 +141,12 @@ additive (no renames), so the pin holds.
 - WarmServer: persist on push (file exists, mode 0600); survives restart
   (fresh WarmServer over the dir has the key); flag-off push removes;
   takeback purges; re-key write-through updates the persisted copy only.
-- Client: push bodies carry `persistKey`; on-toggle confirm (Yes/No/
-  non-tty-`--yes`); off-toggle removes server-side; status labels.
+- Client: push bodies carry `persistKey`; confirm gates at all four entry
+  points (toggle on, delegate a flagged connection, duplicate --remote,
+  restore with flagged connections) with their decline behaviors
+  (no-op / RAM-only downgrade / RAM-only downgrade on the copy / abort);
+  `--yes` non-tty escape; off-toggle removes server-side; status labels;
+  background sync never prompts.
 - Hub: default off → 403 with guidance; `config --persist-keys on` → push
   persists; switch off purges all tenants; revoke / delete purge the
   tenant's keys.json; live adoption while serve runs.
