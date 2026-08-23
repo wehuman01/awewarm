@@ -72,18 +72,14 @@ first.
   logs never contain API keys or auth headers.
 - **Remote delegation is single-owner**: a connection is ticked by exactly one
   place — locally, or (subscription connections only, `location: "remote"`)
-  by the paired `awewarm serve`. The server holds no secrets on disk: the
+  by the paired server (`awewarm serve` here, `awewarm-hub serve` in the
+  separate hub package). The server holds no secrets on disk: the
   claim token and API keys live in local `secrets.json`, are pushed over TLS,
   and sit in server RAM only; after a restart the local side re-claims and
   re-keys on contact, and key-missing activations are held (not failed) until
   catch-up decides. The `--remote` flag only lands after the server accepted
   the push. Never introduce a state where both sides (or neither) tick a
   connection.
-- **Hub registry mutations are cross-process transactions**: the resident
-  `serve --hub` process and one-shot `hub invite/revoke` commands share a lock
-  under the server data dir. Every registry mutation refreshes from disk,
-  changes memory, and atomically saves while holding that lock; otherwise a
-  stale usage write could revive a revoked tenant.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.
 - **Update checks never run on scheduler ticks**: `update_check.check_async`

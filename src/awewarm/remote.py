@@ -1,4 +1,5 @@
-"""Client half of remote delegation: talk to an `awewarm serve` process.
+"""Client half of remote delegation: talk to an `awewarm serve` or
+`awewarm-hub serve` process.
 
 The local machine owns every secret: the server token and the delegated API
 keys live in local secrets.json and are pushed over the wire (TLS via a

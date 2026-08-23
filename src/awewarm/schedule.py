@@ -111,8 +111,8 @@ def iso(moment):
 def node_for(action, now):
     """Scheduled node an activate action belongs to; manual fires pass None.
 
-    Shared by the local tick and `awewarm serve` so both count catch-up and
-    ladder nodes identically.
+    Shared by the local tick and the serve engines (`awewarm serve`,
+    `awewarm-hub serve`) so all count catch-up and ladder nodes identically.
     """
     reason = action.get("reason")
     if reason == "fixed":
@@ -316,8 +316,9 @@ def plan_actions(connection, conn_state, now):
 def dispatch_actions(connection, conn_state, now, activate):
     """Run one connection's planned actions through the shared bookkeeping.
 
-    Both tick engines — the local `awewarm tick` and `awewarm serve` — route
-    through this so skip bookkeeping, node closure, and pruning stay identical;
+    Every tick engine — the local `awewarm tick`, `awewarm serve`, and
+    `awewarm-hub serve` — routes through this so skip bookkeeping, node
+    closure, and pruning stay identical;
     only the I/O differs. activate(action, node) sends the real request and
     returns its {"ok", "detail"} dict, or None when the attempt was held
     (nothing sent, no state recorded — the server's key-missing case).

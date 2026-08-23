@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import click
 
 from . import __version__, discover, display_version, install, keystore, remote, running_from_checkout, schedule, transport
+from .clickext import WrapGroup
 from .flows import _add_account_flow, _config_add, _slots_proc
 from .locking import LockBusy, local_process_lock
 from .status import _show_status
@@ -154,7 +155,7 @@ def _tick():
         if not conn.get("enabled", True):
             continue
         if conn.get("location") == "remote":
-            continue  # an awewarm serve process owns its schedule now
+            continue  # the remote server owns its schedule now
         errors = connection_errors(conn, conn_id)
         if errors:
             log_event(f"skipping {conn_id}: {errors[0]}")
@@ -535,7 +536,7 @@ def _version_callback(ctx, _param, value):
     ctx.exit()
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(cls=WrapGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("-v", "--version", is_flag=True, expose_value=False, is_eager=True,
               callback=_version_callback, help="Show the version and exit.")
 def cli():
@@ -589,7 +590,7 @@ Detects Claude Code / Codex installs and logins."""
             click.echo(line)
 
 
-@cli.group()
+@cli.group(cls=WrapGroup)
 def config():
     """Manage connections: add, set, remove, show, edit."""
 
@@ -1285,12 +1286,12 @@ def _scheduler_install(wake=False):
     ]
     if not local:
         # A machine that delegated everything (or has no connections yet) has
-        # nothing for a local scheduler to tick — the server's serve does that.
+        # nothing for a local scheduler to tick — the remote server does that.
         # Ask before --wake's sudo prompt so the gate is always seen first.
         notice = (
             "no connections for a local scheduler to tick — everything is\n"
-            "delegated to the server (or none are configured); the server's\n"
-            "`awewarm serve` ticks delegated connections itself"
+            "delegated to the server (or none are configured); the remote\n"
+            "server ticks delegated connections itself"
         )
         if not _stdin_is_interactive():
             click.echo(f"note: {notice}")
@@ -1345,7 +1346,7 @@ def _scheduler_uninstall():
     _legacy_pmset_cleanup()
 
 
-@cli.group()
+@cli.group(cls=WrapGroup)
 def scheduler():
     """Install/uninstall the background scheduler.
 
@@ -1369,13 +1370,15 @@ def scheduler_uninstall():
     _scheduler_uninstall()
 
 
-@cli.group("remote")
+@cli.group("remote", cls=WrapGroup)
 def remote_group():
     """Manage the always-on server that ticks delegated connections.
 
-    The server runs `awewarm serve` on any 24/7 machine; this machine owns
-    every secret and pushes keys over the wire (the server keeps them in RAM
-    only). Delegate per connection with: awewarm config set <id> --remote."""
+    The server runs `awewarm serve` (your own box) or `awewarm-hub serve`
+    (a shared hub, paired by invite) on any 24/7 machine; this machine
+    owns every secret and pushes keys over the wire (the server keeps
+    them in RAM only). Delegate per connection with: awewarm config set
+    <id> --remote."""
 
 
 def _plaintext_http_host(url):
@@ -1475,10 +1478,12 @@ def _remote_connect_hub(url, token_opt, invite_opt, health):
 
 @remote_group.command("connect")
 @click.argument("url")
-@click.option("--token", "token_opt", default=None, help="Pair with this token: claim a `serve --token` server, or reuse a saved hub token.")
-@click.option("--invite", "invite_opt", default=None, help="One-time invite code when the server runs `serve --hub`.")
+@click.option("--token", "token_opt", default=None, help="Pair with this token: claim an `awewarm serve --token` server, or reuse a saved hub token.")
+@click.option("--invite", "invite_opt", default=None, help="One-time invite code when the server runs `awewarm-hub serve`.")
 def remote_connect_command(url, token_opt, invite_opt):
-    """Pair with an `awewarm serve` process (URL + token stored locally)."""
+    """Pair with a server: `awewarm serve` (your own) or `awewarm-hub serve`.
+
+    A shared hub pairs with --invite; the URL and token are stored locally."""
     _remote_connect(url, token_opt, invite_opt)
 
 

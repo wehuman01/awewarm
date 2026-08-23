@@ -896,7 +896,7 @@ def remote_errors(remote):
     errors = []
     url = remote.get("url")
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-        errors.append("remote: url must be the http(s) address of an `awewarm serve` process")
+        errors.append("remote: url must be the http(s) address of an `awewarm serve` or `awewarm-hub serve` process")
     token_ref = remote.get("tokenRef")
     if not isinstance(token_ref, str) or not token_ref.startswith("file:"):
         errors.append("remote: tokenRef must be a file: secret reference")

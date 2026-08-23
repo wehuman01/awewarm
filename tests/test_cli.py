@@ -52,7 +52,12 @@ def write_config(conn=None, conn_id="claude-code-main"):
 def command_names(help_output):
     lines = help_output.splitlines()
     start = lines.index("Commands:")
-    return [line.split()[0] for line in lines[start + 1:] if line.strip()]
+    # command rows sit at a 2-space indent; wrapped descriptions indent deeper
+    return [
+        line.split()[0]
+        for line in lines[start + 1:]
+        if line.startswith("  ") and not line.startswith("   ")
+    ]
 
 
 def claude_finding(**overrides):
