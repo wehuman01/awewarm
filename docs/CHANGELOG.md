@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Windows was broken at import since the RTC wake layer landed in v0.4.3: `install.py` imported the Unix-only `pwd` module at top level, so every command there died with `ModuleNotFoundError` before doing anything (CI's Windows legs have been red since). The import now happens inside the macOS-only `install_wake_grant`, and a regression test imports the CLI in a subprocess with `pwd` blocked so a top-level import cannot slip back in.
+
 `--help` command listings now wrap long one-liners instead of truncating them with `...`, so a narrow terminal still reads every description in full (Click truncates by default; the new `awewarm.clickext.WrapGroup` hands the formatter the whole first help paragraph, which it wraps). Wording caught up with the hub split while at it: the `remote` group and `remote connect` name both servers (`awewarm serve` for your own box, `awewarm-hub serve` for a shared hub), `connect --invite` points at `awewarm-hub serve` instead of the removed `serve --hub` spelling, and the config validation error for `remote.url` accepts either server's name.
 
 ## v0.5.6

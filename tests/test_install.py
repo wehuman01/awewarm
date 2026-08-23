@@ -1,5 +1,7 @@
 import os
 import plistlib
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -575,6 +577,26 @@ class SelfHealCalendarTests(IsolatedTestCase):
         self._write_plist([])  # stale job triggers the heal attempt
         with mock.patch("awewarm.install.install_scheduler", side_effect=SystemExit("awewarm: boom")):
             install._maybe_self_heal_job(self._fixed_config())  # must not raise
+
+
+class WindowsImportTests(unittest.TestCase):
+    """Windows has no pwd module; importing it at module top level broke
+    every awewarm command there (CI regression, fixed by importing it inside
+    the macOS-only install_wake_grant)."""
+
+    def test_imports_survive_with_pwd_blocked(self):
+        src = os.path.abspath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "src")
+        )
+        code = (
+            "import sys; sys.path.insert(0, %r); "
+            "sys.modules['pwd'] = None; import awewarm.cli" % src
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

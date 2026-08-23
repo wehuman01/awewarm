@@ -24,7 +24,6 @@ import csv
 import io
 import os
 import plistlib
-import pwd
 import re
 import shutil
 import subprocess
@@ -674,6 +673,9 @@ def install_wake_grant():
             "the wake grant supports macOS only\n"
             "Windows arms wake tasks without a grant; Linux cannot wake a suspended machine"
         )
+    # Unix-only module; imported here, not at the top, so a Windows
+    # interpreter can import this module (there is no pwd on Windows).
+    import pwd
     user = pwd.getpwuid(os.getuid()).pw_name
     handle = tempfile.NamedTemporaryFile("w", prefix="awewarm-sudoers-", delete=False)
     staged = Path(handle.name)
