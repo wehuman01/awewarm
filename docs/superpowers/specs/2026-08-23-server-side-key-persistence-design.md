@@ -36,7 +36,7 @@ alongside; it is not part of this spec.
 | Who may enable | Per-connection user opt-in AND a hub operator global switch | The key's owner decides per connection; the disk's owner decides at all. |
 | Defaults | OFF at every layer: client flag off, hub switch off | Owner directive 2026-08-23. The feature is a last resort, not a recommendation; the previous "hub default allow" choice was overruled. |
 | UX stance | Actively discourage | Client turns it on only behind a confirmation gate (default No) that states the consequence; hub `--persist-keys on` prints a warning; docs frame it as "only if your machine is rarely online and you accept the key living on the server's disk". |
-| Confirmation boundary | Gate every user action that starts persistence; never gate background maintenance | The confirm fires at the four entry points below. The background sync / re-key / tick (up to every 30 minutes) maintains an already-confirmed choice and never prompts — a recurring prompt would train blind confirming. `remote connect` pushes no keys and does not prompt either. |
+| Confirmation boundary | Gate every user action that changes persistence state — turning it on (default No) and turning it off (default Yes, but informed); never gate background maintenance | The confirm fires at the four on-entry points below plus `--persist-key off`, whose prompt states both consequences: the hub deletes the key from disk, and if the server restarts while this machine is offline the connection's warm-ups hold (then skip past the catch-up window) until the machine returns. The background sync / re-key / tick (up to every 30 minutes) maintains an already-confirmed choice and never prompts — a recurring prompt would train blind confirming. `remote connect` pushes no keys and does not prompt either. |
 | Hub switch off | Purge every tenant's keys.json immediately | "No keys on my disk" must be true the moment it is said. Clients re-push keys to RAM on their next sync, so no warm-up is lost. |
 | Revoke / delete invite / v1→v2 migration | Purge that tenant's keys.json; the workspace otherwise stays as today | A revoked tenant's keys must not linger on disk forever — a leak surface this feature creates, closed at every path that removes a tenant's authorization. |
 | `/v1/keys` protocol | Unchanged | Persistence is server-side state declared at push time; re-key writes through for the already-persisted set. The flat `{id: key}` body must survive because old servers validate every top-level value as a string — any added top-level field would 400. |
@@ -90,8 +90,15 @@ alongside; it is not part of this spec.
      persistKey-on connections — the prompt lists them by id; decline
      aborts the restore entirely (a migration moment, not a silent
      downgrade); re-run with `--yes` to accept.
-  Turning **off** needs no confirmation and removes the key from the
-  server's disk on the spot.
+  Turning **off** (`config set <id> --persist-key off`) confirms too —
+  default Yes (off is the recommended state; friction points the other
+  way), and the prompt states both consequences: the server deletes the
+  key from its disk immediately (the key itself stays in local
+  secrets.json and server RAM), and from then on a server restart while
+  this machine is offline holds the connection's warm-ups — skipped past
+  the 30-minute catch-up window — until the machine comes back and
+  re-pushes. Decline is a no-op (flag stays on). Non-interactive shells
+  pass `--yes` as with the on-gates.
 - The background sync / re-key / tick never prompts: it maintains choices
   already confirmed at one of the four gates above.
 - Both toggles trigger an immediate forced re-push (existing edit-push
@@ -145,8 +152,10 @@ additive (no renames), so the pin holds.
   points (toggle on, delegate a flagged connection, duplicate --remote,
   restore with flagged connections) with their decline behaviors
   (no-op / RAM-only downgrade / RAM-only downgrade on the copy / abort);
-  `--yes` non-tty escape; off-toggle removes server-side; status labels;
-  background sync never prompts.
+  the off-gate (default Yes, states hub-side deletion and the
+  restart-while-offline hold risk, decline no-op); `--yes` non-tty escape;
+  off-toggle removes server-side; status labels; background sync never
+  prompts.
 - Hub: default off → 403 with guidance; `config --persist-keys on` → push
   persists; switch off purges all tenants; revoke / delete purge the
   tenant's keys.json; live adoption while serve runs.
