@@ -6,16 +6,25 @@ also the primary test seam.
 
 On-disk format (v3) groups connections under `connections.local` and
 `connections.remote`, each carrying a `settings` block with the tuning knobs
-and a `schedule` block. The top-level `settings` block is the global layer.
-In memory the shape differs: `connections` is flat (conn_id → connection)
-and the location settings layers ride under `connectionDefaults`.
+and a `schedule` block; the top-level `settings` block is the global layer.
+The split is semantic: the schedule block answers when a connection fires
+(mode, times, days, and the interval clock — windowMinutes included); the
+knobs answer how an activation behaves (request content, failure policy,
+machine wake — wakeWhenAsleep). In memory the shape differs: `connections`
+is flat (conn_id → connection) and the location settings layers ride under
+`connectionDefaults`.
 A connection resolves each field own-overrides-first, then its location's
 defaults, then the global block; knobs follow that chain everywhere, while a
 schedule inherited from the global block never reaches a delegated (`remote`)
 connection — the global schedule describes this machine's day, and a server
-must only fire times written for remote (or the connection's own). An inherited
-interval mode never breaks a connection whose window is unverified (it stays
-fixed); an explicit own override surfaces the gating error instead. load_config
+must only fire times written for remote (or the connection's own). One field
+crosses that line: windowMinutes is a plan fact, not a machine-day fact, so
+the global block's window duration reaches delegated connections too. An
+inherited interval mode never breaks a connection whose window is unverified
+(it stays fixed); an explicit own override surfaces the gating error instead.
+The earlier spellings of the two swapped fields (a knob-position
+windowMinutes, a schedule-position wakeWhenAsleep) fold into the current
+positions on load and are never written back. load_config
 expands everything into the richer runtime shape the rest of the code reads
 (resolved schedule, catch-up, degrade knobs); save_config compacts back,
 dropping any override that merely repeats what the connection would inherit
@@ -73,18 +82,23 @@ DEFAULT_SKIP_IF_ACTIVATED_MINUTES = 30
 DEFAULT_FIXED_AT = "06:35"
 DEFAULT_HISTORY_LIMIT = 20
 
-# Settings every block may carry: knobs plus the schedule fields (v3 moved
-# the per-connection schedule into its settings block, so all three layers
-# speak the same shape).
-KNOB_KEYS = ("catchupMinutes", "catchupAttempts", "degradeAfterNodes")
+# Settings every block may carry, split by semantics: the schedule block
+# answers "when does a connection fire" (mode, times, days, and the interval
+# clock — windowMinutes included); the knobs answer "how an activation
+# behaves" (request content, failure policy, machine wake). A new field
+# joins the group its semantics belong to, and its disk position and merge
+# chain move together. windowMinutes is the one schedule field without a
+# code default: absent everywhere means the window is unknown, which keeps
+# interval renewal locked for that connection.
+KNOB_KEYS = ("catchupMinutes", "catchupAttempts", "degradeAfterNodes", "wakeWhenAsleep", "prompt", "maxTokens")
 SCHEDULE_SETTINGS_KEYS = (
     "mode",
     "times",
     "days",
     "skipIfActivatedMinutes",
+    "windowMinutes",
     "graceSeconds",
     "jitterSeconds",
-    "wakeWhenAsleep",
 )
 
 SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -106,17 +120,28 @@ CONFIG_TEMPLATE = """\
     "catchupMinutes": 30,
     "catchupAttempts": 5,
     "degradeAfterNodes": 3,
-    "schedule": {"times": ["06:35"], "days": "weekday"}
+    "wakeWhenAsleep": false,
+    "prompt": "Reply with exactly: ok",
+    "maxTokens": 4,
+    "schedule": {
+      "mode": "fixed",
+      "times": ["06:35"],
+      "days": "weekday",
+      "skipIfActivatedMinutes": 30,
+      "windowMinutes": 300,
+      "graceSeconds": 75,
+      "jitterSeconds": 30
+    }
   },
   "connections": {
     "local": {
       "settings": {
-        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+        "wakeWhenAsleep": true,
+        "schedule": {"times": ["06:35"], "days": "weekday"}
       },
       "claude-code": {
         "label": "Claude Code",
         "cli": "/usr/local/bin/claude",
-        "windowMinutes": 300,
         "settings": {"schedule": {"times": ["06:35"]}}
       }
     },
@@ -129,8 +154,7 @@ CONFIG_TEMPLATE = """\
         "url": "https://open.bigmodel.cn/api/anthropic",
         "protocol": "anthropic-messages",
         "apiKey": "file:glm",
-        "model": "GLM-5-Turbo",
-        "windowMinutes": 300
+        "model": "GLM-5-Turbo"
       }
     }
   }
@@ -194,15 +218,26 @@ def empty_config():
 
 
 def default_settings():
+    # wakeWhenAsleep and prompt/maxTokens materialize into every saved global
+    # block (and so into the template), which documents them; windowMinutes
+    # stays absent until a layer sets it — a default here would silently
+    # confirm every window.
     return {
         "catchupAttempts": DEFAULT_CATCHUP_ATTEMPTS,
         "catchupMinutes": DEFAULT_CATCHUP_MINUTES,
         "degradeAfterNodes": DEFAULT_DEGRADE_AFTER_NODES,
+        "wakeWhenAsleep": False,
+        "prompt": DEFAULT_PROMPT,
+        "maxTokens": DEFAULT_MAX_TOKENS,
     }
 
 
 def default_schedule():
-    """Code defaults for every schedule field; the base of the inheritance chain."""
+    """Code defaults for every schedule field; the base of the inheritance chain.
+
+    windowMinutes has no entry here on purpose: absent everywhere means the
+    window is unknown, which keeps interval renewal locked — do not "complete"
+    the defaults with one."""
     return {
         "mode": "fixed",
         "times": [DEFAULT_FIXED_AT],
@@ -210,7 +245,6 @@ def default_schedule():
         "skipIfActivatedMinutes": DEFAULT_SKIP_IF_ACTIVATED_MINUTES,
         "graceSeconds": DEFAULT_GRACE_SECONDS,
         "jitterSeconds": DEFAULT_JITTER_SECONDS,
-        "wakeWhenAsleep": False,
     }
 
 
@@ -236,6 +270,30 @@ def _schedule_of(block):
     return schedule if isinstance(schedule, dict) else {}
 
 
+def _fold_legacy_settings(block):
+    """Move the pre-reshuffle spellings of the two swapped fields into their
+    current positions, so a file written by an older build loads unchanged.
+
+    `windowMinutes` used to sit among the knobs, `wakeWhenAsleep` inside the
+    schedule block; on load they fold the other way and only the current
+    spellings are ever written back. Where both spellings exist (a hand
+    edit), the current position wins."""
+    if not isinstance(block, dict):
+        return block
+    schedule = block.get("schedule")
+    if not isinstance(schedule, dict) and isinstance(block.get("windowMinutes"), int):
+        schedule = {}
+        block["schedule"] = schedule
+    if isinstance(schedule, dict):
+        if "windowMinutes" not in schedule and isinstance(block.get("windowMinutes"), int):
+            schedule["windowMinutes"] = block["windowMinutes"]
+        if "wakeWhenAsleep" in schedule:
+            # a knob-position value (the current spelling) outranks it
+            block.setdefault("wakeWhenAsleep", schedule.pop("wakeWhenAsleep"))
+    block.pop("windowMinutes", None)
+    return block
+
+
 def _inherited_knobs(location, global_settings, connection_defaults):
     """Knob values a connection inherits before its own overrides."""
     chain = dict(_settings_knobs(global_settings))
@@ -247,11 +305,18 @@ def _inherited_schedule(location, global_settings, connection_defaults):
     """Schedule fields a connection inherits before its own overrides.
 
     Delegated (`remote`) connections never see the global schedule: it
-    describes this machine's workday. They follow only defaults written
-    explicitly for remote — everything else falls to the code defaults."""
+    describes the delegating machine's workday. They follow only defaults
+    written explicitly for remote — everything else falls to the code
+    defaults. One field is exempt from that exemption: `windowMinutes` is a
+    fact about the plan (how long its quota window lasts), not about any
+    machine's day, so the global block's window duration reaches delegated
+    connections too."""
+    global_schedule = _schedule_of(global_settings)
     chain = {}
     if location != "remote":
-        chain.update(_schedule_of(global_settings))
+        chain.update(global_schedule)
+    elif "windowMinutes" in global_schedule:
+        chain["windowMinutes"] = global_schedule["windowMinutes"]
     chain.update(_schedule_of((connection_defaults or {}).get(location)))
     return chain
 
@@ -266,10 +331,9 @@ def _window_allows_interval(window):
     )
 
 
-def _resolved_schedule(own, location, window, global_settings, connection_defaults):
-    """Merge one connection's own schedule overrides over its layers."""
-    chain = {**_inherited_schedule(location, global_settings, connection_defaults), **(own or {})}
-    schedule = {**default_schedule(), **chain}
+def _resolved_schedule(own, window, inherited_schedule):
+    """Merge one connection's own schedule overrides over its inherited chain."""
+    schedule = {**default_schedule(), **inherited_schedule, **(own or {})}
     # An inherited interval mode must not invalidate a connection whose window
     # is unverified (the tick would skip it entirely) — such connections stay
     # on fixed. An explicit own override is honored as-is so the usual gating
@@ -283,14 +347,56 @@ def _resolved_schedule(own, location, window, global_settings, connection_defaul
     return schedule
 
 
+def _resolve_window(conn, own, inherited_schedule):
+    """The connection's window: own recorded duration first, then a window the
+    conn already carries (connections built in code — the add wizard — set it
+    directly; compaction persists it as an own override), then (for CLI
+    accounts) the builtin provider fact, then the layers' windowMinutes —
+    a schedule field, inherited through the same chain as the rest of the
+    schedule. Absent everywhere means unknown, which keeps interval renewal
+    locked — a layer's windowMinutes is the user vouching for every
+    connection under it, so it unlocks exactly like a per-connection record.
+    The value only takes effect while the resolved schedule mode is interval;
+    fixed-mode connections merely record it."""
+    duration = _schedule_of(own).get("windowMinutes")
+    carried = conn.get("window") or {}
+    if duration is None and carried.get("status") in ("verified", "user-confirmed"):
+        duration = carried.get("durationMinutes")
+    if conn.get("kind") == KIND_ACCOUNT:
+        provider = "claude-code" if (conn.get("transport") or {}).get("kind") == "claude-cli" else "codex"
+        builtin = BUILTIN_WINDOWS[provider]
+        # The builtin provider fact (Claude Code's verified 5 h) is not
+        # "upgraded" past a different duration the user recorded by hand.
+        if builtin["status"] == "verified" and duration in (None, builtin["durationMinutes"]):
+            return dict(builtin)
+    if isinstance(duration, int) and not isinstance(duration, bool) and duration > 0:
+        return {
+            "status": "user-confirmed",
+            "startRule": carried.get("startRule", "unknown"),
+            "durationMinutes": duration,
+            "evidence": "user-confirmed",
+        }
+    inherited = inherited_schedule.get("windowMinutes")
+    if isinstance(inherited, int) and not isinstance(inherited, bool) and inherited > 0:
+        return {
+            "status": "user-confirmed",
+            "startRule": "unknown",
+            "durationMinutes": inherited,
+            "evidence": "user-confirmed",
+        }
+    return {"status": "unknown", "startRule": "unknown", "durationMinutes": None, "evidence": "none"}
+
+
 def _apply_resolved(conn, global_settings, connection_defaults):
-    """(Re)compute a runtime connection's resolved schedule/catchup/degrade
-    fields from its own `settings` overrides plus the config's layers."""
+    """(Re)compute a runtime connection's resolved window, schedule, and
+    catchup/degrade/activation fields from its own `settings` overrides plus
+    the config's layers."""
     own = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
     location = conn.get("location") or "local"
-    sched = _resolved_schedule(
-        own.get("schedule"), location, conn.get("window"), global_settings, connection_defaults
-    )
+    knobs = {**_inherited_knobs(location, global_settings, connection_defaults), **_settings_knobs(own)}
+    inherited_schedule = _inherited_schedule(location, global_settings, connection_defaults)
+    conn["window"] = _resolve_window(conn, own, inherited_schedule)
+    sched = _resolved_schedule(own.get("schedule"), conn["window"], inherited_schedule)
     conn["schedule"] = {
         "mode": sched["mode"],
         "fixed": {
@@ -302,14 +408,20 @@ def _apply_resolved(conn, global_settings, connection_defaults):
             "graceSeconds": sched["graceSeconds"],
             "jitterSeconds": sched["jitterSeconds"],
         },
-        "wakeWhenAsleep": sched["wakeWhenAsleep"],
+        # a knob in the layers (a machine behavior switch), but the resolved
+        # schedule carries it so the wake layer and status read one dict
+        "wakeWhenAsleep": knobs.get("wakeWhenAsleep", False),
     }
-    knobs = {**_inherited_knobs(location, global_settings, connection_defaults), **_settings_knobs(own)}
     conn["catchup"] = {
         "attempts": knobs.get("catchupAttempts", DEFAULT_CATCHUP_ATTEMPTS),
         "withinMinutes": knobs.get("catchupMinutes", DEFAULT_CATCHUP_MINUTES),
     }
     conn["degradeAfterNodes"] = knobs.get("degradeAfterNodes", DEFAULT_DEGRADE_AFTER_NODES)
+    conn["activation"] = {
+        "model": (conn.get("activation") or {}).get("model"),
+        "prompt": knobs.get("prompt", DEFAULT_PROMPT),
+        "maxTokens": knobs.get("maxTokens", DEFAULT_MAX_TOKENS),
+    }
     return conn
 
 
@@ -324,11 +436,13 @@ def resolve_connection(conn, config):
 
 
 def flatten_schedule(schedule):
-    """Runtime schedule block → flat settings.schedule fields (all seven).
+    """Runtime schedule block → flat own-settings fields (all seven).
 
     Used by the v1 upgrade (the resolved schedule a connection ran on becomes
     its own overrides) and by delegation (freezing the effective schedule of
-    a connection the moment it moves to the server)."""
+    a connection the moment it moves to the server). The six timing fields
+    land in a settings block's `schedule`; `wakeWhenAsleep` is a knob now —
+    callers must file it outside the schedule dict."""
     fixed = (schedule or {}).get("fixed") or {}
     interval = (schedule or {}).get("interval") or {}
     return {
@@ -452,7 +566,7 @@ def load_config(path=None):
         if not isinstance(location_block, dict):
             die(f"connections.{location_block_id} must be a JSON object\n" + _template_fix(path or config_path()))
 
-        settings_block = location_block.get("settings")
+        settings_block = _fold_legacy_settings(location_block.get("settings"))
         if settings_block is not None:
             errors = settings_block_errors(settings_block, f"connections.{location_block_id}.settings")
             if errors:
@@ -480,7 +594,7 @@ def load_config(path=None):
                 )
             flat_connections[conn_id] = flat
 
-    global_settings_raw = data.get("settings")
+    global_settings_raw = _fold_legacy_settings(data.get("settings"))
     if global_settings_raw is not None:
         errors = settings_block_errors(global_settings_raw, "settings")
         if errors:
@@ -520,21 +634,12 @@ def _expand_conn(conn_id, flat, global_settings, connection_defaults):
         kind, auth, transport = KIND_ACCOUNT, (
             {"type": "local-cli", "status": "valid", "apiKeyRef": None}
         ), {"kind": transport_kind, "baseUrl": None, "cliCommand": cli}
-    duration = flat.get("windowMinutes")
-    window = (
-        {"status": "user-confirmed", "startRule": "unknown", "durationMinutes": duration, "evidence": "user-confirmed"}
-        if isinstance(duration, int) and duration > 0
-        else {"status": "unknown", "startRule": "unknown", "durationMinutes": None, "evidence": "none"}
-    )
-    if kind == KIND_ACCOUNT:
-        # The flat format cannot carry window evidence; re-derive the builtin
-        # provider window (Claude Code's verified 5 h) unless the user recorded
-        # a different duration, so a save/load round trip does not downgrade it.
-        provider = "claude-code" if transport["kind"] == "claude-cli" else "codex"
-        builtin = BUILTIN_WINDOWS[provider]
-        if builtin["status"] == "verified" and window["durationMinutes"] in (None, builtin["durationMinutes"]):
-            window = dict(builtin)
-    own = dict(flat.get("settings") or {}) if isinstance(flat.get("settings"), dict) else {}
+    own = _fold_legacy_settings(dict(flat.get("settings") or {}) if isinstance(flat.get("settings"), dict) else {})
+    # A top-level windowMinutes is the pre-knob spelling of an own override
+    # (still read so old files load); it folds into the settings block's
+    # schedule, where compaction writes it from now on.
+    if "windowMinutes" not in _schedule_of(own) and isinstance(flat.get("windowMinutes"), int):
+        own.setdefault("schedule", {})["windowMinutes"] = flat["windowMinutes"]
     # An explicit (possibly empty) schedule marker records "this connection
     # has no own overrides" — compaction then never pins inherited values.
     own.setdefault("schedule", {})
@@ -548,15 +653,10 @@ def _expand_conn(conn_id, flat, global_settings, connection_defaults):
         "location": flat.get("location") or "local",
         "auth": auth,
         "transport": transport,
-        "window": window,
-        "activation": {
-            "model": flat.get("model"),
-            "prompt": DEFAULT_PROMPT,
-            "maxTokens": DEFAULT_MAX_TOKENS,
-        },
+        "activation": {"model": flat.get("model")},
         # the connection's own overrides (knobs + schedule; empty schedule =
-        # pure inheritance) — schedule/catchup/degrade below are the resolved
-        # values the rest of the code reads
+        # pure inheritance) — window/schedule/catchup/degrade/activation below
+        # are the resolved values the rest of the code reads
         "settings": own,
     }
     return _apply_resolved(conn, global_settings, connection_defaults)
@@ -584,10 +684,6 @@ def _compact_conn(conn, global_settings, connection_defaults):
     activation = conn.get("activation") or {}
     if activation.get("model"):
         flat["model"] = activation["model"]
-    window = conn.get("window") or {}
-    duration = window.get("durationMinutes")
-    if window.get("status") in ("verified", "user-confirmed") and isinstance(duration, int) and duration > 0:
-        flat["windowMinutes"] = duration
     own = conn.get("settings") if isinstance(conn.get("settings"), dict) else {}
     location = conn.get("location") or "local"
     inherited_knobs = _inherited_knobs(location, global_settings, connection_defaults)
@@ -595,14 +691,35 @@ def _compact_conn(conn, global_settings, connection_defaults):
         **default_schedule(),
         **_inherited_schedule(location, global_settings, connection_defaults),
     }
+    own_knobs = _settings_knobs(own)
     if isinstance(own.get("schedule"), dict):
-        own_schedule = own["schedule"]
+        own_schedule = dict(own["schedule"])
     else:
+        # A runtime connection without the schedule marker (built in code,
+        # never loaded) pins the schedule it carries, the way every connection
+        # did before settings layers existed.
         own_schedule = flatten_schedule(conn.get("schedule"))
+        own_knobs = {**own_knobs, "wakeWhenAsleep": own_schedule.pop("wakeWhenAsleep")}
     overrides = {
-        key: value for key, value in _settings_knobs(own).items()
-        if key in default_settings() and value != inherited_knobs.get(key)
+        key: value for key, value in own_knobs.items()
+        if key in KNOB_KEYS and value != inherited_knobs.get(key)
     }
+    if "windowMinutes" not in own_schedule:
+        # A window the conn carries but never recorded as an own schedule
+        # field (built in code, or loaded from an older spelling and since
+        # resolved) persists as an own override — unless the layers already
+        # inherit the same duration, in which case pinning it would freeze
+        # the layer.
+        carried = conn.get("window") or {}
+        carried_duration = carried.get("durationMinutes")
+        if (
+            carried.get("status") in ("verified", "user-confirmed")
+            and carried.get("evidence") != "builtin-provider"
+            and isinstance(carried_duration, int) and not isinstance(carried_duration, bool)
+            and carried_duration > 0
+            and carried_duration != inherited_schedule.get("windowMinutes")
+        ):
+            own_schedule["windowMinutes"] = carried_duration
     schedule_overrides = {
         key: value for key, value in own_schedule.items()
         if value != inherited_schedule.get(key)
@@ -649,7 +766,7 @@ def _compact_config(config):
             block["settings"] = loc_settings
 
         for conn_id, conn in location_conns.items():
-            flat = _compact_conn(conn, config.get("settings") or {}, defaults)
+            flat = _compact_conn(conn, settings, defaults)
             if flat:
                 block[conn_id] = flat
 
@@ -682,6 +799,12 @@ def settings_block_errors(block, what="settings"):
             errors.append(
                 f"{what}: unknown key '{key}' (knobs: {', '.join(KNOB_KEYS)}; or a 'schedule' block)"
             )
+        elif key == "prompt":
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{what}: prompt must be a non-empty string")
+        elif key == "wakeWhenAsleep":
+            if not isinstance(value, bool):
+                errors.append(f"{what}: wakeWhenAsleep must be a boolean")
         elif not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             errors.append(f"{what}: {key} must be an integer > 0")
     schedule = block.get("schedule")
@@ -704,8 +827,10 @@ def settings_block_errors(block, what="settings"):
             errors.append(f"{what}.schedule: times must be a non-empty list of HH:MM")
         elif key == "days" and value not in DAY_RULES:
             errors.append(f"{what}.schedule: days must be 'weekday' or 'every-day'")
-        elif key == "wakeWhenAsleep" and not isinstance(value, bool):
-            errors.append(f"{what}.schedule: wakeWhenAsleep must be a boolean")
+        elif key == "windowMinutes" and (
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        ):
+            errors.append(f"{what}.schedule: windowMinutes must be an integer > 0")
         elif key in ("skipIfActivatedMinutes", "graceSeconds", "jitterSeconds") and (
             not isinstance(value, int) or isinstance(value, bool) or value < 0
         ):

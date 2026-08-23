@@ -4,17 +4,28 @@
     "catchupMinutes": 30,
     "catchupAttempts": 5,
     "degradeAfterNodes": 3,
-    "schedule": {"times": ["06:35"], "days": "weekday"}
+    "wakeWhenAsleep": false,
+    "prompt": "Reply with exactly: ok",
+    "maxTokens": 4,
+    "schedule": {
+      "mode": "fixed",
+      "times": ["06:35"],
+      "days": "weekday",
+      "skipIfActivatedMinutes": 30,
+      "windowMinutes": 300,
+      "graceSeconds": 75,
+      "jitterSeconds": 30
+    }
   },
   "connections": {
     "local": {
       "settings": {
-        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+        "wakeWhenAsleep": true,
+        "schedule": {"times": ["06:35"], "days": "weekday"}
       },
       "claude-code": {
         "label": "Claude Code",
         "cli": "/usr/local/bin/claude",
-        "windowMinutes": 300,
         "settings": {"schedule": {"times": ["06:35"]}}
       }
     },
@@ -27,8 +38,7 @@
         "url": "https://open.bigmodel.cn/api/anthropic",
         "protocol": "anthropic-messages",
         "apiKey": "file:glm",
-        "model": "GLM-5-Turbo",
-        "windowMinutes": 300
+        "model": "GLM-5-Turbo"
       }
     }
   }

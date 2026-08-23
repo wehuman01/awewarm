@@ -174,7 +174,7 @@ Two layers, honestly split by what each can do:
 
   Coverage boundary: RTC wakes are reliable while the Mac sleeps normally (lid closed on power, and lid-closed on battery before standby kicks in). After hours on battery the Mac enters standby (RAM powered off) and Apple will not wake it on schedule — for that regime, delegate to an always-on server (below). `awewarm status` shows the layer's state, and `scheduler uninstall` cancels every armed event and removes the grant.
 
-Per connection, `schedule.wakeWhenAsleep: false` opts out of both layers (asked during setup; change later with `awewarm config set <id> --no-wake`). Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
+Per connection, `wakeWhenAsleep: false` opts out of both layers (asked during setup; change later with `awewarm config set <id> --no-wake`). Missed slots still fire late within the catch-up window once the machine wakes. A fully *shut down* Mac stays off — power it on and the first tick catches up anything still inside the catch-up window.
 
 ### Sleeping PCs — wake tasks (Windows)
 
@@ -259,18 +259,29 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
     "catchupMinutes": 30,
     "catchupAttempts": 5,
     "degradeAfterNodes": 3,
-    "schedule": {"times": ["06:35"], "days": "weekday"}
+    "wakeWhenAsleep": false,
+    "prompt": "Reply with exactly: ok",
+    "maxTokens": 4,
+    "schedule": {
+      "mode": "fixed",
+      "times": ["06:35"],
+      "days": "weekday",
+      "skipIfActivatedMinutes": 30,
+      "windowMinutes": 300,
+      "graceSeconds": 75,
+      "jitterSeconds": 30
+    }
   },
   "connections": {
     "local": {
       "settings": {
-        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+        "wakeWhenAsleep": true,
+        "schedule": {"times": ["06:35"], "days": "weekday"}
       },
       "claude-code": {
         "label": "Claude Code",
         "cli": "/usr/local/bin/claude",
         "model": "haiku",
-        "windowMinutes": 300,
         "settings": {"schedule": {"times": ["06:35"]}}
       }
     },
@@ -283,8 +294,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
         "url": "https://open.bigmodel.cn/api/coding/paas/v4",
         "protocol": "openai-chat",
         "apiKey": "file:glm",
-        "model": "GLM-5-Turbo",
-        "windowMinutes": 300
+        "model": "GLM-5-Turbo"
       }
     }
   },
@@ -295,15 +305,15 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. `windowMinutes` present means the window is verified/user-confirmed (interval renewal unlocked). `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. `location: "remote"` (absent = local) marks a connection ticked by the paired `awewarm serve` server, whose URL and token ref live in the top-level `remote` block. The window duration (`windowMinutes`) is a schedule field inherited through the layers (below); a confirmed window unlocks interval renewal — it only takes effect while the schedule mode is interval, fixed connections merely record it. `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
 
-Settings are layered three deep — every level carries the same knobs and a `schedule` block, and each field resolves through them:
+Settings are layered three deep — every level carries the same knobs and a `schedule` block, and each field resolves through them. The split is semantic: the `schedule` block answers when a connection fires (`mode`, `times`, `days`, `skipIfActivatedMinutes`, `windowMinutes`, `graceSeconds`, `jitterSeconds`); the knobs answer how an activation behaves — `catchupMinutes`/`catchupAttempts`/`degradeAfterNodes` (catch-up and the degrade ladder), `wakeWhenAsleep` (may fixed slots wake a sleeping machine), and `prompt`/`maxTokens` (the warm-up request's prompt and token cap). Setting `windowMinutes` on a layer vouches for that duration for every connection under it without its own record, unlocking interval; a CLI account's builtin window is never overridden by a layer:
 
 1. **global** — the top-level `settings`: knobs every connection inherits, plus default schedule fields.
 2. **connections.local / connections.remote** — per-location overrides nested under each location group.
 3. **profile** — a connection's own `settings` (written by `awewarm config set <id>`); it always wins, and `--inherit-schedule` drops it back to the layers above.
 
-One deliberate asymmetry: a delegated (`remote`) connection never follows the global schedule — it describes this machine's day. Remote connections resolve their schedule from their own settings and `connections.remote.settings` only (knobs still inherit globally). An inherited interval mode never breaks a connection whose window is unverified — such connections stay on fixed until their window is recorded. Delegating a connection freezes its then-effective schedule as its own settings, so handover never changes what fires. v1/v2 config files upgrade to this format automatically on first load (v2 per-connection schedule fields become that connection's own overrides, values unchanged).
+One deliberate asymmetry: a delegated (`remote`) connection never follows the global schedule — it describes this machine's day. Remote connections resolve their schedule from their own settings and `connections.remote.settings` only (knobs still inherit globally) — with one exception: `windowMinutes` is a fact about the plan, not about any machine's day, so the global block's window duration reaches delegated connections too. An inherited interval mode never breaks a connection whose window is unverified — such connections stay on fixed until their window is recorded. Delegating a connection freezes its then-effective schedule as its own settings, so handover never changes what fires. Configs saved by slightly older builds (a knob-position `windowMinutes`, a schedule-position `wakeWhenAsleep`) fold into the current positions on first load and are never written back.
 
 ## Commands
 
@@ -316,8 +326,8 @@ awewarm config set <id> [flags]       # show or change settings: --times, --days
                                        #   --catchup-minutes, --catchup-attempts, --degrade-after-nodes,
                                        #   --inherit-schedule (drop own schedule overrides, follow the layers)
 awewarm config settings [scope] [flags]  # show or change the settings layers: scope is global (default), local,
-                                       #   or remote; flags: --catchup-*, --degrade-after-nodes, --times, --days,
-                                       #   --mode, --wake/--no-wake, --reset
+                                       #   or remote; flags: --catchup-*, --degrade-after-nodes, --window-minutes,
+                                       #   --prompt, --max-tokens, --times, --days, --mode, --wake/--no-wake, --reset
 awewarm config remove <id>            # delete a connection, its state, and its stored API key
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config path                   # config / state / log locations

@@ -206,7 +206,7 @@ class V2FormatTests(IsolatedTestCase):
         on_disk = json.loads(Path(config.config_path()).read_text())
         self.assertEqual(on_disk["version"], 3)
         self.assertEqual(on_disk["connections"]["local"]["glm"]["settings"]["schedule"], {
-            "times": ["06:00"], "days": "every-day"})
+            "times": ["06:00"], "days": "every-day", "windowMinutes": 300})
 
     def test_load_refuses_flat_v2(self):
         Path(config.config_path()).write_text(json.dumps({
@@ -297,7 +297,13 @@ class V2FormatTests(IsolatedTestCase):
         conf["connections"]["glm"] = plan_connection(mode="fixed", fixed_at=("06:00",), days="every-day")
         config.save_config(conf)
         file = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(file["settings"], {"catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6})
+        # saving materializes the wakeWhenAsleep/prompt/maxTokens code defaults
+        # into the global block (documenting them); windowMinutes stays unset
+        self.assertEqual(file["settings"], {
+            "catchupMinutes": 45, "catchupAttempts": 2, "degradeAfterNodes": 6,
+            "wakeWhenAsleep": False,
+            "prompt": "Reply with exactly: ok", "maxTokens": 4,
+        })
         self.assertFalse(set(file["connections"]["local"]["glm"]["settings"]) - {"schedule"})
         loaded = config.load_config()["connections"]["glm"]
         self.assertEqual(loaded["catchup"], {"attempts": 2, "withinMinutes": 45})
@@ -361,7 +367,7 @@ class SettingsLayerTests(IsolatedTestCase):
 
     def test_local_connection_inherits_global_schedule(self):
         loaded = self._config_with(
-            global_settings={"schedule": {"times": ["09:00"], "days": "every-day", "wakeWhenAsleep": False}},
+            global_settings={"schedule": {"times": ["09:00"], "days": "every-day"}, "wakeWhenAsleep": False},
             glm=self._inherit_conn(),
         )
         sched = loaded["connections"]["glm"]["schedule"]
@@ -457,7 +463,7 @@ class SettingsLayerTests(IsolatedTestCase):
         # load → edit → save (config set, config remove, ...) must keep the
         # location layers instead of silently dropping them
         conf = config.empty_config()
-        conf["connectionDefaults"]["local"] = {"schedule": {"wakeWhenAsleep": True}}
+        conf["connectionDefaults"]["local"] = {"wakeWhenAsleep": True}
         conf["connections"]["glm"] = self._inherit_conn()
         config.save_config(conf)
         loaded = config.load_config()
@@ -465,8 +471,7 @@ class SettingsLayerTests(IsolatedTestCase):
         loaded["connections"]["glm"]["label"] = "renamed"  # any edit
         config.save_config(loaded)
         on_disk = json.loads(Path(config.config_path()).read_text())
-        self.assertEqual(on_disk["connections"]["local"]["settings"],
-                         {"schedule": {"wakeWhenAsleep": True}})
+        self.assertEqual(on_disk["connections"]["local"]["settings"], {"wakeWhenAsleep": True})
         reloaded = config.load_config()
         self.assertTrue(reloaded["connections"]["glm"]["schedule"]["wakeWhenAsleep"])
 
@@ -497,6 +502,161 @@ class SettingsLayerTests(IsolatedTestCase):
         }))
         with self.assertRaises(SystemExit):
             config.load_config()
+
+    def test_layer_window_unlocks_interval_for_inheriting_connections(self):
+        loaded = self._config_with(
+            global_settings={"schedule": {"mode": "interval", "windowMinutes": 300}},
+            glm=self._inherit_conn(),  # no own window record
+        )
+        conn = loaded["connections"]["glm"]
+        self.assertEqual(conn["schedule"]["mode"], "interval")
+        self.assertEqual(conn["window"]["status"], "user-confirmed")
+        self.assertEqual(conn["window"]["durationMinutes"], 300)
+        self.assertFalse(config.connection_errors(conn, "glm"))
+        # an own record still wins over the layer
+        own = self._inherit_conn()
+        own["settings"]["schedule"]["windowMinutes"] = 120
+        loaded = self._config_with(
+            global_settings={"schedule": {"mode": "interval", "windowMinutes": 300}},
+            glm=own,
+        )
+        self.assertEqual(loaded["connections"]["glm"]["window"]["durationMinutes"], 120)
+
+    def test_layer_window_reaches_delegated_connections(self):
+        remote_conn = self._inherit_conn()
+        remote_conn["location"] = "remote"
+        loaded = self._config_with(
+            global_settings={"schedule": {"windowMinutes": 300}},
+            glm=remote_conn,
+        )
+        self.assertEqual(loaded["connections"]["glm"]["window"]["durationMinutes"], 300)
+
+    def test_own_window_equal_to_layer_not_pinned(self):
+        conn = self._inherit_conn()
+        conn["settings"]["schedule"]["windowMinutes"] = 300
+        loaded = self._config_with(global_settings={"schedule": {"windowMinutes": 300}}, glm=conn)
+        self.assertEqual(loaded["connections"]["glm"]["window"]["durationMinutes"], 300)
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        own = on_disk["connections"]["local"]["glm"].get("settings") or {}
+        self.assertNotIn("windowMinutes", own.get("schedule") or {})  # follows the layer, nothing frozen
+
+    def test_top_level_window_minutes_folds_into_settings(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {},
+            "connections": {"local": {"glm": {
+                "label": "glm",
+                "url": "https://example.com/api",
+                "protocol": "openai-chat",
+                "apiKey": "file:glm",
+                "windowMinutes": 300,
+            }}},
+        }))
+        loaded = config.load_config()
+        self.assertEqual(loaded["connections"]["glm"]["window"]["durationMinutes"], 300)
+        config.save_config(loaded)
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        flat = on_disk["connections"]["local"]["glm"]
+        self.assertNotIn("windowMinutes", flat)  # old spelling gone
+        self.assertEqual(flat["settings"]["schedule"]["windowMinutes"], 300)  # new spelling
+
+    def test_layer_window_does_not_override_builtin_account_window(self):
+        account = account_connection()
+        account["settings"] = {"schedule": {}}
+        loaded = self._config_with(global_settings={"schedule": {"windowMinutes": 120}}, acct=account)
+        window = loaded["connections"]["acct"]["window"]
+        self.assertEqual(window["status"], "verified")  # the builtin fact stands
+        self.assertEqual(window["durationMinutes"], 300)
+        # unless the user recorded a different duration by hand
+        account = account_connection()
+        account["settings"] = {"schedule": {"windowMinutes": 120}}
+        loaded = self._config_with(global_settings={"schedule": {"windowMinutes": 300}}, acct=account)
+        self.assertEqual(loaded["connections"]["acct"]["window"]["durationMinutes"], 120)
+
+    def test_prompt_and_max_tokens_inherit_the_layers(self):
+        loaded = self._config_with(
+            global_settings={"prompt": "say hi", "maxTokens": 8},
+            glm=self._inherit_conn(),
+        )
+        activation = loaded["connections"]["glm"]["activation"]
+        self.assertEqual(activation["prompt"], "say hi")
+        self.assertEqual(activation["maxTokens"], 8)
+        conn = self._inherit_conn()
+        conn["settings"]["maxTokens"] = 16
+        loaded = self._config_with(
+            global_settings={"maxTokens": 8},
+            glm=conn,
+        )
+        self.assertEqual(loaded["connections"]["glm"]["activation"]["maxTokens"], 16)
+        self.assertEqual(loaded["connections"]["glm"]["activation"]["prompt"], "Reply with exactly: ok")
+
+    def test_settings_block_rejects_bad_new_knobs(self):
+        self.assertEqual(config.settings_block_errors({"schedule": {"windowMinutes": 300}}, "s"), [])
+        self.assertTrue(config.settings_block_errors({"schedule": {"windowMinutes": 0}}, "s"))
+        self.assertTrue(config.settings_block_errors({"windowMinutes": 300}, "s"))  # old knob spelling
+        self.assertEqual(config.settings_block_errors({"wakeWhenAsleep": False}, "s"), [])
+        self.assertTrue(config.settings_block_errors({"wakeWhenAsleep": "yes"}, "s"))
+        self.assertTrue(config.settings_block_errors({"schedule": {"wakeWhenAsleep": True}}, "s"))  # old schedule spelling
+        self.assertTrue(config.settings_block_errors({"prompt": "  "}, "s"))
+        self.assertTrue(config.settings_block_errors({"maxTokens": True}, "s"))
+
+    def test_legacy_spellings_fold_on_load_in_every_layer(self):
+        # files saved before the reshuffle: windowMinutes among the knobs,
+        # wakeWhenAsleep inside the schedule block — in all three layers
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {"windowMinutes": 300, "schedule": {"wakeWhenAsleep": False, "times": ["09:00"]}},
+            "connections": {
+                "local": {
+                    "settings": {"schedule": {"wakeWhenAsleep": True, "windowMinutes": 200}},
+                    "glm": {
+                        "label": "glm", "url": "https://example.com/api", "protocol": "openai-chat",
+                        "apiKey": "file:glm",
+                        "settings": {"windowMinutes": 120, "schedule": {"wakeWhenAsleep": True}},
+                    },
+                },
+                "remote": {
+                    "settings": {"windowMinutes": 90},
+                },
+            },
+        }))
+        loaded = config.load_config()
+        self.assertEqual(loaded["settings"]["schedule"], {"times": ["09:00"], "windowMinutes": 300})
+        self.assertEqual(loaded["settings"]["wakeWhenAsleep"], False)
+        self.assertEqual(loaded["connectionDefaults"]["local"],
+                         {"wakeWhenAsleep": True, "schedule": {"windowMinutes": 200}})
+        self.assertEqual(loaded["connectionDefaults"]["remote"], {"schedule": {"windowMinutes": 90}})
+        glm = loaded["connections"]["glm"]
+        self.assertEqual(glm["settings"]["schedule"]["windowMinutes"], 120)
+        self.assertEqual(glm["settings"]["wakeWhenAsleep"], True)
+        self.assertEqual(glm["window"]["durationMinutes"], 120)
+        self.assertTrue(glm["schedule"]["wakeWhenAsleep"])
+        # saving writes only the current spellings back
+        config.save_config(loaded)
+        on_disk = json.loads(Path(config.config_path()).read_text())
+        self.assertNotIn("windowMinutes", on_disk["settings"])
+        self.assertNotIn("wakeWhenAsleep", on_disk["settings"]["schedule"])
+        self.assertNotIn("wakeWhenAsleep", on_disk["connections"]["local"]["settings"]["schedule"])
+        self.assertNotIn("windowMinutes", on_disk["connections"]["local"]["glm"]["settings"])
+
+    def test_legacy_fold_current_spelling_wins_when_both_present(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "settings": {
+                "windowMinutes": 90, "wakeWhenAsleep": False,
+                "schedule": {"windowMinutes": 300, "wakeWhenAsleep": True},
+            },
+            "connections": {"local": {"glm": {
+                "label": "glm", "url": "https://example.com/api", "protocol": "openai-chat",
+                "apiKey": "file:glm", "settings": {"schedule": {}},
+            }}},
+        }))
+        loaded = config.load_config()
+        # schedule-position windowMinutes wins; knob-position wakeWhenAsleep wins
+        self.assertEqual(loaded["settings"]["schedule"]["windowMinutes"], 300)
+        self.assertEqual(loaded["settings"]["wakeWhenAsleep"], False)
+        self.assertEqual(loaded["connections"]["glm"]["window"]["durationMinutes"], 300)
+        self.assertFalse(loaded["connections"]["glm"]["schedule"]["wakeWhenAsleep"])
 
 
 class LocationTests(IsolatedTestCase):

@@ -28,6 +28,8 @@ from .config import (
     DEFAULT_CATCHUP_ATTEMPTS,
     DEFAULT_CATCHUP_MINUTES,
     DEFAULT_DEGRADE_AFTER_NODES,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_PROMPT,
     SCHEDULE_MODES,
     SLOT_RE,
     append_log,
@@ -414,7 +416,10 @@ def _delegate_remote(config, conn_id, conn):
     api_key = _resolve_api_key(conn)
     if api_key is None:
         die(f"{conn_id} has no stored API key\nfix: awewarm config set {conn_id} --api-key <key>")
-    conn.setdefault("settings", {})["schedule"] = flatten_schedule(conn.get("schedule"))
+    flattened = flatten_schedule(conn.get("schedule"))
+    own = conn.setdefault("settings", {})
+    own["schedule"] = {key: value for key, value in flattened.items() if key != "wakeWhenAsleep"}
+    own["wakeWhenAsleep"] = flattened["wakeWhenAsleep"]
     resolve_connection(conn, config)
     try:
         remote.ensure_session(config)
@@ -622,6 +627,7 @@ class _SetOptions:
         """Fields that land in the connection's own settings block."""
         return (
             self.times, self.days, self.mode, self.wake, self.inherit_schedule,
+            self.window_minutes,
             self.catchup_minutes, self.catchup_attempts, self.degrade_after_nodes,
         )
 
@@ -672,7 +678,7 @@ def _config_set(connection, opts):
     if opts.mode:
         own["schedule"]["mode"] = opts.mode
     if opts.wake is not None:
-        own["schedule"]["wakeWhenAsleep"] = opts.wake
+        own["wakeWhenAsleep"] = opts.wake
     if opts.catchup_minutes is not None:
         if not 5 <= opts.catchup_minutes <= 240:
             die("--catchup-minutes must be between 5 and 240")
@@ -685,6 +691,11 @@ def _config_set(connection, opts):
         if not 1 <= opts.degrade_after_nodes <= 10:
             die("--degrade-after-nodes must be between 1 and 10")
         own["degradeAfterNodes"] = opts.degrade_after_nodes
+    if opts.window_minutes is not None:
+        if opts.window_minutes <= 0:
+            die("--window needs the duration in minutes you verified (greater than 0)")
+        window_notice = schedule.window_override_notice(conn["window"], opts.window_minutes)
+        own["schedule"]["windowMinutes"] = opts.window_minutes
     if any(value is not None for value in opts.overrides()):
         resolve_connection(conn, config)
     if slots and conn["schedule"]["mode"] != "fixed":
@@ -728,16 +739,6 @@ def _config_set(connection, opts):
             _next_occurrence(opts.start_hhmm, start_now)
         )
         state_changed = True
-    if opts.window_minutes is not None:
-        if opts.window_minutes <= 0:
-            die("--window needs the duration in minutes you verified (greater than 0)")
-        window_notice = schedule.window_override_notice(conn["window"], opts.window_minutes)
-        conn["window"] = {
-            "status": "user-confirmed",
-            "startRule": conn["window"].get("startRule", "unknown"),
-            "durationMinutes": opts.window_minutes,
-            "evidence": "user-confirmed",
-        }
 
     if opts.location is not None:
         if opts.location:
@@ -871,21 +872,29 @@ def _describe_schedule(block):
         core = f"fixed at {', '.join(filled['times'])} ({filled['days']})"
     else:
         core = f"interval (window + {filled['graceSeconds']}s grace, {filled['jitterSeconds']}s jitter)"
-    return f"{core}, wake when asleep: {'true' if filled['wakeWhenAsleep'] else 'false'}"
+    wake = (block or {}).get("wakeWhenAsleep", False)
+    return f"{core}, wake when asleep: {'true' if wake else 'false'}"
 
 
 def _show_settings_scope(config, scope):
     """Print the settings layers: all three at once, or just the asked-for scope."""
     defaults = config.get("connectionDefaults") or {}
+    s = config["settings"]
+    window = (s.get("schedule") or {}).get("windowMinutes")
+    window_bits = f"{window} minutes" if window else "unknown (interval locked)"
     knobs_line = (
-        f"catch-up: {config['settings']['catchupAttempts']} attempts within "
-        f"{config['settings']['catchupMinutes']} minutes, degrade after nodes: "
-        f"{config['settings']['degradeAfterNodes']}"
+        f"catch-up: {s['catchupAttempts']} attempts within {s['catchupMinutes']} minutes, "
+        f"degrade after nodes: {s['degradeAfterNodes']}\n"
+        f"  window: {window_bits}, "
+        f"prompt: {s.get('prompt', DEFAULT_PROMPT)!r}, maxTokens: {s.get('maxTokens', DEFAULT_MAX_TOKENS)}\n"
+        f"  wake when asleep: {'true' if s.get('wakeWhenAsleep', False) else 'false'}"
     )
 
     def show(name, block, note):
         click.echo(f"{name}:")
-        click.echo(f"  {knobs_line if name == 'Global' else 'knobs: ' + (', '.join(f'{k}={v}' for k, v in (block or {}).items() if k != 'schedule') or 'none set (inherit global)')}")
+        click.echo(f"  {knobs_line if name == 'Global' else 'knobs: ' + (', '.join(f'{k}={v}' for k, v in (block or {}).items() if k not in ('schedule', 'wakeWhenAsleep')) or 'none set (inherit global)')}")
+        if name != "Global" and isinstance((block or {}).get("wakeWhenAsleep"), bool):
+            click.echo(f"  wake when asleep: {'true' if block['wakeWhenAsleep'] else 'false'}")
         schedule = (block or {}).get("schedule")
         click.echo(f"  schedule: {_describe_schedule(block) if schedule else 'none set (code defaults: fixed at 06:35, weekday)'}")
         click.echo(f"  {note}")
@@ -906,15 +915,20 @@ def _show_settings_scope(config, scope):
     click.echo("            awewarm config settings local|remote --times 09:00 --catchup-minutes 45")
 
 
-def _after_settings_scope_edit(config, scope, schedule_edited, knobs_edited):
+def _after_settings_scope_edit(config, scope, timing_edited, wake_edited, knobs_edited, window_edited):
     """Side effects a settings-layer edit may owe: re-push delegated
-    connections whose effective values changed, refresh the wake layer."""
-    if schedule_edited and scope in ("global", "local"):
+    connections whose effective values changed, refresh the wake layer.
+
+    Wake is filed as a knob but is machine-local: it refreshes the wake layer
+    and never re-pushes. windowMinutes sits in the schedule block but is a
+    plan fact that inherits globally even for delegated connections, so
+    editing it re-pushes like a knob."""
+    if (timing_edited or wake_edited) and scope in ("global", "local"):
         _refresh_wake_after_edit()
-    # Knob edits reach delegated connections wherever they were made; schedule
+    # Knob edits reach delegated connections wherever they were made; timing
     # edits reach them only through the remote layer — the global schedule is
     # deliberately not part of a delegated connection's chain.
-    if scope == "remote" or (scope == "global" and knobs_edited):
+    if scope == "remote" or (scope == "global" and (knobs_edited or window_edited)):
         delegated = sorted(
             cid for cid, conn in config["connections"].items() if conn.get("location") == "remote"
         )
@@ -927,7 +941,7 @@ def _after_settings_scope_edit(config, scope, schedule_edited, knobs_edited):
 
 
 def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes,
-                     times, days, mode, wake, reset):
+                     window_minutes, prompt, max_tokens, times, days, mode, wake, reset):
     config = load_config()
     scope = scope or "global"
     if reset:
@@ -938,7 +952,10 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
         save_config(config)
         click.echo(f"✓ {scope} settings cleared (knobs back to code defaults)" if scope == "global"
                    else f"✓ {scope} settings cleared — those connections inherit the global block")
-        _after_settings_scope_edit(config, scope, schedule_edited=True, knobs_edited=True)
+        _after_settings_scope_edit(
+            config, scope,
+            timing_edited=True, wake_edited=True, knobs_edited=True, window_edited=True,
+        )
         return
     slots = None
     if times:
@@ -946,9 +963,9 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
             slots = _slots_proc(times)
         except ValueError as exc:
             die(str(exc))
-    knobs = (catchup_minutes, catchup_attempts, degrade_after_nodes)
-    schedule_fields = (slots, days, mode, wake)
-    if all(value is None for value in knobs + schedule_fields):
+    knobs = (catchup_minutes, catchup_attempts, degrade_after_nodes, prompt, max_tokens)
+    schedule_fields = (slots, days, mode, window_minutes)
+    if all(value is None for value in knobs + schedule_fields) and wake is None:
         _show_settings_scope(config, scope)
         return
     block = _settings_scope_block(config, scope)
@@ -964,6 +981,20 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
         if not 1 <= degrade_after_nodes <= 10:
             die("--degrade-after-nodes must be between 1 and 10")
         block["degradeAfterNodes"] = degrade_after_nodes
+    if window_minutes is not None:
+        if window_minutes <= 0:
+            die("--window-minutes must be greater than 0")
+        block.setdefault("schedule", {})["windowMinutes"] = window_minutes
+    if prompt is not None:
+        if not prompt.strip() or "\n" in prompt:
+            die("--prompt must be a single non-empty line")
+        block["prompt"] = prompt
+    if max_tokens is not None:
+        if not 1 <= max_tokens <= 1024:
+            die("--max-tokens must be between 1 and 1024")
+        block["maxTokens"] = max_tokens
+    if wake is not None:
+        block["wakeWhenAsleep"] = wake
     if any(value is not None for value in schedule_fields):
         sched = block.setdefault("schedule", {})
         if slots is not None:
@@ -972,17 +1003,27 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
             sched["days"] = days
         if mode:
             sched["mode"] = mode
-        if wake is not None:
-            sched["wakeWhenAsleep"] = wake
     save_config(config)
-    if any(value is not None for value in knobs):
-        click.echo(
-            f"✓ {scope} knob defaults: {config['settings']['catchupAttempts']} attempts within "
-            f"{config['settings']['catchupMinutes']} minutes, degrade after "
-            f"{config['settings']['degradeAfterNodes']} nodes"
-            if scope == "global" else
-            f"✓ {scope} knobs set ({', '.join(f'{k}={v}' for k, v in block.items() if k != 'schedule') or 'none'})"
-        )
+    if any(value is not None for value in knobs) or wake is not None or window_minutes is not None:
+        if scope == "global":
+            click.echo(
+                f"✓ {scope} knob defaults: {config['settings']['catchupAttempts']} attempts within "
+                f"{config['settings']['catchupMinutes']} minutes, degrade after "
+                f"{config['settings']['degradeAfterNodes']} nodes"
+            )
+        else:
+            set_bits = ", ".join(
+                f"{k}={v}" for k, v in block.items() if k not in ("schedule", "wakeWhenAsleep")
+            )
+            if set_bits:
+                click.echo(f"✓ {scope} knobs set ({set_bits})")
+        if wake is not None:
+            click.echo(f"  wake when asleep: {'true' if wake else 'false'}")
+        if window_minutes is not None:
+            click.echo(
+                f"  every connection under {scope} now vouches for a {window_minutes}-minute window — "
+                "interval renewal is unlocked for the ones without their own record"
+            )
     if any(value is not None for value in schedule_fields):
         click.echo(f"✓ {scope} schedule: {_describe_schedule(block)}")
         if scope == "global":
@@ -991,8 +1032,10 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
             click.echo("  note: connections without a verified window stay on fixed")
     _after_settings_scope_edit(
         config, scope,
-        schedule_edited=any(value is not None for value in schedule_fields),
+        timing_edited=any(value is not None for value in (slots, days, mode)),
+        wake_edited=wake is not None,
         knobs_edited=any(value is not None for value in knobs),
+        window_edited=window_minutes is not None,
     )
 
 
@@ -1001,12 +1044,16 @@ def _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nod
 @click.option("--catchup-minutes", "catchup_minutes", type=int, default=None, metavar="MINUTES", help="Catch-up window after a failed node (default 30).")
 @click.option("--catchup-attempts", "catchup_attempts", type=int, default=None, metavar="N", help="Max attempts per failed node (default 5).")
 @click.option("--degrade-after-nodes", "degrade_after_nodes", type=int, default=None, metavar="N", help="Lost nodes before degraded, and again before auto-disabled (default 3).")
+@click.option("--window-minutes", "window_minutes", type=int, default=None, metavar="MINUTES", help="Subscription window every connection under this layer vouches for (default: unset — unknown windows keep interval mode locked).")
+@click.option("--prompt", "prompt", default=None, help="Warm-up prompt sent to the model (default 'Reply with exactly: ok').")
+@click.option("--max-tokens", "max_tokens", type=int, default=None, metavar="N", help="Max tokens per warm-up request (default 4).")
 @click.option("--times", default=None, metavar="HH:MM,...", help="Default fixed activation times, comma- or space-separated.")
 @click.option("--days", type=click.Choice(["weekday", "every-day"]), default=None, help="Which days the default fixed times fire.")
 @click.option("--mode", type=click.Choice(SCHEDULE_MODES), default=None, help="Default schedule mode.")
 @click.option("--wake/--no-wake", "wake", default=None, help="Default wake-when-asleep behavior for fixed slots (macOS/Windows).")
 @click.option("--reset", is_flag=True, help="Clear this scope's settings (global falls back to code defaults).")
-def config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes, times, days, mode, wake, reset):
+def config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes, window_minutes,
+                    prompt, max_tokens, times, days, mode, wake, reset):
     """Show or change the settings layers every connection inherits.
 
     \b
@@ -1021,7 +1068,7 @@ def config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_node
     A connection's own settings (`awewarm config set <id> ...`) still win over
     every layer."""
     _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes,
-                     times, days, mode, wake, reset)
+                     window_minutes, prompt, max_tokens, times, days, mode, wake, reset)
 
 
 def _config_remove(connection):

@@ -174,7 +174,7 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
   覆盖边界：正常睡眠（插电合盖，以及电池合盖进入 standby 之前）下 RTC 唤醒可靠；电池长时间睡眠进入 standby（RAM 断电）后，Apple 的设计不允许定时唤醒 —— 这种场景请委托给常开服务器（见下）。`awewarm status` 显示该层状态；`scheduler uninstall` 会取消全部已排事件并移除授权。
 
-每个连接可以设置 `schedule.wakeWhenAsleep: false` 同时退出两层（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 30 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
+每个连接可以设置 `wakeWhenAsleep: false` 同时退出两层（添加流程中询问；之后用 `awewarm config set <id> --no-wake` 修改）。被睡眠错过的时间点仍会在补跑窗口内（默认 30 分钟）补发；完全**关机**的 Mac 不会自行启动 —— 开机后第一个 tick 会补跑所有仍在补跑窗口内的 missed slots。
 
 ### Sleeping PCs — wake tasks (Windows)
 
@@ -259,18 +259,29 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
     "catchupMinutes": 30,
     "catchupAttempts": 5,
     "degradeAfterNodes": 3,
-    "schedule": {"times": ["06:35"], "days": "weekday"}
+    "wakeWhenAsleep": false,
+    "prompt": "Reply with exactly: ok",
+    "maxTokens": 4,
+    "schedule": {
+      "mode": "fixed",
+      "times": ["06:35"],
+      "days": "weekday",
+      "skipIfActivatedMinutes": 30,
+      "windowMinutes": 300,
+      "graceSeconds": 75,
+      "jitterSeconds": 30
+    }
   },
   "connections": {
     "local": {
       "settings": {
-        "schedule": {"times": ["06:35"], "days": "weekday", "wakeWhenAsleep": true}
+        "wakeWhenAsleep": true,
+        "schedule": {"times": ["06:35"], "days": "weekday"}
       },
       "claude-code": {
         "label": "Claude Code",
         "cli": "/usr/local/bin/claude",
         "model": "haiku",
-        "windowMinutes": 300,
         "settings": {"schedule": {"times": ["06:35"]}}
       }
     },
@@ -283,8 +294,7 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
         "url": "https://open.bigmodel.cn/api/coding/paas/v4",
         "protocol": "openai-chat",
         "apiKey": "file:glm",
-        "model": "GLM-5-Turbo",
-        "windowMinutes": 300
+        "model": "GLM-5-Turbo"
       }
     }
   },
@@ -295,15 +305,15 @@ awewarm config set glm --remote      # 委托方式与单用户模式完全相�
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。存在 `windowMinutes` 即视为窗口已验证/确认（解锁 interval 续期）。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。`location: "remote"`（缺省即 local）表示该连接由已配对的 `awewarm serve` 服务器调度，服务器地址和 token 引用存于顶层 `remote` 块。窗口时长（`windowMinutes`）是 schedule 字段、按层继承（见下），存在已确认的窗口即解锁 interval 续期——它只在 interval 模式下生效，fixed 连接仅作记录。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
 
-settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每个字段按层解析：
+settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每个字段按层解析。分组按语义划分：`schedule` 块回答"什么时候触发"（`mode`、`times`、`days`、`skipIfActivatedMinutes`、`windowMinutes`、`graceSeconds`、`jitterSeconds`）；knobs 回答"一次激活怎么执行"——`catchupMinutes`/`catchupAttempts`/`degradeAfterNodes`（补跑与降级）、`wakeWhenAsleep`（fixed 时间点可否唤醒睡眠中的机器）、`prompt`/`maxTokens`（保温请求的提示词与 token 上限）。某层设了 `windowMinutes`，等于为该层下所有没有自己记录的连接担保窗口并解锁 interval；CLI 账号的 builtin 窗口不受层值覆盖：
 
 1. **global** —— 顶层 `settings`：所有连接继承的 knobs，以及默认的 schedule 字段。
 2. **connections.local / connections.remote** —— 按 local / remote 嵌套在各自位置组下的中间层。
 3. **profile** —— 连接自己的 `settings`（由 `awewarm config set <id>` 写入）；永远优先，`--inherit-schedule` 可丢弃它、回落到上层。
 
-一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connections.remote.settings`（knobs 仍全局继承）。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。v1/v2 配置文件在首次加载时自动升级为本格式（v2 连接上的调度字段原值变为其自身 overrides）。
+一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connections.remote.settings`（knobs 仍全局继承），唯一例外是 `windowMinutes`——窗口时长是套餐事实而非某台机器的一天，global 层的窗口时长同样到达 remote 连接。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。旧版程序保存的配置（knob 位置的 `windowMinutes`、schedule 位置的 `wakeWhenAsleep`）在首次加载时折入当前位置，且不再以旧拼写写出。
 
 ## 命令
 
@@ -316,8 +326,8 @@ awewarm config set <id> [flags]       # 查看或修改设置：--times、--days
                                        #   --catchup-minutes、--catchup-attempts、--degrade-after-nodes、
                                        #   --inherit-schedule（丢弃自身调度覆盖，改为跟随上层）
 awewarm config settings [scope] [flags]  # 查看或修改 settings 层：scope 为 global（默认）、local 或 remote；
-                                       #   flags：--catchup-*、--degrade-after-nodes、--times、--days、--mode、
-                                       #   --wake/--no-wake、--reset
+                                       #   flags：--catchup-*、--degrade-after-nodes、--window-minutes、--prompt、
+                                       #   --max-tokens、--times、--days、--mode、--wake/--no-wake、--reset
 awewarm config remove <id>            # 删除连接及其状态和存储的 API key
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config path                   # 配置 / 状态 / 日志路径

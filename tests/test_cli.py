@@ -1926,8 +1926,7 @@ class SettingsScopeTests(IsolatedTestCase):
         result = invoke(["config", "set", "claude-code-main", "--times", "07:07"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         on_disk = json.loads(Path(cfg.config_path()).read_text())
-        self.assertEqual(on_disk["connections"]["local"]["settings"],
-                         {"schedule": {"wakeWhenAsleep": True}})
+        self.assertEqual(on_disk["connections"]["local"]["settings"], {"wakeWhenAsleep": True})
         self.assertEqual(
             on_disk["connections"]["local"]["claude-code-main"]["settings"]["schedule"]["times"],
             ["07:07"])
@@ -1940,6 +1939,42 @@ class SettingsScopeTests(IsolatedTestCase):
         loaded = cfg.load_config()
         self.assertNotIn("local", loaded["connectionDefaults"])
         self.assertEqual(loaded["connections"]["claude-code-main"]["schedule"]["fixed"]["at"], ["06:35"])
+
+
+class NewKnobLayerTests(IsolatedTestCase):
+    """windowMinutes/prompt/maxTokens as settings-layer knobs."""
+
+    def test_window_minutes_layer_unlocks_interval(self):
+        write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
+        result = invoke(["config", "settings", "--window-minutes", "300", "--mode", "interval"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("vouches for a 300-minute window", output_of(result))
+        loaded = cfg.load_config()["connections"]["glm-coding-plan"]
+        self.assertEqual(loaded["schedule"]["mode"], "interval")
+        self.assertEqual(loaded["window"]["durationMinutes"], 300)
+        self.assertFalse(cfg.connection_errors(loaded, "glm-coding-plan"))
+
+    def test_window_flag_persists_as_own_override(self):
+        write_config(plan_connection(mode="fixed"), conn_id="glm-coding-plan")
+        result = invoke(["config", "set", "glm-coding-plan", "--window", "240"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Window recorded as 240 minutes", output_of(result))
+        on_disk = json.loads(Path(cfg.config_path()).read_text())
+        flat = on_disk["connections"]["local"]["glm-coding-plan"]
+        self.assertNotIn("windowMinutes", flat)  # old top-level spelling gone
+        self.assertEqual(flat["settings"]["schedule"]["windowMinutes"], 240)
+        loaded = cfg.load_config()["connections"]["glm-coding-plan"]
+        self.assertEqual(loaded["window"]["durationMinutes"], 240)
+
+    def test_prompt_and_max_tokens_layer_flags(self):
+        write_config(account_connection(mode="fixed"))
+        result = invoke(["config", "settings", "--max-tokens", "8", "--prompt", "say ok"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        loaded = cfg.load_config()["connections"]["claude-code-main"]
+        self.assertEqual(loaded["activation"]["prompt"], "say ok")
+        self.assertEqual(loaded["activation"]["maxTokens"], 8)
+        self.assertNotEqual(invoke(["config", "settings", "--max-tokens", "0"]).exit_code, 0)
+        self.assertNotEqual(invoke(["config", "settings", "--window-minutes", "0"]).exit_code, 0)
 
 
 class ProfileScheduleTests(IsolatedTestCase):

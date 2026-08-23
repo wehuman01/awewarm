@@ -181,14 +181,14 @@ def _optional_positive_int_proc(value):
 
 
 def _own_schedule_settings(mode, fixed_at, days, wake_when_asleep):
-    """The connection's own schedule overrides: what the prompts collected.
+    """The connection's own overrides: what the prompts collected.
 
     wakeWhenAsleep rides along only where the platform can wake (None on
     Linux) — elsewhere it follows the settings layers."""
-    schedule_settings = {"mode": mode, "times": list(fixed_at), "days": days}
+    own = {"schedule": {"mode": mode, "times": list(fixed_at), "days": days}}
     if wake_when_asleep is not None:
-        schedule_settings["wakeWhenAsleep"] = bool(wake_when_asleep)
-    return {"schedule": schedule_settings}
+        own["wakeWhenAsleep"] = bool(wake_when_asleep)
+    return own
 
 
 def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep):
