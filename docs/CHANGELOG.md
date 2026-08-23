@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.8
 
 The developer's community hub (https://awewarm.wehuman.top) is now documented for its users: `docs/community-hub/` (README + README_cn) walks a first-time user from `pip install awewarm` through pairing by invite to delegation — trust rule first, FAQ included — and the READMEs and README.ai.md link to it.
 
