@@ -331,6 +331,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _healthz_payload(self):
         return {"ok": True, "version": __version__, "claimed": self.warm.claimed}
 
+    def _view_extras(self, warm, tenant):
+        """Fields a subclass layers onto the /v1/state view (solo adds none)."""
+        return {}
+
     def _join(self, body, machine):
         raise ApiError(404, "this server is single-tenant — pair with: awewarm remote connect <url>")
 
@@ -417,6 +421,7 @@ class _Handler(BaseHTTPRequestHandler):
                 view = warm.view()
                 if tenant is not None:
                     view["tenant"] = tenant.id
+                view.update(self._view_extras(warm, tenant))
                 return self._send(200, view)
             if parts[:2] == ["v1", "keys"] and len(parts) == 2:
                 if method != "PUT":

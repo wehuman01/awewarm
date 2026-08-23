@@ -190,8 +190,15 @@ def _show_status(connection, as_json, location=None):
         ticked = schedule.parse_ts(remote_view.get("lastTickAt"))
         if ticked is not None:
             ticked = ticked.astimezone(now.tzinfo)
+        hub_version = remote_view.get("hubVersion")
+        engine_version = remote_view.get("version")
+        what = (
+            f"awewarm-hub {hub_version} (engine awewarm {engine_version})"
+            if hub_version
+            else f"awewarm server {engine_version}"
+        )
         click.echo(
-            f"awewarm server {remote_view.get('version')} at {remote.remote_url(config)} — "
+            f"{what} at {remote.remote_url(config)} — "
             f"up since {cli._fmt_moment(started, now)}, last tick {cli._fmt_moment(ticked, now)}"
         )
     for conn_id in sorted(conns):

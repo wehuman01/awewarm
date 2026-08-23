@@ -1733,6 +1733,16 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertIn("up since today 12:00", result.output)
         self.assertIn("last tick today 12:05", result.output)
 
+    def test_status_health_line_labels_a_hub_with_both_versions(self):
+        self.delegate()
+        view = self.server_view()
+        view["hubVersion"] = "9.9.9"  # only a hub serves this; solo never does
+        with mock.patch("awewarm.remote.ensure_session", return_value=view):
+            result = invoke(["status", "--remote"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn(f"awewarm-hub 9.9.9 (engine awewarm {view['version']})", result.output)
+        self.assertNotIn("awewarm server", result.output)
+
     def test_tick_skips_remote_and_rekeys_after_server_restart(self):
         self.delegate(plan_connection(fixed_at=("03:00",), days="every-day"))
         self.warm.claimed_token = None  # a restart wiped the RAM keyring+token
