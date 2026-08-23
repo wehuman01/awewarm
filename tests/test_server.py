@@ -5,6 +5,7 @@ reaches the data dir), and the tick semantics that differ from local:
 held-not-failed activations while a key is missing, then a catch-up fire or
 skip once it returns.
 """
+import http.client
 import json
 import tempfile
 import unittest
@@ -259,3 +260,20 @@ class TickTests(ServerCase):
         with self.assertRaises(remote_client.RemoteError) as ctx:
             remote_client.run_connection(self.url, self.token, "nope")
         self.assertIn("404", str(ctx.exception))
+
+
+class KeepaliveTests(ServerCase):
+    def test_an_idle_keepalive_connection_is_closed(self):
+        # HTTP/1.1 keep-alive parks a thread per idle connection and the
+        # socket never times out by itself; the handler's read timeout is
+        # what reclaims one (a proxy pooling origin connections is the
+        # honest client this bites — urllib closes after every request).
+        host, port = self.httpd.server_address
+        with mock.patch.object(server._Handler, "timeout", 0.3):
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            self.addCleanup(conn.close)
+            conn.request("GET", "/healthz")
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)  # the answer arrives...
+            response.read()
+            self.assertEqual(conn.sock.recv(4096), b"")  # ...then silence ends the connection

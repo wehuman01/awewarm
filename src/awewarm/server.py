@@ -43,6 +43,12 @@ from .config import append_log, conn_state, connection_errors, default_conn_stat
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
 BODY_LIMIT_BYTES = 256 * 1024
+# HTTP/1.1 keep-alive parks a thread per idle connection, and the socket has
+# no default timeout — a proxy pooling origin connections (cloudflared is
+# the recommended tunnel) would park them forever on a long-lived serve.
+# awewarm's own clients close after every request, so closing unread
+# connections after this long only ever reaps idle pool entries.
+IDLE_TIMEOUT_SECONDS = 30
 # The tick and run_now hold the server lock while sending, so one activation
 # must not stall every API call behind it: cap HTTP far below the 60 s the
 # local CLI allows (delegated connections are always HTTP subscriptions).
@@ -320,6 +326,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     server_version = "awewarm-server"
     protocol_version = "HTTP/1.1"
+    timeout = IDLE_TIMEOUT_SECONDS  # an unread keep-alive connection ends, its thread freed
     warm = None  # bound by make_server
 
     # --- seams a multi-tenant subclass overrides (solo behavior here) ---

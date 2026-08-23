@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.9
+
+`serve` closes a keep-alive connection that sits unread for 30 s (`server.IDLE_TIMEOUT_SECONDS`). HTTP/1.1 keep-alive parks a thread per idle connection and the socket has no default timeout, so on a long-lived serve a proxy pooling origin connections (cloudflared, the recommended tunnel) parks threads for good; awewarm's own clients close after every request and never notice. awewarm-hub serves inherit the same bound through `server._Handler`.
+
 ## v0.5.8
 
 The developer's community hub (https://awewarm.wehuman.top) is now documented for its users: `docs/community-hub/` (README + README_cn) walks a first-time user from `pip install awewarm` through pairing by invite to delegation — trust rule first, FAQ included — and the READMEs and README.ai.md link to it.
