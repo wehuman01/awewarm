@@ -63,7 +63,7 @@ awewarm config add
 awewarm remote connect https://awewarm.wehuman.top --invite awi_...
 ```
 
-邀请码一次性、有时效（通常 48 小时）。配对时会打印一次你的个人 token 并自动存入 secrets.json——**自己留一份副本**：不重新申请邀请码的话，它是回到你账号的唯一途径。
+邀请码一次性、有时效（通常 7 天）。配对时会打印一次你的个人 token 并自动存入 secrets.json——**自己留一份副本**：不重新申请邀请码的话，它是回到你账号的唯一途径。
 
 ### 4. 委托订阅连接
 

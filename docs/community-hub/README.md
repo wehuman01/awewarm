@@ -63,7 +63,7 @@ awewarm config add
 awewarm remote connect https://awewarm.wehuman.top --invite awi_...
 ```
 
-The invite code is one-time and time-limited (typically 48 h). Pairing prints your personal token once and saves it to secrets.json — **keep a copy**: it is the only way back into your account without asking for a fresh invite.
+The invite code is one-time and time-limited (typically 7 d). Pairing prints your personal token once and saves it to secrets.json — **keep a copy**: it is the only way back into your account without asking for a fresh invite.
 
 ### 4. Delegate the subscription
 
