@@ -70,7 +70,8 @@ class WarmServerPersistenceTests(unittest.TestCase):
         self.push(persist=True)
         self.assertTrue(self.keys_file().exists())
         self.assertEqual(json.loads(self.keys_file().read_text()), {"glm": "sk-test"})
-        self.assertEqual(stat.S_IMODE(self.keys_file().stat().st_mode), 0o600)
+        if os.name != "nt":  # NTFS has no POSIX mode bits; chmod is advisory only.
+            self.assertEqual(stat.S_IMODE(self.keys_file().stat().st_mode), 0o600)
         self.assertTrue(self.warm.view()["connections"]["glm"]["keyPersisted"])
 
     def test_plain_push_leaves_no_file_and_views_ram_only(self):
@@ -271,7 +272,8 @@ class BackupRestoreTests(IsolatedTestCase):
             self.names(),
             ["config.json", "machine-id", "manifest.json", "secrets.json", "state.json"],
         )
-        self.assertEqual(stat.S_IMODE(self.archive.stat().st_mode), 0o600)
+        if os.name != "nt":  # NTFS has no POSIX mode bits; chmod is advisory only.
+            self.assertEqual(stat.S_IMODE(self.archive.stat().st_mode), 0o600)
         self.assertIn("PLAINTEXT", result.output)
         with tarfile.open(self.archive) as tar:
             manifest = json.loads(tar.extractfile("manifest.json").read())
