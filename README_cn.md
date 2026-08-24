@@ -212,7 +212,7 @@ awewarm config set <id> --persist-key off   # 同样会询问：服务器端随�
                                             #   "挂起直到本机回来"的状态
 ```
 
-hub 上还需运维者先允许（`awewarm-hub config --persist-keys on`，默认关闭）。`awewarm status` 会标明每条连接在哪一侧（`key: server RAM only` / `key: stored on the server`）。
+hub 上还需运维者先允许（`awewarm-hub config --persist-keys on`，默认关闭）。`awewarm status <id>` 会标明这条连接在哪一侧（`key: server RAM only` / `key: stored on the server`）；汇总视图只在 key 丢失时才提示。
 
 ### 搭建服务器（一次性）
 

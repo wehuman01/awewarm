@@ -212,7 +212,7 @@ awewarm config set <id> --persist-key off   # asks too: the server deletes it, a
                                             #   holds warm-ups again until you're back
 ```
 
-On a hub the operator must also allow it (`awewarm-hub config --persist-keys on`, default off). `awewarm status` shows which side of the line each connection is on (`key: server RAM only` / `key: stored on the server`).
+On a hub the operator must also allow it (`awewarm-hub config --persist-keys on`, default off). `awewarm status <id>` shows which side of the line that connection is on (`key: server RAM only` / `key: stored on the server`); the summary stays quiet unless a key is missing.
 
 ### Set up the server (once)
 
