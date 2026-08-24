@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.2
+
+Docs follow the hub's new invite-expiry default: the READMEs and the community-hub tutorial now say pairing codes last 7 days by default (was 48 h).
+
 ## v0.6.1
 
 `status` treats key location as a static fact, not news: the summary no longer prints a `key:` line for every delegated connection — it stays quiet unless a key is actually missing on the server, where the `⚠ ... rerun: awewarm remote push` warning still speaks up. The per-connection view (`awewarm status <id>`) keeps stating where the key lives (`key: server RAM only` / `key: stored on the server`), without the parenthetical asides.
