@@ -2,9 +2,9 @@
 
 ![awewarm](../../../logo/hero2.webp)
 
-AI coding plans all have usage windows. Claude Max gives you 5 hours from the first request. Codex and third-party token plans work the same way. You start at 9 AM, the window closes at 2 PM. You take a lunch break, come back at 3 PM, and your first request opens a brand new window — burning quota on a partial session. awewarm fixes this by sending one minimal request at the right time so the window is always already open when you sit down to code.
+AI coding plans all have usage windows. Claude Max gives you 5 hours from the first request. Codex and third-party token plans have windows of their own. You start at 9 AM, the window closes at 2 PM. You take a lunch break, come back at 3 PM, and your first request opens a brand new window — burning quota on a partial session. awewarm fixes this by sending one minimal request at the right time so the window is always already open when you sit down to code.
 
-The install is a single prompt: "Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it." The agent installs the package, registers the scheduler with launchd, discovers your Claude Code login from Keychain and Codex from `~/.codex/auth.json`, sets up a fixed-time grid, and adds any subscription connections. Two minutes later, `awewarm status` shows everything green. The learning cost of the tool moves from you to the agent.
+The install is a single prompt: "Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it." The agent installs the package and the awewarm skill, then walks you through `awewarm init` in your terminal: it discovers your Claude Code login (macOS Keychain or `~/.claude/.credentials.json`) and your Codex login (`~/.codex/auth.json`), offers a full-day fixed-time grid when the window is known, adds subscription endpoints through `awewarm config add`, and registers the background scheduler (launchd on macOS, Task Scheduler on Windows, systemd on Linux). Two minutes later, `awewarm status` shows every connection `connected`. The learning cost of the tool moves from you to the agent.
 
 GitHub: [github.com/mugpeng/awewarm](https://github.com/mugpeng/awewarm)
 
@@ -31,7 +31,7 @@ Most cron tools have two states: working or broken. awewarm has four:
 - **Degraded** — `degradeAfterNodes` (default 3) consecutive nodes lost. Catch-up stops. Each node gets one attempt. Success resets the ladder.
 - **Auto-disabled** — another 3 consecutive nodes lost while degraded. Goes silent. Only `--on` or a successful manual `run` restores it.
 
-What does not count as a node: manual runs, slots the machine slept through, catch-up retries within failing. `awewarm status` shows the current rung: `Health: failing -- 1/3 nodes lost, catch-up attempt 2/5`.
+What does not count as a node: manual runs, slots the machine slept through, catch-up retries within failing. `awewarm status` shows the current rung: `Health: failing — 1/3 nodes lost, catch-up attempt 2/5`.
 
 ## Account and Subscription Connections
 
@@ -39,15 +39,15 @@ awewarm supports both CLI logins and API key subscriptions — five transports, 
 
 **Claude Code** — detected from macOS Keychain or `~/.claude/.credentials.json`. 5-hour window is verified. No credentials stored; awewarm reuses existing login state. Warm-up: `claude -p --model haiku "Reply with exactly: ok"`.
 
-**Codex** — detected from `~/.codex/auth.json`. Window duration is unknown, starts in fixed mode. Warm-up: `codex exec -m <model> "Reply with exactly: ok"`.
+**Codex** — detected from `~/.codex/auth.json`. Window duration is unknown, starts in fixed mode. Warm-up: `codex exec --skip-git-repo-check "Reply with exactly: ok"` (plus `-m <model>` when one is configured).
 
-**Subscription plans** — any OpenAI Chat / Responses / Anthropic-compatible endpoint with a base URL + API key. Protocols: `openai-chat`, `openai-responses`, `anthropic-messages`. The key is stored in `secrets.json` (0600) so the background scheduler can read it. The `plan.url` field is stored in the connection config. Claude Code account, Codex account, GLM token plan, Doubao token plan — all managed from the same config, all running on the same scheduler.
+**Subscription plans** — any OpenAI Chat / Responses / Anthropic-compatible endpoint with a base URL + API key. Protocols: `openai-chat`, `openai-responses`, `anthropic-messages`. The key is stored in `secrets.json` (0600) so the background scheduler can read it. The base URL is stored in the connection's `url` field. Claude Code account, Codex account, GLM token plan, Doubao token plan — all managed from the same config, all running on the same scheduler.
 
 ## The Architecture: Tick, Not Daemon
 
 No daemon. No persistent process. The system scheduler (launchd / Task Scheduler / systemd timer) invokes `awewarm tick` once a minute. The tick loads config and state, computes actions, sends requests if due, records outcomes, saves state, and exits. Pure function from `(config, state, now) → (actions, new_state)` — testable, inspectable, impossible to drift.
 
-On macOS, launchd wakes the machine from sleep at slot times (no sudo). On Windows, extra Task Scheduler tasks with *Wake to run*. On Linux, missed slots catch up within the catch-up window after wake. `--no-wake` opts out per connection.
+On macOS, launchd fires the tick at the exact slot time while the machine is awake (no sudo); waking a lid-closed sleeping Mac takes `awewarm scheduler install --wake` — one sudo for a wake-only grant. On Windows, extra Task Scheduler tasks with *Wake to run*. On Linux, a suspended machine cannot be woken; missed slots catch up within the catch-up window after wake. Wake is opt-in per connection (`--wake`; off by default).
 
 ## The Stack: What the Skill Can Reach
 
@@ -55,7 +55,7 @@ On macOS, launchd wakes the machine from sleep at slot times (no sudo). On Windo
 |---|---|
 | "Show me awewarm status." | `awewarm status` |
 | "Set Claude Code to warm at 06:35, 11:40, 16:45, 21:50 on weekdays." | `awewarm config set claude-code --times 06:35,11:40,16:45,21:50 --days weekday` |
-| "Switch Claude Code to interval mode." | `awewarm config set claude-code --mode interval` (after `--window 300`) |
+| "Switch Claude Code to interval mode." | `awewarm config set claude-code --mode interval` — its 5-hour window is already verified |
 | "Add my GLM coding plan." | interactive `awewarm config add` |
 | "Pause Codex warm-ups for the week." | `awewarm config set codex --off` |
 | "Resume Codex and reset the health ladder." | `awewarm config set codex --on` |

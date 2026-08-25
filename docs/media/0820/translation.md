@@ -2,9 +2,9 @@
 
 ![awewarm](../../../logo/hero2.webp)
 
-所有 AI 编程订阅都有使用窗口期。就好像每个人的心里都有个牛来。Claude Max 从第一次请求起给你 5 小时，Codex 和第三方 token 计划也是如此。你早上 9 点开工，窗口到下午 2 点关闭。午休回来，下午 3 点再坐下，第一请求就会开启一个全新窗口——只为一段零散的会话烧掉配额。awewarm 解决这个问题：在正确的时间自动发送一次最小请求，让你坐下写代码时，订阅窗口已经提前打开。就好像牛来，或许你永远不会去电影院看它，但小某书、视频号，它的形象已经深入脑海。
+所有 AI 编程订阅都有使用窗口期。就好像每个人的心里都有个牛来。Claude Max 从第一次请求起给你 5 小时；Codex 和第三方 token 计划也有各自的窗口。你早上 9 点开工，窗口到下午 2 点关闭。午休回来，下午 3 点再坐下，第一请求就会开启一个全新窗口——只为一段零散的会话烧掉配额。awewarm 解决这个问题：在正确的时间自动发送一次最小请求，让你坐下写代码时，订阅窗口已经提前打开。就好像牛来，或许你永远不会去电影院看它，但小某书、视频号，它的形象已经深入脑海。
 
-和awesome 的其他工具一样，awewarm 也是面向ai 的。所以安装只需一句话："Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it."（阅读这个 README 并照做。）有aweskill 的情况下，AI 智能体会自动安装包、向 launchd 注册调度器、从 macOS Keychain 读取你的 Claude Code 登录态，从 `~/.codex/auth.json` 读取 Codex 登录态，设置固定时间网格，并添加任何订阅连接。两分钟后，`awewarm status` 全部绿灯。工具的上手成本从你转移到了 AI 智能体身上。
+和awesome 的其他工具一样，awewarm 也是面向ai 的。所以安装只需一句话："Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it."（阅读这个 README 并照做。）有aweskill 的情况下，AI 智能体会装好包和 awewarm 技能，再带你跑一遍 `awewarm init`：自动发现你的 Claude Code 登录态（macOS Keychain 或 `~/.claude/.credentials.json`）和 Codex 登录态（`~/.codex/auth.json`），窗口已知时给出全天固定时间网格，订阅端点用 `awewarm config add` 添加，最后注册后台调度器（macOS 用 launchd，Windows 用 Task Scheduler，Linux 用 systemd）。两分钟后，`awewarm status` 里所有连接都是 connected。工具的上手成本从你转移到了 AI 智能体身上。
 
 GitHub: [github.com/mugpeng/awewarm](https://github.com/mugpeng/awewarm)
 
@@ -20,7 +20,7 @@ GitHub: [github.com/mugpeng/awewarm](https://github.com/mugpeng/awewarm)
 
 间隔模式串联窗口。每次成功后，下一次请求会在 `window + grace + jitter` 之后调度（默认 300 分钟 + 75 秒 + 最多 30 秒抖动）。缓冲期（grace）**在旧窗口关闭后**才开始运行——提前触发会落在旧窗口内，什么也开启不了。在没有任何成功记录时，第一次请求会立即作为锚点触发（`--start HH:MM` 可以推迟）。手动 `run` 不会移动链，除非使用 `--reset-due`。间隔模式在窗口通过 `--window` 验证前**处于锁定状态**——错误时长的连锁调度比固定模式更危险。
 
-## 健康阶梯：四级状态，一条恢复路径
+## 四级状态，一条恢复路径
 
 大多数 cron 类工具只有两种状态：正常或故障。awewarm 有四种：
 
@@ -31,7 +31,7 @@ GitHub: [github.com/mugpeng/awewarm](https://github.com/mugpeng/awewarm)
 - **降级（Degraded）** — `degradeAfterNodes`（默认 3）个连续节点丢失。补跑停止。每个节点只尝试一次。成功重置阶梯。
 - **已自动禁用（Auto-disabled）** — 降级状态下再丢失 3 个连续节点。进入静默。只有 `--on` 或一次成功的手动 `run` 才能恢复。
 
-不算作节点的情形：手动运行、机器睡眠错过的时段、故障中状态内的补跑重试。`awewarm status` 显示当前层级：`健康状态: 故障中 -- 已丢失 1/3 个节点，补跑尝试 2/5`。
+不算作节点的情形：手动运行、机器睡眠错过的时段、故障中状态内的补跑重试。`awewarm status` 显示当前层级：`Health: failing — 1/3 nodes lost, catch-up attempt 2/5`（故障中——已丢失 1/3 个节点，补跑尝试 2/5）。
 
 ## 账号与订阅连接
 
@@ -39,15 +39,15 @@ awewarm 同时支持 CLI 登录和 API key 订阅——五种传输方式，一�
 
 **Claude Code** — 从 macOS Keychain 或 `~/.claude/.credentials.json` 自动检测。5 小时窗口已确认。不存储凭证；awewarm 复用现有的登录状态。保温命令：`claude -p --model haiku "Reply with exactly: ok"`。
 
-**Codex** — 从 `~/.codex/auth.json` 自动检测。窗口时长未知，以固定模式启动。保温命令：`codex exec -m <model> "Reply with exactly: ok"`。
+**Codex** — 从 `~/.codex/auth.json` 自动检测。窗口时长未知，以固定模式启动。保温命令：`codex exec --skip-git-repo-check "Reply with exactly: ok"`（配置了模型时再加 `-m <model>`）。
 
-**订阅计划** — 任何 OpenAI Chat / Responses / Anthropic-compatible 端点，只要提供 base URL + API key。支持协议：`openai-chat`、`openai-responses`、`anthropic-messages`。密钥存储在 `secrets.json`（权限 0600）中，供后台调度器读取。`plan.url` 字段存储在连接配置中。Claude Code 账号、Codex 账号、GLM token 计划、DeepSeek token 计划——全部由同一套配置管理，在同一调度器上运行。
+**订阅计划** — 任何 OpenAI Chat / Responses / Anthropic-compatible 端点，只要提供 base URL + API key。支持协议：`openai-chat`、`openai-responses`、`anthropic-messages`。密钥存储在 `secrets.json`（权限 0600）中，供后台调度器读取。base URL 存储在连接配置的 `url` 字段中。Claude Code 账号、Codex 账号、GLM token 计划、Doubao token 计划——全部由同一套配置管理，在同一调度器上运行。
 
 ## 架构设计：心跳调度，而非守护进程
 
 没有守护进程（daemon）。没有常驻进程。系统调度器（launchd / Task Scheduler / systemd timer）每分钟调用一次 `awewarm tick`。心跳调度（tick）加载配置和状态，计算动作，发送到期请求，记录结果，保存状态，然后退出。即 `(config, state, now) → (actions, new_state)` 的纯函数——可测试、可检查、不会漂移。（**纯函数**：指输出仅由输入决定、无副作用的函数。）
 
-在 macOS 上，launchd 会在时段到来时把机器从睡眠中唤醒（无需 sudo）。在 Windows 上，额外的 Task Scheduler 任务带有 *唤醒运行（Wake to run）* 设置。在 Linux 上，唤醒后的错失时段会在补跑窗口内自动补跑。每个连接都可以用 `--no-wake` 单独关闭唤醒。
+在 macOS 上，机器清醒时 launchd 会在精确的时段时刻触发 tick（无需 sudo）；要唤醒合盖睡眠的机器，需要 `awewarm scheduler install --wake`——一次 sudo，授权范围仅限唤醒事件。在 Windows 上，额外的 Task Scheduler 任务带有 *唤醒运行（Wake to run）* 设置。在 Linux 上无法唤醒挂起的机器，错失时段会在下次唤醒后的补跑窗口内自动补跑。唤醒是按连接用 `--wake` 选择开启的（默认关闭）。
 
 ## 技能可以触达的命令栈
 
@@ -55,7 +55,7 @@ awewarm 同时支持 CLI 登录和 API key 订阅——五种传输方式，一�
 |---|---|
 | "查看 awewarm 状态。" | `awewarm status` |
 | "把 Claude Code 的保温时间设为工作日 06:35、11:40、16:45、21:50。" | `awewarm config set claude-code --times 06:35,11:40,16:45,21:50 --days weekday` |
-| "把 Claude Code 切换为间隔模式。" | `awewarm config set claude-code --mode interval`（在 `--window 300` 之后） |
+| "把 Claude Code 切换为间隔模式。" | `awewarm config set claude-code --mode interval`（5 小时窗口已验证，无需再 `--window`） |
 | "添加我的 GLM 编程订阅。" | 交互式 `awewarm config add` |
 | "这周暂停 Codex 的warm请求。" | `awewarm config set codex --off` |
 | "恢复 Codex 并重置健康状态。" | `awewarm config set codex --on` |
