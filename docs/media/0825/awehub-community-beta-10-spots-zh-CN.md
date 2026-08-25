@@ -25,7 +25,7 @@ awewarm 的原理是挑准时机发一个极小的请求，把 AI 编程套餐�
 
 > "Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm."
 
-## 丑话说在前面
+## 我会尽量保护
 
 hub 发保温请求用的是**你自己的 API key**，也就是说密钥明文会过一遍服务器的内存。用这个服务，等于你信任运营者（我，项目作者本人）和这台机器的 root。爆炸半径能控制住，靠的是这几点：
 
@@ -34,7 +34,7 @@ hub 发保温请求用的是**你自己的 API key**，也就是说密钥明文�
 
 这个取舍你不接受也行：自己跑一个，`awewarm serve` 起在任何你控制的机器上，或者搭个私有的 [awewarm-hub](https://github.com/wehuman01/awewarm-hub)。
 
-## hub 能保温什么
+## hub 能做什么
 
 | 连接类型 | hub 能保温吗？ |
 |---|---|
@@ -45,7 +45,7 @@ hub 发保温请求用的是**你自己的 API key**，也就是说密钥明文�
 
 ## 你可能想问的
 
-**有没有可用性保证？** 没有，hub 是我个人在运营。哪天它停了，`awewarm config set <id> --local` 把连接收回来就行——你的配置和 key 从没离开过你的机器。
+**有没有可用性保证？** 没有，hub 是我个人在运营。哪天它停了，`awewarm config set <id> --local` 把连接收回来就行——你的配置和 key 从没离开过你的机器。当然如果服务停了，我也会通知大家。
 
 **服务器重启了 / status 显示 "key missing"。** 不用慌，就是这么设计的：你下一条本地命令会自动重新认领服务器、重推密钥；期间到点的槽位会在追赶窗口里补发，跟笔记本睡醒补跑是一个逻辑。
 
@@ -60,6 +60,12 @@ hub 发保温请求用的是**你自己的 API key**，也就是说密钥明文�
 10 个名额，先到先得。
 
 发邮件到 [peng@wehuman.top](mailto:peng@wehuman.top)——你是谁、想保温哪个套餐。bug 请提 [GitHub issues](https://github.com/wehuman01/awewarm/issues)。
+
+## awewarm 系列文章
+
+- [awewarm：牛来，让你的ai订阅时刻热起来](https://mp.weixin.qq.com/s/HYAzfUPF_PUEfio4nZs1KA)
+
+
 
 ## More from mugpeng
 

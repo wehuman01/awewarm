@@ -33,7 +33,7 @@ awewarm 管理两类连接：
 
 调度分两种模式：`fixed` / `interval`，详见下文[调度模式](#调度模式)。interval 类续期在窗口语义已验证或用户确认前保持锁定；`fixed` 始终安全。
 
-## 安装
+## 快速开始
 
 需要 Python ≥ 3.9：
 
@@ -44,8 +44,6 @@ pip3 install awewarm
 后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm tick`。
 
 所有密钥都保存在 `secrets.json` —— 环境变量引用方式已移除：后台调度器（launchd / systemd / 任务计划程序）读不到 shell 变量，会以 "API key unavailable" 静默失败。密钥文件使用原子写入；如果文件损坏或不可读，awewarm 会明确拒绝操作，不会把它静默覆盖。
-
-## 快速开始
 
 ### 让 AI agent 代装
 

@@ -33,7 +33,7 @@ awewarm manages two kinds of connections:
 
 It schedules those requests in two modes — `fixed` and `interval` — explained in [Scheduling Modes](#scheduling-modes) below. Interval-style renewal stays locked until the window semantics are verified or user-confirmed; `fixed` is always safe.
 
-## Install
+## Quick Start
 
 Requires Python ≥ 3.9:
 
@@ -44,8 +44,6 @@ pip3 install awewarm
 The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm tick`.
 
 All keys live in `secrets.json` — env-var references were removed because the background scheduler (launchd/systemd/Task Scheduler) cannot read shell variables and would silently fail with "API key unavailable". Writes are atomic; a malformed or unreadable secrets file is refused rather than silently replaced.
-
-## Quick Start
 
 ### Let an AI agent set it up
 
