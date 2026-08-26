@@ -1719,13 +1719,15 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertEqual(
             self.server_view()["connections"]["codex"]["credentialFingerprint"], stale.fingerprint
         )
-        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh):
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh), \
+                mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
             result = invoke(["remote", "push"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         entry = self.server_view()["connections"]["codex"]
         self.assertEqual(entry["credentialFingerprint"], fresh.fingerprint)  # drift re-pushed
         self.assertEqual(self.warm.keys["codex"], fresh.raw)
-        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh):
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh), \
+                mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
             result = invoke(["remote", "push"])
         self.assertIn("already in sync", output_of(result))  # matching fingerprint is a no-op
 
