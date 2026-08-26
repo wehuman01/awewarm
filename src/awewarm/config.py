@@ -959,10 +959,6 @@ def connection_errors(conn, conn_id="<connection>"):
     location = conn.get("location", "local")
     if location not in LOCATIONS:
         errors.append(f"{conn_id}: location must be 'local' or 'remote'")
-    elif location == "remote" and kind == KIND_ACCOUNT:
-        errors.append(
-            f"{conn_id}: account connections cannot be remote — their CLI login lives on this machine"
-        )
 
     transport = conn.get("transport")
     if not isinstance(transport, dict) or transport.get("kind") not in TRANSPORTS:

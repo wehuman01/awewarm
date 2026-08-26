@@ -211,15 +211,20 @@ def _show_status(connection, as_json, location=None):
                     conn_id, entry.get("config") or conn, server_state, now,
                     detailed=bool(connection), where=remote.remote_url(config),
                 )
+                noun = "credential" if (entry.get("config") or {}).get("kind") == "account" else "key"
                 if entry.get("keyMissing"):
-                    click.echo("  ⚠ the server lost its key (restarted?) — rerun: awewarm remote push")
+                    click.echo(f"  ⚠ the server lost its {noun} (restarted?) — rerun: awewarm remote push")
                 elif connection:
                     # Key location is a static fact, not news — the summary only
                     # speaks up when a key is missing.
                     if entry.get("keyPersisted"):
-                        click.echo("  key: stored on the server (you opted in; plaintext in its keys.json)")
+                        click.echo(f"  {noun}: stored on the server (you opted in; plaintext in its keys.json)")
                     else:
-                        click.echo("  key: server RAM only")
+                        click.echo(f"  {noun}: server RAM only")
+                fingerprint = entry.get("credentialFingerprint")
+                if connection and noun == "credential":
+                    note = f"fingerprint {fingerprint}" if fingerprint else "fingerprint unknown (re-push: awewarm remote push)"
+                    click.echo(f"  credential {note} — the local login is the source of truth")
                 continue
             # Reachable server, but the connection is missing from its view
             # (wiped data dir, never-healed pending push): show the local copy

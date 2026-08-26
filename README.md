@@ -184,7 +184,7 @@ No wake machinery exists or is needed on a machine that never sleeps — `awewar
 
 ## Remote Server — your own box, or a shared hub
 
-A lid-closed laptop on battery eventually enters standby, where no scheduled wake can reach it — and an off machine fires nothing at all. For around-the-clock warmth regardless of power state, delegate subscription connections to an always-on machine (VPS, NAS, Raspberry Pi) — `awewarm serve` for a box of your own, or `awewarm-hub serve` shared with a team, a family, or a community. CLI-account connections cannot be delegated — their login lives on your machine and keeps ticking locally.
+A lid-closed laptop on battery eventually enters standby, where no scheduled wake can reach it — and an off machine fires nothing at all. For around-the-clock warmth regardless of power state, delegate connections to an always-on machine (VPS, NAS, Raspberry Pi) — `awewarm serve` for a box of your own, or `awewarm-hub serve` shared with a team, a family, or a community. Subscriptions delegate their API key; CLI accounts (Claude Code / Codex logins) delegate their login credential the same way — the server runs the CLI with the credential injected (Claude via `CLAUDE_CODE_OAUTH_TOKEN`, Codex via a per-connection `CODEX_HOME` sandbox), and needs the matching CLI installed. The local login stays the source of truth: your machine re-reads it on every sync and re-pushes when it rotates.
 
 The two flavors at a glance:
 
@@ -194,7 +194,7 @@ The two flavors at a glance:
 | Who may pair | just you — the **first** token to reach an unclaimed server claims it | many users, one-time invites (`awi_...`) the operator mints |
 | Software on the box | this package (`pip install awewarm`) | the separate **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** package (`pip install awewarm-hub`; same MPL-2.0) |
 | Pair from your machine | `awewarm remote connect <url>` | `awewarm remote connect <url> --invite awi_...` |
-| Trust | your keys, your box | every user's API keys pass through the operator's RAM — hub users must trust the operator and root |
+| Trust | your keys, your box | every user's API keys and login credentials pass through the operator's RAM — hub users must trust the operator and root |
 | The right pick when… | you have, or can cheaply rent, any always-on box and want it fully yours | you have no always-on box of your own, or want to share one with several people |
 
 Once paired, the two flavors are identical from your laptop: the same delegation commands, the same `status --remote` view, the same takeback with `--local`.
@@ -267,10 +267,13 @@ awewarm remote connect https://warm.example.com              # solo: token gener
 awewarm remote connect https://warm.example.com --invite awi_...   # hub: burn an invite for a personal token
 awewarm config set glm --remote                   # the server takes over this connection
 awewarm config set glm --duplicate --remote       # ...or keep glm local and delegate a copy of it
+awewarm config set codex --remote                 # an account too: asks first, then pushes its login credential
 awewarm status                                    # merged view: local + delegated truth
 awewarm status --remote                           # delegated only, plus the server health line (version/uptime/last tick)
 awewarm status --local                            # locally scheduled connections only
 ```
+
+Delegating an account (a Claude Code or Codex login) works like delegating a key, with one extra gate: the credential is account-wide — it unlocks every subscription under that login, not one scoped plan — so the command shows the target server's URL and asks before reading the login and pushing it (non-interactive shells pass `--yes`). On the server the credential lives in RAM like any key and reaches only the CLI subprocess: Claude Code gets `CLAUDE_CODE_OAUTH_TOKEN`, Codex gets a private `CODEX_HOME` directory whose `auth.json` is re-written from your push before every fire — any token refresh the server-side CLI performs is discarded, because rotation flows one way, local → server. `awewarm remote push` re-reads the login each time, and the background sync (at most twice an hour) re-pushes automatically when the credential's fingerprint no longer matches. Takeback (`--local`) and `status <id>` (which shows `credential: server RAM only` plus the fingerprint) behave exactly like subscriptions'. Prerequisite: the server box must have the CLI itself installed (`claude` / `codex` on its PATH) — the push fails actionably naming the missing binary otherwise.
 
 Moving to a new machine? One command carries everything — connections, keys, schedule state, and the `machine-id` that makes the hub treat the new box as the same machine (no new pairing slot):
 
@@ -286,7 +289,7 @@ The archive holds your API keys and pairing token in plaintext — store it some
 
 ## Security
 
-Local mode: your API keys never leave your machine (`secrets.json`, 0600). Delegating hands a key to that server's RAM — solo is your own box; a hub means trusting its operator (and root). Every other ordinary path is closed by design: no secrets on the server's disk (the one exception is the opt-in `--persist-key`, plaintext `keys.json` 0600, discouraged, confirmed at every enabling command), none in its logs, none readable back over the API, tenants invisible to one another. Delegate a dedicated, revocable key — and see the [hub README → Security](https://github.com/wehuman01/awewarm-hub#security) for the full picture.
+Local mode: your API keys never leave your machine (`secrets.json`, 0600). Delegating hands a key to that server's RAM — solo is your own box; a hub means trusting its operator (and root). An account's login credential is broader than a scoped API key (it covers every subscription under that login), so delegating one adds an explicit confirmation naming the server, and its `--persist-key` warning is worded harder. Every other ordinary path is closed by design: no secrets on the server's disk (the one exception is the opt-in `--persist-key`, plaintext `keys.json` 0600, discouraged, confirmed at every enabling command), none in its logs, none readable back over the API, tenants invisible to one another. Delegate a dedicated, revocable key — and see the [hub README → Security](https://github.com/wehuman01/awewarm-hub#security) for the full picture.
 
 ## Config
 

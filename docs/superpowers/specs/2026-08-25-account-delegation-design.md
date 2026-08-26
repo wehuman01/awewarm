@@ -1,7 +1,9 @@
 # Account Delegation to serve / hub — Design
 
 - Date: 2026-08-25
-- Status: draft, awaiting user review (nothing implemented yet)
+- Status: implemented in v0.7.0 (branch feature/delegate-cli-accounts); the
+  claude `CLAUDE_CONFIG_DIR` fallback was not needed for the primary env-var
+  path but remains unimplemented pending a clean-box verification
 - Scope: `awewarm` (this repo) plus coordinated updates in the separate `awewarm-hub` package
 
 ## Problem

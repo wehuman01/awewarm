@@ -71,15 +71,25 @@ first.
   goes through `transport.redact`;
   logs never contain API keys or auth headers.
 - **Remote delegation is single-owner**: a connection is ticked by exactly one
-  place — locally, or (subscription connections only, `location: "remote"`)
-  by the paired server (`awewarm serve` here, `awewarm-hub serve` in the
-  separate hub package). The server holds no secrets on disk: the
-  claim token and API keys live in local `secrets.json`, are pushed over TLS,
-  and sit in server RAM only; after a restart the local side re-claims and
-  re-keys on contact, and key-missing activations are held (not failed) until
-  catch-up decides. The `--remote` flag only lands after the server accepted
-  the push. Never introduce a state where both sides (or neither) tick a
-  connection.
+  place — locally, or (`location: "remote"`) by the paired server (`awewarm
+  serve` here, `awewarm-hub serve` in the separate hub package). Subscriptions
+  and accounts both delegate: an account's login credential is read from the
+  local CLI login (`credstore`), pushed like an API key, and injected into the
+  server-side CLI run (`CLAUDE_CODE_OAUTH_TOKEN` for claude, a per-connection
+  `CODEX_HOME` sandbox re-written from the push before every fire for codex —
+  server-side refreshes are always discarded; rotation flows local → server
+  only, detected by the credential fingerprint riding the push). The server
+  holds no secrets on disk: the claim token, API keys, and credentials live in
+  local storage, are pushed over TLS, and sit in server RAM only; after a
+  restart the local side re-claims and re-keys on contact, and key-missing
+  activations are held (not failed) until catch-up decides. The `--remote`
+  flag only lands after the server accepted the push. Never introduce a state
+  where both sides (or neither) tick a connection.
+- **Server activations never run under the global lock**: the tick plans under
+  the server lock, then each connection's plan+fire runs under its own
+  per-connection mutex on a bounded pool; the lock is re-taken once at the end
+  to persist state. Keep API paths (`/v1/state`, pushes) off the activation
+  path — one slow CLI (cap 120 s) must not stall them.
 - **CLI transports resolve to absolute paths** at send time — launchd runs
   with a minimal PATH.
 - **Update checks never run on scheduler ticks**: `update_check.check_async`

@@ -81,6 +81,40 @@ class RunTimeoutTests(LiveServerCase):
             remote.run_connection(self.url, "awt_" + "t" * 40, "glm")
         self.assertEqual(request.call_args.kwargs["timeout"], remote.RUN_TIMEOUT_SECONDS)
 
+    def test_run_connection_outwaits_a_cli_activation(self):
+        # A delegated account fires the CLI (cap 120 s) inside the round-trip;
+        # the caller holding a CLI connection passes the longer wait.
+        self.assertGreaterEqual(remote.CLI_RUN_TIMEOUT_SECONDS, 120)
+        with mock.patch.object(remote, "_request") as request:
+            remote.run_connection(
+                self.url, "awt_" + "t" * 40, "codex", timeout=remote.CLI_RUN_TIMEOUT_SECONDS
+            )
+        self.assertEqual(request.call_args.kwargs["timeout"], remote.CLI_RUN_TIMEOUT_SECONDS)
+
+
+class PushBodyTests(unittest.TestCase):
+    """The push wire body (mocked transport — no server needed)."""
+
+    URL = "http://127.0.0.1:8790"
+    TOKEN = "awt_" + "t" * 40
+
+    def test_push_body_carries_the_credential_fingerprint(self):
+        # The server stores it and reports it back, so the local side can
+        # detect a rotated credential without ever seeing the secret.
+        with mock.patch.object(remote, "_request") as request:
+            remote.push_connection(
+                self.URL, self.TOKEN, "codex", plan_connection(), '{"token": "c"}',
+                "Asia/Shanghai", fingerprint="abcd1234abcd1234",
+            )
+        body = request.call_args[0][3]
+        self.assertEqual(body["credentialFingerprint"], "abcd1234abcd1234")
+        self.assertEqual(body["apiKey"], '{"token": "c"}')
+
+    def test_push_body_fingerprint_defaults_to_none(self):
+        with mock.patch.object(remote, "_request") as request:
+            remote.push_connection(self.URL, self.TOKEN, "glm", plan_connection(), "sk", "Asia/Shanghai")
+        self.assertIsNone(request.call_args[0][3]["credentialFingerprint"])
+
 
 class ImpostorTests(IsolatedTestCase):
     """A 200 answer that is not awewarm's protocol must fail as a RemoteError."""

@@ -1,19 +1,24 @@
 """Send one minimal activation request through a connection's transport.
 
-Builders (activation_argv / http_request_parts) are pure and unit-tested;
-senders do the I/O. Results never contain API keys or auth headers.
+Builders (activation_argv / http_request_parts / activation_env) are pure and
+unit-tested; senders do the I/O. Results never contain API keys, credentials,
+or auth headers.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from .config import die
+from .credstore import claude_access_token
 
 HTTP_TIMEOUT_SECONDS = 60
 CLI_TIMEOUT_SECONDS = 120
+CLI_TRANSPORT_KINDS = ("claude-cli", "codex-cli")
 DETAIL_LIMIT = 200
 SECRET_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.IGNORECASE)
 
@@ -135,7 +140,7 @@ def _powershell():
     )
 
 
-def _send_cli(connection):
+def _send_cli(connection, env=None):
     transport = connection["transport"]
     command = transport.get("cliCommand") or ("claude" if transport["kind"] == "claude-cli" else "codex")
     # Resolve to an absolute path: launchd runs with a minimal PATH where
@@ -157,6 +162,9 @@ def _send_cli(connection):
             # Both CLIs append piped stdin to the prompt; an open pipe would
             # block the headless tick until the timeout. Never read our stdin.
             stdin=subprocess.DEVNULL,
+            # A delegated login rides in as env vars layered over ours; a
+            # locally-fired CLI sees its own login and gets no overlay.
+            env={**os.environ, **env} if env else None,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "detail": f"{command} timed out after {CLI_TIMEOUT_SECONDS}s"}
@@ -194,14 +202,55 @@ def _send_http(connection, api_key, timeout_seconds=None):
         return {"ok": False, "detail": f"request failed: {reason}"}
 
 
-def send_activation(connection, api_key=None, timeout_seconds=None):
+def activation_env(connection, credential, sandbox_root=None, conn_id=None):
+    """Env overlay that injects a delegated login credential into the CLI
+    subprocess; {} when the connection fires locally with its own login.
+
+    claude: CLAUDE_CODE_OAUTH_TOKEN carries the login's access token. codex:
+    CODEX_HOME points at a per-connection sandbox whose auth.json is rewritten
+    from the pushed credential before every fire, so any token refresh the
+    server-side CLI performs is discarded on the next pass (the local login is
+    the source of truth). Raises ValueError when the credential's JSON shape
+    is not recognized.
+    """
+    if credential is None:
+        return {}
+    kind = connection["transport"]["kind"]
+    if kind == "claude-cli":
+        return {"CLAUDE_CODE_OAUTH_TOKEN": claude_access_token(credential)}
+    if kind == "codex-cli":
+        if sandbox_root is None:
+            raise ValueError("a delegated codex connection needs its sandbox dir (internal error)")
+        home = Path(sandbox_root).expanduser() / (conn_id or "codex")
+        home.mkdir(parents=True, exist_ok=True)
+        auth = home / "auth.json"
+        fd = os.open(auth, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(credential)
+        return {"CODEX_HOME": str(home)}
+    raise ValueError(f"a {kind} connection carries no login credential")
+
+
+def remove_sandbox(sandbox_root, conn_id):
+    """Drop one connection's codex sandbox (takeback / delete on the server)."""
+    shutil.rmtree(Path(sandbox_root) / conn_id, ignore_errors=True)
+
+
+def send_activation(connection, api_key=None, timeout_seconds=None, credential=None, sandbox_root=None, conn_id=None):
     """Send one minimal activation request. Returns {"ok": bool, "detail": str}.
 
     timeout_seconds caps an HTTP request (default 60); the delegation server
-    passes a tighter one so a dead endpoint cannot stall its tick loop.
+    passes a tighter one so a dead endpoint cannot stall its tick loop. CLI
+    transports always run at their own cap (CLI_TIMEOUT_SECONDS) instead.
+    credential injects a delegated login into the CLI subprocess (with the
+    codex sandbox under sandbox_root); a locally-fired CLI gets none.
     """
-    if connection["transport"]["kind"] in ("claude-cli", "codex-cli"):
-        return _send_cli(connection)
+    if connection["transport"]["kind"] in CLI_TRANSPORT_KINDS:
+        try:
+            env = activation_env(connection, credential, sandbox_root=sandbox_root, conn_id=conn_id)
+        except ValueError as exc:
+            return {"ok": False, "detail": _detail(str(exc))}
+        return _send_cli(connection, env or None)
     if not api_key:
         die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm config add")
     return _send_http(connection, api_key, timeout_seconds)

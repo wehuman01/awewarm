@@ -184,7 +184,7 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
 ## 远程服务器 —— 独享自己的盒子，或共享 hub
 
-合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把订阅连接委托给任意常开机器（VPS、NAS、树莓派）—— 自己的盒子跑 `awewarm serve`，或与团队/家人/社区共享一台 `awewarm-hub serve`。CLI 账号连接无法委托 —— 登录态在你本机上，继续由本地调度。
+合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把连接委托给任意常开机器（VPS、NAS、树莓派）—— 自己的盒子跑 `awewarm serve`，或与团队/家人/社区共享一台 `awewarm-hub serve`。订阅连接委托的是它的 API key；CLI 账号（Claude Code / Codex 登录）委托的是登录凭据，方式与 key 完全一致 —— 服务器带着注入的凭据运行 CLI（Claude 用 `CLAUDE_CODE_OAUTH_TOKEN`，Codex 用每连接独立的 `CODEX_HOME` 沙箱），前提是服务器上装了对应的 CLI。本地登录永远是事实源：每次同步都重新读取，凭据轮换后自动重推。
 
 两种形态一眼对比：
 
@@ -194,7 +194,7 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 | 谁能配对 | 只有你 —— 未认领的服务器信任**第一个**到达的 token | 多个用户，使用运营者签发的一次性邀请码（`awi_...`） |
 | 服务器上装的软件 | 本包（`pip install awewarm`） | 独立包 **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)**（`pip install awewarm-hub`；同样 MPL-2.0） |
 | 从你的机器配对 | `awewarm remote connect <url>` | `awewarm remote connect <url> --invite awi_...` |
-| 信任 | key 在你自己的盒子里 | 所有用户的 API key 都经过运营者的内存 —— hub 用户必须信任运营者和 root |
+| 信任 | key 在你自己的盒子里 | 所有用户的 API key 和登录凭据都经过运营者的内存 —— hub 用户必须信任运营者和 root |
 | 什么时候选它 | 你有（或方便租到）任意常开机器，想完全自己掌控 | 自己没有常开机器，或想多人共用一台 |
 
 配对之后，两种形态在笔记本侧完全一致：同样的委托命令、同样的 `status --remote` 视图、同样的 `--local` 收回。
@@ -267,10 +267,13 @@ awewarm remote connect https://warm.example.com              # 独享：本地�
 awewarm remote connect https://warm.example.com --invite awi_...   # 共享：用邀请码换取个人 token
 awewarm config set glm --remote                   # 服务器接管这条连接
 awewarm config set glm --duplicate --remote       # ……或者 glm 留在本地，委托它的一份副本
+awewarm config set codex --remote                 # 账号同样可委托：先确认，再推送它的登录凭据
 awewarm status                                    # 合并视图：本地 + 委托真值
 awewarm status --remote                           # 只看委托连接 + 服务器健康行（版本/运行时长/上次 tick）
 awewarm status --local                            # 只看本地调度的连接
 ```
+
+委托账号（Claude Code / Codex 登录）和委托 key 一回事，只多一道确认门：登录凭据是账户级的 —— 它解锁该登录下的**所有**订阅，而不是一把限定范围的 plan key —— 所以命令会展示目标服务器 URL，确认后才读取登录并推送（非交互 shell 需加 `--yes`）。凭据在服务器上与 key 一样只放内存，且只到达 CLI 子进程：Claude Code 通过 `CLAUDE_CODE_OAUTH_TOKEN` 注入，Codex 通过私有 `CODEX_HOME` 目录注入 —— 每次触发前都会用你推送的凭据重写其中的 `auth.json`，服务器侧 CLI 做的任何 token 刷新都会被丢弃，轮换只有一个方向：本机 → 服务器。`awewarm remote push` 每次重新读取登录；后台同步（每小时至多两次）在凭据指纹对不上时自动重推。收回（`--local`）和 `status <id>`（显示 `credential: server RAM only` 与指纹）的行为与订阅完全一致。前提：服务器那台机器得装好 CLI 本身（PATH 里有 `claude` / `codex`）—— 否则推送会以可操作的报错指名缺哪个二进制。
 
 要换新机器？一条命令带走全部 —— 连接、密钥、调度状态，以及让 hub 把新机器认作同一台机器的 `machine-id`（不占新的配对名额）：
 
@@ -286,7 +289,7 @@ awewarm config restore /safe/path.tar.gz          # 在新机器上执行；目�
 
 ## 安全性
 
-本机模式:API key 永不离开你的机器(`secrets.json`,0600)。委托 = 把 key 交给那台服务器的内存 —— 独享是你自己的机器;共享 hub 则意味着信任它的运维者(和 root)。其余常规泄漏路径都已设计堵死:服务器磁盘上没有 secret(唯一例外是用户主动选择的 `--persist-key`:明文 `keys.json`,0600,不建议开启,且每次开启都要确认)、日志里没有、API 读不回、租户之间互相不可见。建议委托一把专用的、可随时撤销的 key —— 完整说明见 [hub README 的「安全性」一节](https://github.com/wehuman01/awewarm-hub/blob/main/README_cn.md#安全性)。
+本机模式:API key 永不离开你的机器(`secrets.json`,0600)。委托 = 把 key 交给那台服务器的内存 —— 独享是你自己的机器;共享 hub 则意味着信任它的运维者(和 root)。账号登录凭据比一把限定范围的 API key 更宽(覆盖该登录下的所有订阅),所以委托账号多一道点名服务器的显式确认,`--persist-key` 的警告措辞也更重。其余常规泄漏路径都已设计堵死:服务器磁盘上没有 secret(唯一例外是用户主动选择的 `--persist-key`:明文 `keys.json`,0600,不建议开启,且每次开启都要确认)、日志里没有、API 读不回、租户之间互相不可见。建议委托一把专用的、可随时撤销的 key —— 完整说明见 [hub README 的「安全性」一节](https://github.com/wehuman01/awewarm-hub/blob/main/README_cn.md#安全性)。
 
 ## 配置
 

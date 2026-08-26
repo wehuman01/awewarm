@@ -1,11 +1,20 @@
 import io
+import json
+import os
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from helpers import account_connection, plan_connection
 
 from awewarm import transport
+
+CLAUDE_CREDENTIALS = json.dumps(
+    {"claudeOAuthAccessToken": {"accessToken": "sk-ant-oat01-test"}}
+)
+CODEX_AUTH = json.dumps({"tokens": {"access_token": "at", "refresh_token": "rt"}})
 
 
 class ArgvBuilderTests(unittest.TestCase):
@@ -119,6 +128,86 @@ class ExtractErrorTests(unittest.TestCase):
 
     def test_non_json_falls_back_to_text(self):
         self.assertEqual(transport._extract_error(b"gateway timeout"), "gateway timeout")
+
+
+class ActivationEnvTests(unittest.TestCase):
+    def test_no_credential_means_local_firing(self):
+        # A locally-fired CLI reads its own login; no overlay is injected.
+        self.assertEqual(transport.activation_env(account_connection(), None), {})
+
+    def test_claude_token_extracted_into_the_env(self):
+        env = transport.activation_env(account_connection(), CLAUDE_CREDENTIALS)
+        self.assertEqual(env, {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-test"})
+
+    def test_claude_unrecognized_shape_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            transport.activation_env(account_connection(), json.dumps({"no": "token"}))
+        self.assertIn("not recognized", str(ctx.exception))
+
+    def _codex_conn(self):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        return conn
+
+    def test_codex_materializes_auth_json_into_the_sandbox(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = transport.activation_env(self._codex_conn(), CODEX_AUTH, sandbox_root=tmp, conn_id="codex-1")
+            self.assertEqual(env, {"CODEX_HOME": str(Path(tmp) / "codex-1")})
+            auth = Path(tmp) / "codex-1" / "auth.json"
+            self.assertEqual(auth.read_text(), CODEX_AUTH)
+            self.assertEqual(auth.stat().st_mode & 0o777, 0o600)
+
+    def test_codex_rematerialization_discards_server_side_refresh(self):
+        # The CLI may refresh tokens into its sandbox; the next fire rewrites
+        # auth.json from the pushed credential, so the local login wins.
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._codex_conn()
+            transport.activation_env(conn, CODEX_AUTH, sandbox_root=tmp, conn_id="codex-1")
+            (Path(tmp) / "codex-1" / "auth.json").write_text('{"tokens": {"rotated": true}}')
+            transport.activation_env(conn, CODEX_AUTH, sandbox_root=tmp, conn_id="codex-1")
+            self.assertEqual((Path(tmp) / "codex-1" / "auth.json").read_text(), CODEX_AUTH)
+
+    def test_codex_without_a_sandbox_is_an_internal_error(self):
+        with self.assertRaises(ValueError):
+            transport.activation_env(self._codex_conn(), CODEX_AUTH)
+
+    def test_remove_sandbox_deletes_only_that_connection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for conn_id in ("codex-1", "codex-2"):
+                transport.activation_env(self._codex_conn(), CODEX_AUTH, sandbox_root=tmp, conn_id=conn_id)
+            transport.remove_sandbox(tmp, "codex-1")
+            self.assertFalse((Path(tmp) / "codex-1").exists())
+            self.assertTrue((Path(tmp) / "codex-2").exists())
+
+
+class SendCliEnvTests(unittest.TestCase):
+    @mock.patch("awewarm.transport.subprocess.run")
+    @mock.patch("awewarm.transport.shutil.which", return_value="/usr/local/bin/claude")
+    def test_delegated_credential_layers_over_our_environment(self, which, run):
+        run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+        result = transport.send_activation(
+            account_connection(), credential=CLAUDE_CREDENTIALS, conn_id="claude"
+        )
+        self.assertTrue(result["ok"])
+        env = run.call_args[1]["env"]
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-test")
+        # an overlay, not a replacement: the rest of the environment survives
+        self.assertEqual(env["PATH"], os.environ["PATH"])
+
+    @mock.patch("awewarm.transport.subprocess.run")
+    @mock.patch("awewarm.transport.shutil.which", return_value="/usr/local/bin/claude")
+    def test_local_firing_passes_no_env(self, which, run):
+        run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+        transport.send_activation(account_connection())
+        self.assertIsNone(run.call_args[1]["env"])
+
+    def test_unrecognized_credential_is_a_failure_not_a_crash(self):
+        result = transport.send_activation(
+            account_connection(), credential=json.dumps({"no": "token"}), conn_id="claude"
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("not recognized", result["detail"])
+        self.assertIn("awewarm remote push", result["detail"])
 
 
 class SendCliTests(unittest.TestCase):

@@ -121,12 +121,53 @@ class ConnectionTests(ServerCase):
         self.assertIsNone(stored["auth"]["apiKeyRef"])  # no secret ref to resolve
         self.assertFalse((self.data_dir / "secrets.json").exists())
 
-    def test_push_rejects_account_connections(self):
-        with self.assertRaises(remote_client.RemoteError) as ctx:
-            remote_client.push_connection(
-                self.url, self.token, "claude", account_connection(), "sk", TZ
+    def test_push_rejects_account_connections_without_a_cli_on_the_server(self):
+        with mock.patch("awewarm.server.shutil.which", return_value=None):
+            with self.assertRaises(remote_client.RemoteError) as ctx:
+                remote_client.push_connection(
+                    self.url, self.token, "claude", account_connection(), "cred", TZ
+                )
+        self.assertIn("not installed on this server", str(ctx.exception))
+
+    def test_push_accepts_an_account_and_resolves_the_cli_server_side(self):
+        conn = account_connection()
+        conn["transport"]["cliCommand"] = "/Users/local/bin/claude"  # the delegating box's path
+        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/claude"):
+            result = remote_client.push_connection(
+                self.url, self.token, "claude", conn, '{"token": "c"}', TZ,
+                fingerprint="abcd1234abcd1234",
             )
-        self.assertIn("subscription", str(ctx.exception))
+        self.assertTrue(result["ok"])
+        entry = self.view()["connections"]["claude"]
+        self.assertEqual(entry["config"]["transport"]["cliCommand"], "/usr/local/bin/claude")
+        self.assertEqual(entry["credentialFingerprint"], "abcd1234abcd1234")
+        self.assertFalse(entry["keyMissing"])
+        self.assertEqual(self.warm.keys["claude"], '{"token": "c"}')
+
+    def test_account_fingerprint_survives_a_restart(self):
+        conn = account_connection()
+        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/claude"):
+            remote_client.push_connection(
+                self.url, self.token, "claude", conn, '{"token": "c"}', TZ,
+                fingerprint="abcd1234abcd1234",
+            )
+        warm2 = server.WarmServer(self.data_dir)  # simulates a restart
+        entry = warm2.view()["connections"]["claude"]
+        self.assertEqual(entry["credentialFingerprint"], "abcd1234abcd1234")
+        self.assertTrue(entry["keyMissing"])  # the credential itself left with the RAM
+
+    def test_delete_removes_the_sandbox_and_fingerprint(self):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
+            remote_client.push_connection(
+                self.url, self.token, "codex", conn, '{"token": "c"}', TZ,
+                fingerprint="abcd1234abcd1234",
+            )
+        transport.activation_env(conn, '{"token": "c"}', sandbox_root=self.warm.sandbox_root, conn_id="codex")
+        remote_client.delete_connection(self.url, self.token, "codex")
+        self.assertNotIn("codex", self.view()["connections"])
+        self.assertFalse((self.warm.data_dir / "codex-home" / "codex").exists())
 
     def test_push_rejects_unknown_timezone(self):
         conn = plan_connection()
@@ -174,6 +215,17 @@ class ConnectionTests(ServerCase):
         remote_client.push_keys(self.url, self.token, {"glm": "sk-test"})
         self.assertFalse(self.view()["connections"]["glm"]["keyMissing"])
 
+    def test_put_keys_restores_an_account_credential(self):
+        conn = account_connection()
+        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/claude"):
+            remote_client.push_connection(
+                self.url, self.token, "claude", conn, '{"token": "c"}', TZ
+            )
+        warm2 = server.WarmServer(self.data_dir)  # restart: RAM credential wiped
+        self.assertTrue(warm2.view()["connections"]["claude"]["keyMissing"])
+        remote_client.push_keys(self.url, self.token, {"claude": '{"token": "c"}'})
+        self.assertFalse(self.view()["connections"]["claude"]["keyMissing"])
+
 
 class TickTests(ServerCase):
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
@@ -188,11 +240,39 @@ class TickTests(ServerCase):
 
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
     def test_activations_capped_so_a_dead_endpoint_cannot_stall_the_tick(self, send):
-        # The tick holds the server lock while sending; a short per-request
-        # timeout bounds how long API calls can queue behind it.
+        # The tick fires outside the server lock; a short per-request timeout
+        # still bounds how long HTTP API calls can queue behind it.
         self.push_plan()
         self.tick(at("03:00", seconds=30))
         self.assertEqual(send.call_args.kwargs["timeout_seconds"], server.ACTIVATION_TIMEOUT_SECONDS)
+
+    def _push_codex_account(self, credential='{"token": "c"}', fingerprint="abcd1234abcd1234"):
+        conn = account_connection(fixed_at=("03:00",), days="every-day")
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
+            return remote_client.push_connection(
+                self.url, self.token, "codex", conn, credential, TZ, fingerprint=fingerprint
+            )
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_delegated_account_fires_with_credential_and_sandbox(self, send):
+        self._push_codex_account()
+        result = self.tick(at("03:00", seconds=30))
+        self.assertEqual(result["fired"], 1)
+        kwargs = send.call_args.kwargs
+        self.assertEqual(kwargs.get("credential"), '{"token": "c"}')
+        self.assertEqual(kwargs.get("conn_id"), "codex")
+        self.assertEqual(Path(kwargs.get("sandbox_root")), self.warm.sandbox_root)
+        # a CLI activation runs at its own cap (120 s), never the 15 s HTTP one
+        self.assertNotIn("timeout_seconds", kwargs)
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_missing_credential_holds_an_account_too(self, send):
+        self._push_codex_account()
+        self.warm.keys.clear()  # a restart wiped the RAM credential
+        result = self.tick(at("03:00", seconds=30))
+        self.assertEqual(result, {"fired": 0, "held": ["codex"]})
+        send.assert_not_called()
 
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
     def test_missing_key_holds_then_catchup_fires(self, send):
@@ -277,3 +357,43 @@ class KeepaliveTests(ServerCase):
             self.assertEqual(response.status, 200)  # the answer arrives...
             response.read()
             self.assertEqual(conn.sock.recv(4096), b"")  # ...then silence ends the connection
+
+
+class FakeCliAccountTests(ServerCase):
+    """A delegated account, fired for real: the server materializes the pushed
+    credential into a codex sandbox and runs the CLI with CODEX_HOME pointing
+    at it (a stand-in script stands in for the codex binary)."""
+
+    def _fake_cli(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        script = Path(tmp.name) / "codex"
+        script.write_text('#!/bin/sh\necho "$CODEX_HOME"\n')
+        script.chmod(0o755)
+        return str(script)
+
+    def test_run_fires_the_cli_with_the_materialized_credential(self):
+        conn = account_connection(fixed_at=("03:00",), days="every-day")
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        with mock.patch("awewarm.server.shutil.which", return_value=self._fake_cli()):
+            remote_client.push_connection(
+                self.url, self.token, "codex", conn, '{"token": "c"}', TZ,
+                fingerprint="abcd1234abcd1234",
+            )
+        result = remote_client.run_connection(self.url, self.token, "codex")
+        self.assertTrue(result["ok"], result)
+        sandbox = Path(result["detail"])  # the script echoes $CODEX_HOME back
+        self.assertEqual(sandbox, self.warm.sandbox_root / "codex")
+        self.assertEqual((sandbox / "auth.json").read_text(), '{"token": "c"}')
+        self.assertEqual(self.warm.state["connections"]["codex"]["lastResult"], "success")
+
+    def test_run_reports_a_missing_credential_for_accounts(self):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        with mock.patch("awewarm.server.shutil.which", return_value=self._fake_cli()):
+            remote_client.push_connection(self.url, self.token, "codex", conn, '{"token": "c"}', TZ)
+        self.warm.keys.clear()  # a restart wiped the RAM credential
+        result = remote_client.run_connection(self.url, self.token, "codex")
+        self.assertFalse(result["ok"])
+        self.assertIn("credential not pushed yet", result["detail"])
+        self.assertIn("awewarm remote push", result["detail"])

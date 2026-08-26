@@ -19,7 +19,7 @@ from helpers import (
 )
 
 import awewarm
-from awewarm import config as cfg, keystore, remote, schedule, server
+from awewarm import config as cfg, credstore, keystore, remote, schedule, server
 from awewarm.cli import cli, main
 from awewarm.locking import process_lock
 
@@ -1643,11 +1643,108 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertEqual(loaded["schedule"]["fixed"]["at"], ["09:00"])  # pinned, not following global
 
     def test_config_set_remote_rejects_cli_accounts(self):
+        # The gate still refuses silently delegating an account: without
+        # --yes (or an interactive confirm) the login never leaves the box.
         self.paired_config(account_connection(), conn_id="claude")
-        result = invoke(["config", "set", "claude", "--remote"])
+        credential = credstore.Credential(
+            json.dumps({"claudeOAuthAccessToken": {"accessToken": "tok"}})
+        )
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=credential):
+            result = invoke(["config", "set", "claude", "--remote"])
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("cannot", output_of(result))
+        self.assertIn("pass --yes to confirm account delegation", output_of(result))
         self.assertEqual(self.server_view()["connections"], {})
+        self.assertEqual(cfg.load_config()["connections"]["claude"].get("location"), "local")
+
+    def delegate_account(self, conn_id="codex", credential=None):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        self.paired_config(conn, conn_id=conn_id)
+        credential = credential or credstore.Credential('{"tokens": {"access_token": "one"}}')
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=credential), \
+                mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
+            result = invoke(["config", "set", conn_id, "--remote", "--yes"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        return credential
+
+    def test_config_set_remote_delegates_an_account_with_its_credential(self):
+        credential = self.delegate_account()
+        entry = self.server_view()["connections"]["codex"]
+        self.assertFalse(entry["keyMissing"])
+        self.assertEqual(entry["credentialFingerprint"], credential.fingerprint)
+        self.assertEqual(entry["config"]["transport"]["cliCommand"], "/usr/local/bin/codex")
+        self.assertEqual(self.warm.keys["codex"], credential.raw)  # the login JSON, in RAM
+        self.assertEqual(cfg.load_config()["connections"]["codex"]["location"], "remote")
+        on_disk = json.loads(Path(os.environ["AWEWARM_CONFIG"]).read_text())
+        self.assertNotIn("one", json.dumps(on_disk))  # the credential itself never lands in config.json
+
+    def test_account_delegation_declined_stays_local(self):
+        self.paired_config(account_connection(), conn_id="claude")
+        credential = credstore.Credential(
+            json.dumps({"claudeOAuthAccessToken": {"accessToken": "tok"}})
+        )
+        with mock.patch("awewarm.cli._stdin_is_interactive", return_value=True), \
+                mock.patch("awewarm.cli.credstore.read_credential", return_value=credential) as read:
+            result = invoke(["config", "set", "claude", "--remote"], input="n\n")
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("stays local", output_of(result))
+        read.assert_not_called()  # the gate refuses before touching the credential
+        self.assertEqual(self.server_view()["connections"], {})
+
+    def test_account_delegation_gate_names_the_server(self):
+        self.paired_config(account_connection(), conn_id="claude")
+        with mock.patch("awewarm.cli._stdin_is_interactive", return_value=True):
+            result = invoke(["config", "set", "claude", "--remote"], input="n\n")
+        self.assertIn(self.url, output_of(result))  # the confirmation names the target
+        self.assertIn("RAM", output_of(result))
+
+    def test_account_delegation_without_a_local_login_dies_actionably(self):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        self.paired_config(conn, conn_id="codex")
+        error = credstore.CredentialError(
+            "the Codex login not found at ~/.codex/auth.json\nfix: log in with `codex login`"
+        )
+        with mock.patch("awewarm.cli.credstore.read_credential", side_effect=error):
+            result = invoke(["config", "set", "codex", "--remote", "--yes"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("codex login", output_of(result))
+        self.assertEqual(self.server_view()["connections"], {})
+        self.assertEqual(cfg.load_config()["connections"]["codex"].get("location"), "local")
+
+    def test_remote_push_repushes_a_rotated_credential(self):
+        stale = credstore.Credential('{"tokens": {"access_token": "one"}}')
+        fresh = credstore.Credential('{"tokens": {"access_token": "two"}}')
+        self.delegate_account(credential=stale)
+        self.assertEqual(
+            self.server_view()["connections"]["codex"]["credentialFingerprint"], stale.fingerprint
+        )
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh):
+            result = invoke(["remote", "push"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        entry = self.server_view()["connections"]["codex"]
+        self.assertEqual(entry["credentialFingerprint"], fresh.fingerprint)  # drift re-pushed
+        self.assertEqual(self.warm.keys["codex"], fresh.raw)
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh):
+            result = invoke(["remote", "push"])
+        self.assertIn("already in sync", output_of(result))  # matching fingerprint is a no-op
+
+    def test_run_on_a_delegated_account_waits_out_the_cli(self):
+        self.delegate_account()
+        with mock.patch(
+            "awewarm.remote.run_connection", return_value={"ok": True, "detail": "", "nextDue": None}
+        ) as run_remote:
+            result = invoke(["run", "codex", "--force"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertEqual(run_remote.call_args.kwargs["timeout"], remote.CLI_RUN_TIMEOUT_SECONDS)
+
+    def test_status_details_a_delegated_accounts_credential(self):
+        credential = self.delegate_account()
+        result = invoke(["status", "codex"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("credential: server RAM only", output_of(result))
+        self.assertIn(f"fingerprint {credential.fingerprint}", output_of(result))
+        self.assertIn("source of truth", output_of(result))
 
     def test_config_set_remote_requires_a_paired_server(self):
         write_config(plan_connection())

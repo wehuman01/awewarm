@@ -222,13 +222,21 @@ class GateTests(IsolatedTestCase):
         self.assertEqual(self.pushed[-1][1].get("persist"), True)
         self.assertTrue(self.conn().get("persistKey"))
 
-    def test_persist_key_refuses_account_connections(self):
+    def test_persist_key_allows_accounts_with_the_harder_notice(self):
+        # persistKey is credential-agnostic: an account may opt in too, but
+        # the notice must say plainly that an account-wide login — not a
+        # scoped key — would sit in plaintext on the server's disk.
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
         data = cfg.load_config()
-        data["connections"]["claude-code-main"] = account_connection()
+        data["connections"]["codex-account"] = conn
         cfg.save_config(data)
-        result = invoke(["config", "set", "claude-code-main", "--persist-key", "on", "--yes"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("subscription", output_of(result))
+        result = invoke(["config", "set", "codex-account", "--persist-key", "on", "--yes"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("LOGIN CREDENTIAL", output_of(result))
+        self.assertTrue(
+            cfg.load_config()["connections"]["codex-account"].get("persistKey")
+        )
 
     def test_duplicate_remote_inherits_the_gate(self):
         with interactive(), self.remote_mock()[0]:

@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from . import __version__, discover, display_version, install, keystore, remote, running_from_checkout, schedule, transport
+from . import __version__, credstore, discover, display_version, install, keystore, remote, running_from_checkout, schedule, transport
 from .clickext import WrapGroup
 from .flows import _add_account_flow, _config_add, _slots_proc
 from .locking import LockBusy, local_process_lock
@@ -207,6 +207,15 @@ def _plan_summary(connection):
     return f"Fire all {len(enabled)} enabled connections"
 
 
+def _run_timeout(conn):
+    """A delegated CLI account fires the real CLI (cap 120 s) inside the run
+    round-trip; the client must outwait it instead of reporting a phantom
+    failure while the activation is still in flight."""
+    if (conn.get("transport") or {}).get("kind") in transport.CLI_TRANSPORT_KINDS:
+        return remote.CLI_RUN_TIMEOUT_SECONDS
+    return None
+
+
 def _activate_now(target, reset_due=False):
     """Fire one connection immediately, outside its schedule.
 
@@ -220,7 +229,7 @@ def _activate_now(target, reset_due=False):
         try:
             result = remote.run_connection(
                 remote.remote_url(config), remote.load_token(), conn_id,
-                reset_due=reset_due, allow_auto_disabled=True,
+                reset_due=reset_due, allow_auto_disabled=True, timeout=_run_timeout(conn),
             )
         except remote.RemoteError as exc:
             die(f"remote activation failed:\n{exc}")
@@ -279,7 +288,10 @@ def _fire_all():
             continue
         if conn.get("location") == "remote":
             try:
-                result = remote.run_connection(remote.remote_url(config), remote.load_token(), conn_id)
+                result = remote.run_connection(
+                    remote.remote_url(config), remote.load_token(), conn_id,
+                    timeout=_run_timeout(conn),
+                )
             except remote.RemoteError as exc:
                 log_event(f"{conn_id} remote run failed: {exc}")
                 click.echo(f"✗ activated {conn_id} — remote server unreachable")
@@ -332,14 +344,29 @@ def _push_timezone(config):
     return f"UTC{sign}{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-def _require_api_key(conn, conn_id):
-    api_key = _resolve_api_key(conn)
-    if api_key is None:
+def _resolve_secret(conn, conn_id=None):
+    """(secret, fingerprint) for delegation: a subscription's stored API key,
+    or an local CLI account's login credential read fresh from the local login
+    (the local machine stays the source of truth). fingerprint is set for
+    accounts only — it rides the push so drift is detectable. Raises
+    remote.RemoteError (actionable, secret-free) when unavailable."""
+    if conn.get("kind") != "account":
+        return _resolve_api_key(conn), None
+    try:
+        credential = credstore.read_credential(conn)
+    except credstore.CredentialError as exc:
+        raise remote.RemoteError(f"{conn_id or 'connection'}: {exc}")
+    return credential.raw, credential.fingerprint
+
+
+def _require_secret(conn, conn_id):
+    secret, fingerprint = _resolve_secret(conn, conn_id)
+    if secret is None:
         raise remote.RemoteError(
             f"{conn_id}: no API key stored locally\n"
             f"  fix: awewarm config set {conn_id} --api-key <key>"
         )
-    return api_key
+    return secret, fingerprint
 
 
 PERSIST_KEY_ON_NOTICE = (
@@ -349,12 +376,27 @@ PERSIST_KEY_ON_NOTICE = (
     "  it, a server restart while this machine is away holds the warm-ups\n"
     "  (skipped past the 30-minute catch-up window) until the machine returns."
 )
+PERSIST_KEY_ON_NOTICE_ACCOUNT = (
+    "  its LOGIN CREDENTIAL — account-wide, not a scoped API key — will be\n"
+    "  stored in PLAINTEXT on the server's disk (keys.json, 0600), readable by\n"
+    "  the server operator and anyone with disk access there. Strongly\n"
+    "  prefer RAM-only: a server restart while this machine is away merely\n"
+    "  holds the warm-ups until the machine returns and re-pushes."
+)
 PERSIST_KEY_OFF_NOTICE = (
     "  the server deletes the key from its disk right away (the key stays in\n"
     "  secrets.json here and in the server's RAM — warm-ups continue), and\n"
     "  from then on a server restart while this machine is offline holds the\n"
     "  warm-ups (skipped past the 30-minute catch-up window) until it returns."
 )
+
+
+def _persist_on_notice(conn):
+    return PERSIST_KEY_ON_NOTICE_ACCOUNT if conn.get("kind") == "account" else PERSIST_KEY_ON_NOTICE
+
+
+def _provider_label(conn):
+    return "Claude Code" if (conn.get("transport") or {}).get("kind") == "claude-cli" else "Codex"
 
 
 def _stdin_is_interactive():
@@ -378,9 +420,10 @@ def _sync_remote(config, state, force_ids=()):
     """Bring the server's copy back in line with local truth.
 
     Re-pushes edited or missing connections (their schedule changed, so the
-    server state resets), and re-sends keys the server lost to a restart
-    (its state on disk stays — only the RAM keyring was wiped). Returns
-    (pushed, rekeyed) connection ids.
+    server state resets), re-sends secrets the server lost to a restart
+    (its state on disk stays — only the RAM keyring was wiped), and re-pushes
+    delegated accounts whose local credential rotated (fingerprint drift).
+    Returns (pushed, rekeyed) connection ids.
     """
     url = remote.remote_url(config)
     token = remote.load_token()
@@ -389,20 +432,35 @@ def _sync_remote(config, state, force_ids=()):
     pending = state.get("pendingPush") or {}
     tz = _push_timezone(config)
     pushed, rekeyed, keys = [], [], {}
+
+    def _push(conn_id, conn):
+        secret, fingerprint = _require_secret(conn, conn_id)
+        remote.push_connection(
+            url, token, conn_id, conn, secret, tz,
+            persist=bool(conn.get("persistKey")), fingerprint=fingerprint,
+        )
+        pending.pop(conn_id, None)
+        pushed.append(conn_id)
+
     for conn_id, conn in sorted(config["connections"].items()):
         if conn.get("location") != "remote":
             continue
         server = have.get(conn_id)
         if conn_id in force_ids or conn_id in pending or server is None:
-            remote.push_connection(
-                url, token, conn_id, conn, _require_api_key(conn, conn_id), tz,
-                persist=bool(conn.get("persistKey")),
-            )
-            pending.pop(conn_id, None)
-            pushed.append(conn_id)
+            _push(conn_id, conn)
         elif server.get("keyMissing"):
-            keys[conn_id] = _require_api_key(conn, conn_id)
+            keys[conn_id] = _require_secret(conn, conn_id)[0]
             rekeyed.append(conn_id)
+        elif conn.get("kind") == "account":
+            # The local login is the source of truth: a fingerprint the server
+            # no longer matches means the credential rotated — re-push it.
+            try:
+                _, fingerprint = _resolve_secret(conn, conn_id)
+            except remote.RemoteError as exc:
+                log_event(f"remote sync skipped {conn_id}: {exc}")
+                continue
+            if fingerprint and server.get("credentialFingerprint") != fingerprint:
+                _push(conn_id, conn)
     if keys:
         remote.push_keys(url, token, keys)
     if state.get("pendingPush") != pending:
@@ -432,6 +490,23 @@ def _maybe_sync_remote(config, state):
         log_event(f"remote sync skipped: {exc}")
 
 
+def _confirm_account_delegation(conn_id, url, conn, assume_yes):
+    """The account-specific delegation gate: a login credential is
+    account-wide (every subscription it holds), strictly more sensitive than
+    a scoped API key — pushing it needs an explicit yes naming the server."""
+    provider = _provider_label(conn)
+    click.echo(
+        f"{conn_id}: delegation reads your {provider} login credential and pushes it to\n"
+        f"  {url} — it lives in that server's RAM (its disk only with --persist-key),\n"
+        "  so the server operator can use the full account, not just warm it."
+    )
+    if assume_yes:
+        return True
+    if not _stdin_is_interactive():
+        die("pass --yes to confirm account delegation in non-interactive shells")
+    return click.confirm(f"Push this {provider} login credential to the server?", default=False)
+
+
 def _delegate_remote(config, conn_id, conn, assume_yes=False):
     """Hand one connection to the remote server (`config set <id> --remote`).
 
@@ -440,25 +515,31 @@ def _delegate_remote(config, conn_id, conn, assume_yes=False):
     handover (its own overrides, or whatever it inherited as a local
     connection) is pinned as its own settings: a delegated connection never
     follows the global schedule, so this is the one moment those values may
-    carry over. A connection flagged persistKey gets its confirmation here —
-    this is the moment the key would start living on the server's disk;
-    declining downgrades to RAM-only and clears the flag.
+    carry over. A subscription needs its stored API key; an account reads its
+    CLI login credential (behind the account delegation gate) and pushes it
+    like a key — the server injects it into its own CLI runs, the local login
+    stays the source of truth. A connection flagged persistKey gets its
+    confirmation here — this is the moment the key would start living on the
+    server's disk; declining downgrades to RAM-only and clears the flag.
     """
     if conn.get("location") == "remote":
         return
-    if conn.get("kind") != "subscription":
-        die(
-            f"{conn_id} is a local CLI account — its login lives on this machine\n"
-            "  and cannot run on a server; only subscription connections can be remote"
-        )
+    kind = conn.get("kind")
+    if kind not in ("subscription", "account"):
+        die(f"{conn_id} is not a delegable connection (kind: {kind})")
     if not remote.remote_url(config):
         die("no remote server connected\nfix: awewarm remote connect <url>")
-    api_key = _resolve_api_key(conn)
-    if api_key is None:
-        die(f"{conn_id} has no stored API key\nfix: awewarm config set {conn_id} --api-key <key>")
+    url = remote.remote_url(config)
+    if kind == "account" and not _confirm_account_delegation(conn_id, url, conn, assume_yes):
+        click.echo(f"aborted — {conn_id} stays local (its login never left this machine)")
+        return
+    try:
+        secret, fingerprint = _require_secret(conn, conn_id)
+    except remote.RemoteError as exc:
+        die(f"could not read the secret to delegate {conn_id}:\n{exc}")
     persist = bool(conn.get("persistKey"))
     if persist and not _confirm_persist_change(
-        conn_id, "Store this key on the server's disk too?", PERSIST_KEY_ON_NOTICE,
+        conn_id, "Store this key on the server's disk too?", _persist_on_notice(conn),
         default=False, assume_yes=assume_yes,
     ):
         conn.pop("persistKey", None)
@@ -472,14 +553,21 @@ def _delegate_remote(config, conn_id, conn, assume_yes=False):
     try:
         remote.ensure_session(config)
         remote.push_connection(
-            remote.remote_url(config), remote.load_token(), conn_id, conn, api_key,
-            _push_timezone(config), persist=persist,
+            url, remote.load_token(), conn_id, conn, secret,
+            _push_timezone(config), persist=persist, fingerprint=fingerprint,
         )
     except remote.RemoteError as exc:
         die(f"could not hand {conn_id} to the remote server — it stays local:\n{exc}")
     conn["location"] = "remote"
     resolve_connection(conn, config)
-    click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")
+    if kind == "account":
+        click.echo(
+            f"✓ {conn_id} delegated — the server ticks it with its copy of your "
+            f"{_provider_label(conn)} login (fingerprint {fingerprint})"
+        )
+        click.echo("  the local login stays the source of truth; a rotated credential re-pushes on the next sync")
+    else:
+        click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")
     if persist:
         click.echo("  its key persists on the server (plaintext keys.json) — survives its restarts")
 
@@ -771,12 +859,10 @@ def _config_set(connection, opts):
         conn["hide"] = opts.hide
     persist_applied = None  # "on"/"off" once a gate approved an actual change
     if opts.persist_key is not None:
-        if conn.get("kind") != "subscription":
-            die(f"--persist-key applies to subscription connections only; {conn_id} is a local CLI account")
         wanted = opts.persist_key == "on"
         if wanted != bool(conn.get("persistKey")):
             prompt, notice, default = (
-                ("Store this key on the server's disk?", PERSIST_KEY_ON_NOTICE, False)
+                ("Store this key on the server's disk?", _persist_on_notice(conn), False)
                 if wanted else
                 ("Stop storing the key on the server's disk?", PERSIST_KEY_OFF_NOTICE, True)
             )

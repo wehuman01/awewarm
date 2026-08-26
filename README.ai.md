@@ -261,7 +261,7 @@ If the user wants to share one always-on server with a team or family (paired th
 
 ### Community hub — no server of your own
 
-The project's developer runs an invite-based community hub at https://awewarm.wehuman.top. If the user has no always-on box of their own, guide them through the tutorial: https://github.com/wehuman01/awewarm/blob/main/docs/community-hub/README.md — installing awewarm, setting up the first connection (`awewarm config add`, interactive — their terminal), requesting an invite at peng@wehuman.top if they don't have one, then pairing (`remote connect --invite awi_...`) and delegating (`config set <id> --remote`). State the trust rule before they delegate: their API key's plaintext passes through the hub's RAM.
+The project's developer runs an invite-based community hub at https://awewarm.wehuman.top. If the user has no always-on box of their own, guide them through the tutorial: https://github.com/wehuman01/awewarm/blob/main/docs/community-hub/README.md — installing awewarm, setting up the first connection (`awewarm config add`, interactive — their terminal), requesting an invite at peng@wehuman.top if they don't have one, then pairing (`remote connect --invite awi_...`) and delegating (`config set <id> --remote`). State the trust rule before they delegate: their API key's — or, for an account connection, their login credential's — plaintext passes through the hub's RAM. Account delegation (Claude Code / Codex logins) is supported since v0.7.0 and asks for an explicit confirmation naming the server; the hub box must have the matching CLI installed.
 
 ### aweswitch — agent profile switching
 

@@ -20,11 +20,14 @@ from .config import config_path
 TOKEN_SECRET_ID = "remote:token"
 LEGACY_TOKEN_SECRET_ID = "remote-token"
 TIMEOUT_SECONDS = 5
-# The server fires the real request while holding its lock before answering a
-# run (its own cap: ACTIVATION_TIMEOUT_SECONDS per activation) — the client
-# must outwait it, or a slow endpoint reports failure here while the request
-# actually went out, inviting a duplicate retry.
+# The server fires the real request while holding its per-connection lock
+# before answering a run (its own cap: ACTIVATION_TIMEOUT_SECONDS per HTTP
+# activation) — the client must outwait it, or a slow endpoint reports
+# failure here while the request actually went out, inviting a duplicate
+# retry. A CLI activation runs far longer (its cap: transport
+# CLI_TIMEOUT_SECONDS), so delegated accounts wait out that one instead.
 RUN_TIMEOUT_SECONDS = 30
+CLI_RUN_TIMEOUT_SECONDS = 135
 
 
 class RemoteError(Exception):
@@ -138,12 +141,20 @@ def release(url, token):
     return _request(url, "POST", "/v1/release", {}, token)
 
 
-def push_connection(url, token, conn_id, conn, api_key, timezone, persist=False):
-    """Deliver a connection and its key. `persist` (owner-confirmed) asks the
+def push_connection(url, token, conn_id, conn, api_key, timezone, persist=False, fingerprint=None):
+    """Deliver a connection and its secret. `apiKey` is the connection's
+    secret — an API key for subscriptions, the login-credential JSON for
+    accounts. `fingerprint` (accounts) lets the server report what it holds
+    so the local side can detect drift. `persist` (owner-confirmed) asks the
     server to also store the key in its keys.json; the field is omitted when
     false so old servers see the exact body they always did — and treat its
     absence as "remove any previously persisted copy" (new servers)."""
-    payload = {"connection": conn, "apiKey": api_key, "timezone": timezone}
+    payload = {
+        "connection": conn,
+        "apiKey": api_key,
+        "timezone": timezone,
+        "credentialFingerprint": fingerprint,
+    }
     if persist:
         payload["persistKey"] = True
     return _request(url, "PUT", f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}", payload, token)
@@ -161,14 +172,16 @@ def delete_connection(url, token, conn_id):
     return _request(url, "DELETE", f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}", token=token)
 
 
-def run_connection(url, token, conn_id, reset_due=False, allow_auto_disabled=False):
+def run_connection(url, token, conn_id, reset_due=False, allow_auto_disabled=False, timeout=None):
     """Fire one connection on the server. allow_auto_disabled mirrors the local
     split: an explicit `run <id>` fires (and on success clears) an auto-disabled
-    ladder, `run` (no id) skips those connections."""
+    ladder, `run` (no id) skips those connections. timeout defaults to
+    RUN_TIMEOUT_SECONDS; callers holding a CLI-transport connection pass
+    CLI_RUN_TIMEOUT_SECONDS so the client outwaits the CLI's own cap."""
     return _request(
         url, "POST", f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}/run",
         {"resetDue": reset_due, "allowAutoDisabled": allow_auto_disabled},
-        token, timeout=RUN_TIMEOUT_SECONDS,
+        token, timeout=timeout or RUN_TIMEOUT_SECONDS,
     )
 
 

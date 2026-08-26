@@ -4,14 +4,24 @@ One resident process that (a) serves an authenticated sync API to the local
 machine and (b) ticks the delegated connections once a minute with the same
 pure planner (`schedule.plan_actions`) and transports the local CLI uses.
 
-Nothing secret is written to disk here by default. The access token and
-connection API keys live in RAM only, pushed by the local machine, which owns
-them in its own secrets.json. A restart therefore loses them: the local side
-re-claims and re-pushes automatically whenever it is online, and any slot that
-came due while its key was missing is held (not failed) — it still fires
-inside the catch-up window once the key returns; past it, it is recorded as
-skipped. That is exactly how the local tick already treats a machine that was
-asleep.
+Delegated connections come in two kinds. Subscriptions carry an API key.
+Accounts (claude-cli / codex-cli logins) carry the login credential the local
+machine read from its own CLI login — pushed exactly like an API key, fired
+by running the CLI with the credential injected per provider (claude:
+CLAUDE_CODE_OAUTH_TOKEN; codex: CODEX_HOME sandbox whose auth.json is
+re-written from the pushed credential before every fire, discarding any
+server-side token refresh). The local login stays the source of truth; the
+server-side resolved CLI path and the credential's fingerprint ride in the
+push body.
+
+Nothing secret is written to disk here by default. The access token, API
+keys, and account credentials live in RAM only, pushed by the local machine,
+which owns them in its own secrets.json. A restart therefore loses them: the
+local side re-claims and re-pushes automatically whenever it is online, and
+any slot that came due while its key was missing is held (not failed) — it
+still fires inside the catch-up window once the key returns; past it, it is
+recorded as skipped. That is exactly how the local tick already treats a
+machine that was asleep.
 
 The one opt-in exception is `persistKey`: a connection whose owner confirmed
 it (the client gates every enabling action behind a prompt) stores its key in
@@ -21,11 +31,18 @@ The flag travels on the push body; a later push without it removes the key
 from disk again, and a re-key (`PUT /v1/keys`) writes through to the
 persisted set.
 
+Execution model: activations never run under the global lock. Each
+connection's plan+fire runs under its own mutex on a bounded thread pool, so
+one slow CLI activation (their cap is 120 s) cannot stall API calls or the
+other connections; the global lock is re-taken once at the end of a tick to
+persist state. HTTP activations are capped far tighter (15 s).
+
 Wire protocol (JSON over HTTP, Bearer token):
   GET    /healthz                    no auth; {ok, version, claimed}
   POST   /v1/claim                   {token} → claim an unclaimed server
   POST   /v1/release                 give up the claim (authed; disconnect)
-  PUT    /v1/connections/<id>        {connection, apiKey, timezone} → take over
+  PUT    /v1/connections/<id>        {connection, apiKey, timezone,
+                                     credentialFingerprint?} → take over
   DELETE /v1/connections/<id>        drop a connection (takeback)
   PUT    /v1/keys                    {id: key, ...} → re-key after a restart
   GET    /v1/state                   server truth for `awewarm status`
@@ -37,9 +54,11 @@ the separately distributed multi-tenant server that subclasses _Handler. Its
 dependency is pinned to this package's minor version, but refactors here must
 still keep those names importable and behaving.
 """
+import concurrent.futures
 import hmac
 import json
 import re
+import shutil
 import threading
 import time
 import urllib.parse
@@ -58,10 +77,13 @@ BODY_LIMIT_BYTES = 256 * 1024
 # awewarm's own clients close after every request, so closing unread
 # connections after this long only ever reaps idle pool entries.
 IDLE_TIMEOUT_SECONDS = 30
-# The tick and run_now hold the server lock while sending, so one activation
-# must not stall every API call behind it: cap HTTP far below the 60 s the
-# local CLI allows (delegated connections are always HTTP subscriptions).
+# HTTP activations run inside a tick pass; a short per-request timeout bounds
+# how long API calls can queue behind them. CLI activations (delegated
+# accounts) instead run at their own cap, transport.CLI_TIMEOUT_SECONDS.
 ACTIVATION_TIMEOUT_SECONDS = 15
+# One worker per potentially-slow activation; ticks submit one job per due
+# connection, so this bounds concurrent CLI subprocesses (and their RAM).
+TICK_WORKERS = 4
 
 class ApiError(Exception):
     def __init__(self, status, message):
@@ -81,15 +103,34 @@ class WarmServer:
         self.state_path = self.data_dir / "state.json"
         self.log_path = self.data_dir / "awewarm-server.log"
         self.keys_path = self.data_dir / "keys.json"
+        # Per-connection codex sandboxes (CODEX_HOME targets) live under here;
+        # on a hub each tenant warm owns its own data dir, so sandboxes never
+        # cross tenants.
+        self.sandbox_root = self.data_dir / "codex-home"
         self.lock = threading.RLock()
         self.fixed_token = fixed_token
         self.claimed_token = fixed_token  # RAM only; lost on restart (by design)
         self.persisted = self._load_keys()  # conn_id → key, the opted-in on-disk keyring
-        self.keys = dict(self.persisted)  # conn_id → API key, RAM only (seeded from disk)
+        self.keys = dict(self.persisted)  # conn_id → secret, RAM only (seeded from disk)
         self.config = self._load(self.config_path, {"version": 2, "connections": {}})
+        self.config.setdefault("credentialFingerprints", {})  # conn_id → 16-hex, persisted
         self.state = self._load(self.state_path, {"version": 1, "connections": {}})
         self.started_at = datetime.now().astimezone()
         self.last_tick_at = None
+        self.conn_locks = {}  # conn_id → mutex serializing that connection's fires
+        self.pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=TICK_WORKERS, thread_name_prefix="awewarm-activation"
+        )
+
+    def _conn_lock(self, conn_id):
+        """The mutex serializing one connection's activations (tick vs run_now
+        vs a concurrent push replacing it)."""
+        with self.lock:
+            lock = self.conn_locks.get(conn_id)
+            if lock is None:
+                lock = threading.Lock()
+                self.conn_locks[conn_id] = lock
+            return lock
 
     # --- storage (config/state shapes match the local files; keys land only in
     # keys.json, and only for connections whose owner opted in) ---
@@ -183,22 +224,46 @@ class WarmServer:
 
     # --- connections ---
 
+    def _resolve_cli(self, command):
+        """Absolute path of an account connection's CLI on this server.
+
+        The pushed transport.cliCommand may be a path that only exists on the
+        delegating machine: try it verbatim, then PATH-lookup its basename.
+        ApiError with the install prerequisite when neither resolves — the
+        server does not install CLIs itself.
+        """
+        name = (command or "").strip()
+        for candidate in (name, Path(name).name if name else ""):
+            if not candidate:
+                continue
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+        raise ApiError(
+            400,
+            f"{name or 'the account CLI'} is not installed on this server\n"
+            "fix (on the server): install the CLI (claude / codex) or link it into PATH,\n"
+            "then re-push from the local machine: awewarm remote push",
+        )
+
     def put_connection(self, conn_id, payload):
         if not conn_id or not isinstance(conn_id, str):
             raise ApiError(400, "connection id required")
         conn = payload.get("connection")
-        api_key = payload.get("apiKey")
+        secret = payload.get("apiKey")
         tz_name = payload.get("timezone")
+        fingerprint = payload.get("credentialFingerprint")
         if not isinstance(conn, dict):
             raise ApiError(400, "body must be {{connection, apiKey, timezone}}")
-        if conn.get("kind") != "subscription":
+        kind = conn.get("kind")
+        if kind not in ("subscription", "account"):
             raise ApiError(
                 400,
-                "only subscription (API-key) connections can be delegated — "
-                "CLI accounts live on the machine they logged in on",
+                "only subscription (API-key) and account (CLI-login) connections can be delegated",
             )
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise ApiError(400, "apiKey is required (the server fires requests with it)")
+        if not isinstance(secret, str) or not secret.strip():
+            noun = "login credential" if kind == "account" else "API key"
+            raise ApiError(400, f"apiKey is required (the server fires requests with that {noun})")
         if not isinstance(tz_name, str):
             raise ApiError(400, "timezone is required (an IANA name, e.g. Asia/Shanghai)")
         try:
@@ -207,29 +272,39 @@ class WarmServer:
             raise ApiError(400, f"unknown timezone: {tz_name}")
         with self.lock:
             conn = json.loads(json.dumps(conn))  # private copy, no shared mutable state
-            conn.setdefault("auth", {})["apiKeyRef"] = None  # the key lives in RAM, not as a ref
+            conn.setdefault("auth", {})["apiKeyRef"] = None  # the secret lives in RAM, not as a ref
             conn["timezone"] = tz_name
             conn["location"] = "remote"
+            if kind == "account":
+                # The delegating machine's CLI path means nothing here; the
+                # server fires through its own resolved copy.
+                conn["transport"]["cliCommand"] = self._resolve_cli(conn["transport"].get("cliCommand"))
             errors = connection_errors(conn, conn_id)
             if errors:
                 raise ApiError(400, "; ".join(errors))
-            replaced = conn_id in self.config["connections"]
-            self.config["connections"][conn_id] = conn
-            self.state["connections"][conn_id] = default_conn_state()
-            self.keys[conn_id] = api_key
-            # The push body is the owner's standing answer: persistKey on →
-            # the key lands in keys.json (a changed key overwrites); off or
-            # absent while persisted → it leaves the disk. RAM always gets it.
-            if payload.get("persistKey"):
-                newly = conn_id not in self.persisted or self.persisted[conn_id] != api_key
-                if newly:
-                    self.persisted[conn_id] = api_key
+            with self._conn_lock(conn_id):  # an in-flight fire on the old copy finishes first
+                replaced = conn_id in self.config["connections"]
+                self.config["connections"][conn_id] = conn
+                self.state["connections"][conn_id] = default_conn_state()
+                self.keys[conn_id] = secret
+                fingerprints = self.config["credentialFingerprints"]
+                if kind == "account" and isinstance(fingerprint, str) and fingerprint:
+                    fingerprints[conn_id] = fingerprint
+                else:
+                    fingerprints.pop(conn_id, None)
+                # The push body is the owner's standing answer: persistKey on →
+                # the key lands in keys.json (a changed key overwrites); off or
+                # absent while persisted → it leaves the disk. RAM always gets it.
+                if payload.get("persistKey"):
+                    newly = conn_id not in self.persisted or self.persisted[conn_id] != secret
+                    if newly:
+                        self.persisted[conn_id] = secret
+                        self._save_persisted()
+                        self.log(f"{conn_id} key persisted (owner opted in)")
+                elif conn_id in self.persisted:
+                    del self.persisted[conn_id]
                     self._save_persisted()
-                    self.log(f"{conn_id} key persisted (owner opted in)")
-            elif conn_id in self.persisted:
-                del self.persisted[conn_id]
-                self._save_persisted()
-                self.log(f"{conn_id} persisted key removed (owner opted out)")
+                    self.log(f"{conn_id} persisted key removed (owner opted out)")
             self._save(self.config_path, self.config)
             self._save(self.state_path, self.state)
             due_at, _ = schedule.next_due(conn, self.state["connections"][conn_id], self._now(conn))
@@ -240,12 +315,15 @@ class WarmServer:
         with self.lock:
             if conn_id not in self.config["connections"]:
                 raise ApiError(404, f"no such connection: {conn_id}")
-            del self.config["connections"][conn_id]
-            self.state["connections"].pop(conn_id, None)
-            self.keys.pop(conn_id, None)
-            if conn_id in self.persisted:  # takeback: the disk copy leaves too
-                del self.persisted[conn_id]
-                self._save_persisted()
+            with self._conn_lock(conn_id):
+                del self.config["connections"][conn_id]
+                self.state["connections"].pop(conn_id, None)
+                self.keys.pop(conn_id, None)
+                self.config["credentialFingerprints"].pop(conn_id, None)
+                transport.remove_sandbox(self.sandbox_root, conn_id)  # its codex login copy
+                if conn_id in self.persisted:  # takeback: the disk copy leaves too
+                    del self.persisted[conn_id]
+                    self._save_persisted()
             self._save(self.config_path, self.config)
             self._save(self.state_path, self.state)
             self.log(f"{conn_id} removed")
@@ -272,8 +350,7 @@ class WarmServer:
     def missing_keys(self):
         with self.lock:
             return sorted(
-                cid for cid, conn in self.config["connections"].items()
-                if conn.get("kind") == "subscription" and not self.keys.get(cid)
+                cid for cid in self.config["connections"] if not self.keys.get(cid)
             )
 
     def view(self):
@@ -290,6 +367,7 @@ class WarmServer:
                         "state": self.state["connections"].get(cid) or default_conn_state(),
                         "keyMissing": cid in missing,
                         "keyPersisted": cid in self.persisted,
+                        "credentialFingerprint": self.config["credentialFingerprints"].get(cid),
                     }
                     for cid, conn in sorted(self.config["connections"].items())
                 },
@@ -312,12 +390,17 @@ class WarmServer:
             now = self._now(conn)
             key = self.keys.get(conn_id)
             if not key:
-                return {"ok": False, "detail": "API key not pushed yet — run: awewarm remote push"}
+                noun = "credential" if conn.get("kind") == "account" else "API key"
+                return {"ok": False, "detail": f"{noun} not pushed yet — run: awewarm remote push"}
+        # The fire runs under the connection's own mutex (never the global
+        # lock) on the caller's thread — same execution path as the tick.
+        with self._conn_lock(conn_id):
             result = self._execute(conn, conn_id, cs, now, "manual", None, None, reset_due=reset_due)
+        with self.lock:
             due_at, _ = schedule.next_due(conn, cs, now)
             result["nextDue"] = schedule.iso(due_at) if due_at else None
             self._save(self.state_path, self.state)
-            return result
+        return result
 
     # --- the tick ---
 
@@ -332,9 +415,15 @@ class WarmServer:
 
     def _execute(self, conn, conn_id, cs, now, kind, slot, node, reset_due=True):
         schedule.record_attempt(cs, now)
-        result = transport.send_activation(
-            conn, self.keys.get(conn_id), timeout_seconds=ACTIVATION_TIMEOUT_SECONDS
-        )
+        secret = self.keys.get(conn_id)
+        if conn["transport"]["kind"] in transport.CLI_TRANSPORT_KINDS:
+            # A delegated account fires its CLI at the CLI cap (120 s), with
+            # the pushed credential injected (codex: into its sandbox).
+            result = transport.send_activation(
+                conn, credential=secret, sandbox_root=self.sandbox_root, conn_id=conn_id
+            )
+        else:
+            result = transport.send_activation(conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS)
         if result["ok"]:
             schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
         else:
@@ -342,14 +431,40 @@ class WarmServer:
         self.log(f"{conn_id} activation ({kind}) " + ("ok" if result["ok"] else f"failed: {result['detail']}"))
         return result
 
+    def _tick_connection(self, conn_id, conn, cs, now_fn):
+        """Plan + fire one connection under its mutex; returns (fired, held)."""
+        held = []
+        now = now_fn(conn) if now_fn else self._now(conn)
+        noun = "credential" if conn.get("kind") == "account" else "API key"
+
+        def activate(action, node):
+            if not self.keys.get(conn_id):
+                # Hold, don't fail: the secret lives in RAM and a restart
+                # wiped it. Catch-up still fires the slot once the local
+                # machine re-pushes; past the window it is skipped.
+                self.log(f"{conn_id}: activation held — {noun} missing (server restarted?)")
+                if conn_id not in held:
+                    held.append(conn_id)
+                return None
+            return self._execute(conn, conn_id, cs, now, action["reason"], action.get("slot"), node)
+
+        with self._conn_lock(conn_id):
+            results, _skipped = schedule.dispatch_actions(conn, cs, now, activate)
+        return len(results), held
+
     def tick(self, now_fn=None):
         """One scheduling pass over every delegated connection.
 
         The server-side twin of the local `awewarm tick`. now_fn overrides the
         clock per connection (tests); it takes the connection and returns now.
+
+        Connections are snapshotted under the server lock, then each one's
+        plan + fire runs under its own mutex on a bounded pool — one slow CLI
+        activation cannot stall API calls or the other connections. The
+        server lock is re-taken once at the end to persist state.
         """
         with self.lock:
-            fired, held = 0, []
+            jobs = []
             for conn_id in sorted(self.config["connections"]):
                 conn = self.config["connections"][conn_id]
                 if not conn.get("enabled", True):
@@ -358,26 +473,18 @@ class WarmServer:
                 if errors:
                     self.log(f"skipping {conn_id}: {errors[0]}")
                     continue
-                now = now_fn(conn) if now_fn else self._now(conn)
                 cs = conn_state(self.state, conn_id)
                 schedule.migrate_state(cs)
-
-                def activate(action, node):
-                    if not self.keys.get(conn_id):
-                        # Hold, don't fail: the key lives in RAM and a restart
-                        # wiped it. Catch-up still fires the slot once the local
-                        # machine re-pushes; past the window it is skipped.
-                        self.log(f"{conn_id}: activation held — API key missing (server restarted?)")
-                        if conn_id not in held:
-                            held.append(conn_id)
-                        return None
-                    return self._execute(conn, conn_id, cs, now, action["reason"], action.get("slot"), node)
-
-                results, _skipped = schedule.dispatch_actions(conn, cs, now, activate)
-                fired += len(results)
+                jobs.append(self.pool.submit(self._tick_connection, conn_id, conn, cs, now_fn))
+        fired, held = 0, []
+        for job in jobs:
+            count, held_ids = job.result()
+            fired += count
+            held.extend(held_ids)
+        with self.lock:
             self.last_tick_at = schedule.iso(datetime.now().astimezone())
             self._save(self.state_path, self.state)
-            return {"fired": fired, "held": held}
+        return {"fired": fired, "held": held}
 
 
 class _Handler(BaseHTTPRequestHandler):

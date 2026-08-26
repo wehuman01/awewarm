@@ -746,10 +746,12 @@ class LocationTests(IsolatedTestCase):
             config.load_config()
         self.assertIn("sits under connections.local", str(ctx.exception))
 
-    def test_remote_location_rejects_cli_accounts(self):
+    def test_remote_location_accepts_cli_accounts(self):
+        # Account delegation is parity with API keys now: a remote account is
+        # structurally valid (the server fires its CLI with the pushed login).
         conn = account_connection()
         conn["location"] = "remote"
-        self.assertIn("cannot be remote", config.connection_errors(conn, "claude")[0])
+        self.assertEqual(config.connection_errors(conn, "claude"), [])
 
     def test_unknown_location_is_rejected(self):
         conn = plan_connection()
