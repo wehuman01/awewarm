@@ -225,6 +225,11 @@ def _show_status(connection, as_json, location=None):
                 if connection and noun == "credential":
                     note = f"fingerprint {fingerprint}" if fingerprint else "fingerprint unknown (re-push: awewarm remote push)"
                     click.echo(f"  credential {note} — the local login is the source of truth")
+                    native = ((entry.get("config") or {}).get("transport") or {}).get("exec") == "native"
+                    click.echo(
+                        "  warmed natively over HTTPS (no CLI installed on the server)"
+                        if native else "  warmed by the server's own CLI copy"
+                    )
                 continue
             # Reachable server, but the connection is missing from its view
             # (wiped data dir, never-healed pending push): show the local copy

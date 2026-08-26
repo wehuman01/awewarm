@@ -331,3 +331,148 @@ class EndpointUrlTests(unittest.TestCase):
     def test_v1_base_appends_endpoint_directly(self):
         url = transport.endpoint_url("https://api.openai.com/v1", "/responses")
         self.assertEqual(url, "https://api.openai.com/v1/responses")
+
+
+CODEX_NATIVE_AUTH = json.dumps(
+    {"tokens": {"access_token": "at", "account_id": "acc-1", "refresh_token": "rt"}}
+)
+
+
+def native_codex_connection(model=None, base_url=None):
+    conn = account_connection()
+    conn["transport"] = {"kind": "codex-cli", "baseUrl": base_url, "cliCommand": "codex"}
+    conn["activation"]["model"] = model
+    return conn
+
+
+class NativePartsTests(unittest.TestCase):
+    def test_codex_defaults_speak_the_cli_protocol(self):
+        url, headers, body = transport.native_request_parts(
+            native_codex_connection(), CODEX_NATIVE_AUTH
+        )
+        self.assertEqual(url, "https://chatgpt.com/backend-api/codex/responses")
+        self.assertEqual(headers["Authorization"], "Bearer at")
+        self.assertEqual(headers["chatgpt-account-id"], "acc-1")
+        self.assertEqual(headers["OpenAI-Beta"], "responses=experimental")
+        self.assertEqual(headers["originator"], "codex_cli_rs")
+        self.assertEqual(headers["Accept"], "text/event-stream")
+        self.assertEqual(body["model"], "gpt-5.6-luna")
+        self.assertTrue(body["stream"])
+        self.assertFalse(body["store"])
+        self.assertEqual(
+            body["input"][0]["content"][0]["text"], "Reply with exactly: ok"
+        )
+
+    def test_codex_honors_model_and_base_url_overrides(self):
+        conn = native_codex_connection(model="gpt-5.6-terra", base_url="https://relay.example/codex")
+        url, headers, body = transport.native_request_parts(conn, CODEX_NATIVE_AUTH)
+        self.assertEqual(url, "https://relay.example/codex/responses")
+        self.assertEqual(body["model"], "gpt-5.6-terra")
+
+    def test_claude_defaults_use_the_oauth_bearer_shape(self):
+        conn = account_connection()
+        conn["activation"]["model"] = None
+        url, headers, body = transport.native_request_parts(conn, CLAUDE_CREDENTIALS)
+        self.assertEqual(url, "https://api.anthropic.com/v1/messages")
+        self.assertEqual(headers["Authorization"], "Bearer sk-ant-oat01-test")
+        self.assertNotIn("x-api-key", headers)
+        self.assertEqual(headers["anthropic-beta"], "oauth-2025-04-20")
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+        self.assertEqual(body["model"], "claude-sonnet-5")
+        self.assertEqual(body["max_tokens"], 4)
+        self.assertEqual(body["messages"], [{"role": "user", "content": "Reply with exactly: ok"}])
+
+    def test_non_account_transport_cannot_fire_natively(self):
+        with self.assertRaises(ValueError):
+            transport.native_request_parts(plan_connection(), "sk-test")
+
+
+class _BrokenStream:
+    """A 200 whose stream dies mid-read — the request still happened."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def readline(self):
+        raise OSError("stream reset")
+
+
+class SendNativeTests(unittest.TestCase):
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_codex_success_reads_the_sse_stream(self, urlopen):
+        urlopen.return_value = io.BytesIO(
+            b'event: response.created\ndata: {"type":"response.created"}\n\n'
+            b'event: response.completed\ndata: {"type":"response.completed"}\n\n'
+        )
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH, 15)
+        self.assertTrue(result["ok"])
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 15)
+        request = urlopen.call_args[0][0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer at")
+        self.assertEqual(request.get_header("Chatgpt-account-id"), "acc-1")
+        self.assertEqual(request.get_header("Openai-beta"), "responses=experimental")
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_codex_response_failed_is_a_failure_with_its_message(self, urlopen):
+        urlopen.return_value = io.BytesIO(
+            b'event: response.failed\n'
+            b'data: {"type":"response.failed","response":{"error":{"message":"usage limit reached"}}}\n\n'
+        )
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertFalse(result["ok"])
+        self.assertIn("usage limit reached", result["detail"])
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_read_error_after_a_200_is_still_a_success(self, urlopen):
+        # A 200 means the provider accepted the request; a dying stream must
+        # not record a phantom failure that invites duplicate retries.
+        urlopen.return_value = _BrokenStream()
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertTrue(result["ok"])
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_claude_success_reads_the_json_body(self, urlopen):
+        urlopen.return_value = io.BytesIO(b'{"id":"msg_1"}')
+        result = transport.send_native(account_connection(), CLAUDE_CREDENTIALS)
+        self.assertTrue(result["ok"])
+        request = urlopen.call_args[0][0]
+        self.assertEqual(request.full_url, "https://api.anthropic.com/v1/messages")
+        self.assertEqual(request.get_header("Anthropic-beta"), "oauth-2025-04-20")
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_rejected_credential_points_at_a_repush(self, urlopen):
+        error = transport.urllib.error.HTTPError(
+            "url", 401, "Unauthorized", None, io.BytesIO(b'{"detail":"bad token"}')
+        )
+        urlopen.side_effect = error
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertFalse(result["ok"])
+        self.assertIn("credential rejected (HTTP 401)", result["detail"])
+        self.assertIn("awewarm remote push", result["detail"])
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_provider_error_passes_through(self, urlopen):
+        error = transport.urllib.error.HTTPError(
+            "url", 400, "Bad Request", None,
+            io.BytesIO(b'{"detail":"the model is not supported with a ChatGPT account"}'),
+        )
+        urlopen.side_effect = error
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertFalse(result["ok"])
+        self.assertIn("HTTP 400", result["detail"])
+        self.assertIn("not supported", result["detail"])
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_network_failure(self, urlopen):
+        urlopen.side_effect = transport.urllib.error.URLError("connection refused")
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertFalse(result["ok"])
+        self.assertIn("connection refused", result["detail"])
+
+    def test_unrecognized_credential_is_a_failure_not_a_crash(self):
+        result = transport.send_native(native_codex_connection(), '{"tokens": {}}')
+        self.assertFalse(result["ok"])
+        self.assertIn("not recognized", result["detail"])

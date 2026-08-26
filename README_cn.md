@@ -180,11 +180,11 @@ connected ──节点首次失败──▶ failing ──连续 N 个节点丢�
 
 ### Always-on servers (Linux)
 
-不需要唤醒机制，机器从不睡眠 —— `awewarm scheduler install` 直接设置 systemd user timer（每分钟 tick；`Persistent=true` 在开机时补跑错过的 tick）。把 `config.json` 和 `secrets.json` 复制过去（或重新运行 `init`），注意 CLI 连接需要在服务器上也安装对应 CLI。`loginctl enable-linger $USER` 在无桌面/SSH 账号上是必需的。Linux 本质上无法唤醒挂起的机器：添加流程不会询问唤醒偏好，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
+不需要唤醒机制，机器从不睡眠 —— `awewarm scheduler install` 直接设置 systemd user timer（每分钟 tick；`Persistent=true` 在开机时补跑错过的 tick）。把 `config.json` 和 `secrets.json` 复制过去（或重新运行 `init`），注意委托出去的账号连接在服务器上装不装对应 CLI 都能保温（无 CLI 时走原生 HTTPS 回退）。`loginctl enable-linger $USER` 在无桌面/SSH 账号上是必需的。Linux 本质上无法唤醒挂起的机器：添加流程不会询问唤醒偏好，连接默认 `wakeWhenAsleep: false`，错过的时间点在机器醒来后于补跑窗口内补发。
 
 ## 远程服务器 —— 独享自己的盒子，或共享 hub
 
-合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把连接委托给任意常开机器（VPS、NAS、树莓派）—— 自己的盒子跑 `awewarm serve`，或与团队/家人/社区共享一台 `awewarm-hub serve`。订阅连接委托的是它的 API key；CLI 账号（Claude Code / Codex 登录）委托的是登录凭据，方式与 key 完全一致 —— 服务器带着注入的凭据运行 CLI（Claude 用 `CLAUDE_CODE_OAUTH_TOKEN`，Codex 用每连接独立的 `CODEX_HOME` 沙箱），前提是服务器上装了对应的 CLI。本地登录永远是事实源：每次同步都重新读取，凭据轮换后自动重推。
+合盖的笔记本在电池下最终会进入 standby，任何定时唤醒都够不到；关机的机器则什么都不会触发。要不依赖电源状态的全天候保温，把连接委托给任意常开机器（VPS、NAS、树莓派）—— 自己的盒子跑 `awewarm serve`，或与团队/家人/社区共享一台 `awewarm-hub serve`。订阅连接委托的是它的 API key；CLI 账号（Claude Code / Codex 登录）委托的是登录凭据，方式与 key 完全一致 —— 服务器带着注入的凭据运行 CLI（Claude 用 `CLAUDE_CODE_OAUTH_TOKEN`，Codex 用每连接独立的 `CODEX_HOME` 沙箱）；服务器上没装 CLI 时，则用同一份凭据直接以 CLI 自己的后端协议走 HTTPS 触发 —— 服务器什么都不用装。本地登录永远是事实源：每次同步都重新读取，凭据轮换后自动重推。
 
 两种形态一眼对比：
 
@@ -273,7 +273,7 @@ awewarm status --remote                           # 只看委托连接 + 服务�
 awewarm status --local                            # 只看本地调度的连接
 ```
 
-委托账号（Claude Code / Codex 登录）和委托 key 一回事，只多一道确认门：登录凭据是账户级的 —— 它解锁该登录下的**所有**订阅，而不是一把限定范围的 plan key —— 所以命令会展示目标服务器 URL，确认后才读取登录并推送（非交互 shell 需加 `--yes`）。凭据在服务器上与 key 一样只放内存，且只到达 CLI 子进程：Claude Code 通过 `CLAUDE_CODE_OAUTH_TOKEN` 注入，Codex 通过私有 `CODEX_HOME` 目录注入 —— 每次触发前都会用你推送的凭据重写其中的 `auth.json`，服务器侧 CLI 做的任何 token 刷新都会被丢弃，轮换只有一个方向：本机 → 服务器。`awewarm remote push` 每次重新读取登录；后台同步（每小时至多两次）在凭据指纹对不上时自动重推。收回（`--local`）和 `status <id>`（显示 `credential: server RAM only` 与指纹）的行为与订阅完全一致。前提：服务器那台机器得装好 CLI 本身（PATH 里有 `claude` / `codex`）—— 否则推送会以可操作的报错指名缺哪个二进制。
+委托账号（Claude Code / Codex 登录）和委托 key 一回事，只多一道确认门：登录凭据是账户级的 —— 它解锁该登录下的**所有**订阅，而不是一把限定范围的 plan key —— 所以命令会展示目标服务器 URL，确认后才读取登录并推送（非交互 shell 需加 `--yes`）。凭据在服务器上与 key 一样只放内存，且只到达 CLI 子进程：Claude Code 通过 `CLAUDE_CODE_OAUTH_TOKEN` 注入，Codex 通过私有 `CODEX_HOME` 目录注入 —— 每次触发前都会用你推送的凭据重写其中的 `auth.json`，服务器侧 CLI 做的任何 token 刷新都会被丢弃，轮换只有一个方向：本机 → 服务器。`awewarm remote push` 每次重新读取登录；后台同步（每小时至多两次）在凭据指纹对不上时自动重推。收回（`--local`）和 `status <id>`（显示 `credential: server RAM only` 与指纹）的行为与订阅完全一致。服务器什么都不用装：PATH 里有 CLI（`claude` / `codex`）就用它自己解析出的副本触发；没有就原生走 HTTPS —— 与 CLI 相同的后端协议、同样的推送凭据（`transport.baseUrl` 覆盖端点，`activation.model` 覆盖模型 —— codex 默认 `gpt-5.6-luna`，claude 默认 `claude-sonnet-5`）。`status <id>` 会标明当前模式。原生触发从不刷新 token：出现 401 说明推送的凭据过期了 —— 在本机用一次 CLI，同步会自动重推。
 
 要换新机器？一条命令带走全部 —— 连接、密钥、调度状态，以及让 hub 把新机器认作同一台机器的 `machine-id`（不占新的配对名额）：
 

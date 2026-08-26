@@ -103,6 +103,30 @@ def _read_codex():
     ))
 
 
+def codex_auth(credential):
+    """(access_token, account_id) inside Codex's auth.json JSON.
+
+    Raises ValueError when the shape is not recognized — the caller turns
+    that into an activation failure pointing at a re-push.
+    """
+    try:
+        payload = json.loads(credential)
+    except ValueError:
+        raise ValueError(
+            "credential format not recognized — log in again on the local machine, then: awewarm remote push"
+        )
+    tokens = payload.get("tokens") if isinstance(payload, dict) else None
+    if not isinstance(tokens, dict):
+        tokens = payload  # a bare tokens block is accepted too
+    token = tokens.get("access_token")
+    account = tokens.get("account_id")
+    if not isinstance(token, str) or not token or not isinstance(account, str) or not account:
+        raise ValueError(
+            "credential format not recognized — log in again on the local machine, then: awewarm remote push"
+        )
+    return token, account
+
+
 def claude_access_token(credential):
     """The accessToken inside Claude Code's credentials JSON.
 

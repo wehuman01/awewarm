@@ -517,7 +517,8 @@ def _delegate_remote(config, conn_id, conn, assume_yes=False):
     follows the global schedule, so this is the one moment those values may
     carry over. A subscription needs its stored API key; an account reads its
     CLI login credential (behind the account delegation gate) and pushes it
-    like a key — the server injects it into its own CLI runs, the local login
+    like a key — the server injects it into its own CLI runs (or, with no CLI
+    installed there, warms the account natively over HTTPS), the local login
     stays the source of truth. A connection flagged persistKey gets its
     confirmation here — this is the moment the key would start living on the
     server's disk; declining downgrades to RAM-only and clears the flag.
@@ -552,7 +553,7 @@ def _delegate_remote(config, conn_id, conn, assume_yes=False):
     resolve_connection(conn, config)
     try:
         remote.ensure_session(config)
-        remote.push_connection(
+        push_result = remote.push_connection(
             url, remote.load_token(), conn_id, conn, secret,
             _push_timezone(config), persist=persist, fingerprint=fingerprint,
         )
@@ -565,6 +566,11 @@ def _delegate_remote(config, conn_id, conn, assume_yes=False):
             f"✓ {conn_id} delegated — the server ticks it with its copy of your "
             f"{_provider_label(conn)} login (fingerprint {fingerprint})"
         )
+        if (push_result or {}).get("exec") == "native":
+            click.echo(
+                f"  no {_provider_label(conn)} CLI on that server — it warms this account"
+                " natively over HTTPS (same backend the CLI itself uses)"
+            )
         click.echo("  the local login stays the source of truth; a rotated credential re-pushes on the next sync")
     else:
         click.echo(f"✓ {conn_id} delegated — the server ticks it; the local scheduler skips it from now on")

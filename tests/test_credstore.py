@@ -131,3 +131,28 @@ class AccessTokenTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexAuthParseTests(unittest.TestCase):
+    def test_tokens_block_parsed(self):
+        token, account = credstore.codex_auth(
+            json.dumps({"tokens": {"access_token": "at", "account_id": "acc", "refresh_token": "rt"}})
+        )
+        self.assertEqual(token, "at")
+        self.assertEqual(account, "acc")
+
+    def test_bare_tokens_block_accepted(self):
+        token, account = credstore.codex_auth(
+            json.dumps({"access_token": "at", "account_id": "acc"})
+        )
+        self.assertEqual(token, "at")
+        self.assertEqual(account, "acc")
+
+    def test_missing_account_id_is_not_recognized(self):
+        with self.assertRaises(ValueError) as ctx:
+            credstore.codex_auth(json.dumps({"tokens": {"access_token": "at"}}))
+        self.assertIn("remote push", str(ctx.exception))
+
+    def test_non_json_is_not_recognized(self):
+        with self.assertRaises(ValueError):
+            credstore.codex_auth("not json at all")

@@ -10,9 +10,12 @@ machine read from its own CLI login — pushed exactly like an API key, fired
 by running the CLI with the credential injected per provider (claude:
 CLAUDE_CODE_OAUTH_TOKEN; codex: CODEX_HOME sandbox whose auth.json is
 re-written from the pushed credential before every fire, discarding any
-server-side token refresh). The local login stays the source of truth; the
-server-side resolved CLI path and the credential's fingerprint ride in the
-push body.
+server-side token refresh). When the server has no provider CLI installed,
+an account instead fires natively: the CLI's own backend protocol over
+HTTPS with the pushed credential (transport.exec = "native"), so a server
+needs nothing installed to warm accounts. The local login stays the source
+of truth in both modes; the server-side resolved CLI path and the
+credential's fingerprint ride in the push body.
 
 Nothing secret is written to disk here by default. The access token, API
 keys, and account credentials live in RAM only, pushed by the local machine,
@@ -225,12 +228,13 @@ class WarmServer:
     # --- connections ---
 
     def _resolve_cli(self, command):
-        """Absolute path of an account connection's CLI on this server.
+        """Absolute path of an account connection's CLI on this server, or
+        None when it is not installed.
 
         The pushed transport.cliCommand may be a path that only exists on the
         delegating machine: try it verbatim, then PATH-lookup its basename.
-        ApiError with the install prerequisite when neither resolves — the
-        server does not install CLIs itself.
+        A miss no longer rejects the push — the connection falls back to the
+        native HTTP transport (no CLI needed on this server).
         """
         name = (command or "").strip()
         for candidate in (name, Path(name).name if name else ""):
@@ -239,12 +243,7 @@ class WarmServer:
             resolved = shutil.which(candidate)
             if resolved:
                 return resolved
-        raise ApiError(
-            400,
-            f"{name or 'the account CLI'} is not installed on this server\n"
-            "fix (on the server): install the CLI (claude / codex) or link it into PATH,\n"
-            "then re-push from the local machine: awewarm remote push",
-        )
+        return None
 
     def put_connection(self, conn_id, payload):
         if not conn_id or not isinstance(conn_id, str):
@@ -275,10 +274,22 @@ class WarmServer:
             conn.setdefault("auth", {})["apiKeyRef"] = None  # the secret lives in RAM, not as a ref
             conn["timezone"] = tz_name
             conn["location"] = "remote"
+            exec_mode = "cli"
             if kind == "account":
                 # The delegating machine's CLI path means nothing here; the
-                # server fires through its own resolved copy.
-                conn["transport"]["cliCommand"] = self._resolve_cli(conn["transport"].get("cliCommand"))
+                # server fires through its own resolved copy — or, when no
+                # CLI is installed, natively over HTTPS (the CLI's own
+                # backend protocol, same credential).
+                resolved = self._resolve_cli(conn["transport"].get("cliCommand"))
+                if resolved:
+                    conn["transport"]["cliCommand"] = resolved
+                else:
+                    conn["transport"]["exec"] = "native"
+                    exec_mode = "native"
+                    self.log(
+                        f"{conn_id}: {Path(conn['transport'].get('cliCommand') or 'the CLI').name or 'the CLI'}"
+                        " not installed here — warming natively over HTTPS"
+                    )
             errors = connection_errors(conn, conn_id)
             if errors:
                 raise ApiError(400, "; ".join(errors))
@@ -309,7 +320,10 @@ class WarmServer:
             self._save(self.state_path, self.state)
             due_at, _ = schedule.next_due(conn, self.state["connections"][conn_id], self._now(conn))
             self.log(f"{conn_id} pushed ({'replaced' if replaced else 'new'})")
-            return {"ok": True, "replaced": replaced, "nextDue": schedule.iso(due_at) if due_at else None}
+            result = {"ok": True, "replaced": replaced, "nextDue": schedule.iso(due_at) if due_at else None}
+            if kind == "account":
+                result["exec"] = exec_mode  # the local side names the mode in its delegation echo
+            return result
 
     def delete_connection(self, conn_id):
         with self.lock:
@@ -417,11 +431,16 @@ class WarmServer:
         schedule.record_attempt(cs, now)
         secret = self.keys.get(conn_id)
         if conn["transport"]["kind"] in transport.CLI_TRANSPORT_KINDS:
-            # A delegated account fires its CLI at the CLI cap (120 s), with
-            # the pushed credential injected (codex: into its sandbox).
-            result = transport.send_activation(
-                conn, credential=secret, sandbox_root=self.sandbox_root, conn_id=conn_id
-            )
+            if conn["transport"].get("exec") == "native":
+                # No CLI on this server: fire the CLI's own backend protocol
+                # over HTTPS with the pushed credential, at the HTTP cap.
+                result = transport.send_native(conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS)
+            else:
+                # A delegated account fires its CLI at the CLI cap (120 s), with
+                # the pushed credential injected (codex: into its sandbox).
+                result = transport.send_activation(
+                    conn, credential=secret, sandbox_root=self.sandbox_root, conn_id=conn_id
+                )
         else:
             result = transport.send_activation(conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS)
         if result["ok"]:

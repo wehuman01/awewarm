@@ -122,13 +122,35 @@ class ConnectionTests(ServerCase):
         self.assertIsNone(stored["auth"]["apiKeyRef"])  # no secret ref to resolve
         self.assertFalse((self.data_dir / "secrets.json").exists())
 
-    def test_push_rejects_account_connections_without_a_cli_on_the_server(self):
+    def test_push_accepts_an_account_without_a_cli_as_native(self):
+        conn = account_connection()
         with mock.patch("awewarm.server.shutil.which", return_value=None):
-            with self.assertRaises(remote_client.RemoteError) as ctx:
-                remote_client.push_connection(
-                    self.url, self.token, "claude", account_connection(), "cred", TZ
-                )
-        self.assertIn("not installed on this server", str(ctx.exception))
+            result = remote_client.push_connection(
+                self.url, self.token, "claude", conn, '{"token": "c"}', TZ,
+                fingerprint="abcd1234abcd1234",
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["exec"], "native")
+        entry = self.view()["connections"]["claude"]
+        self.assertEqual(entry["config"]["transport"]["exec"], "native")
+        self.assertEqual(entry["config"]["transport"]["cliCommand"], "claude")  # untouched
+        log = (self.data_dir / "awewarm-server.log").read_text()
+        self.assertIn("natively over HTTPS", log)
+
+    def test_repush_flips_a_native_account_back_to_the_cli_when_installed(self):
+        conn = account_connection()
+        with mock.patch("awewarm.server.shutil.which", return_value=None):
+            remote_client.push_connection(
+                self.url, self.token, "claude", conn, '{"token": "c"}', TZ
+            )
+        self.assertEqual(self.view()["connections"]["claude"]["config"]["transport"]["exec"], "native")
+        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/claude"):
+            remote_client.push_connection(
+                self.url, self.token, "claude", conn, '{"token": "c"}', TZ
+            )
+        transport_block = self.view()["connections"]["claude"]["config"]["transport"]
+        self.assertNotIn("exec", transport_block)
+        self.assertEqual(transport_block["cliCommand"], "/usr/local/bin/claude")
 
     def test_push_accepts_an_account_and_resolves_the_cli_server_side(self):
         conn = account_connection()
@@ -247,13 +269,46 @@ class TickTests(ServerCase):
         self.tick(at("03:00", seconds=30))
         self.assertEqual(send.call_args.kwargs["timeout_seconds"], server.ACTIVATION_TIMEOUT_SECONDS)
 
-    def _push_codex_account(self, credential='{"token": "c"}', fingerprint="abcd1234abcd1234"):
+    def _push_codex_account(self, credential='{"token": "c"}', fingerprint="abcd1234abcd1234",
+                            cli_path="/usr/local/bin/codex"):
         conn = account_connection(fixed_at=("03:00",), days="every-day")
         conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
-        with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
+        with mock.patch("awewarm.server.shutil.which", return_value=cli_path):
             return remote_client.push_connection(
                 self.url, self.token, "codex", conn, credential, TZ, fingerprint=fingerprint
             )
+
+    def _push_native_codex_account(self):
+        # The same codex account, but on a server with no codex installed.
+        return self._push_codex_account(cli_path=None)
+
+    @mock.patch("awewarm.transport.send_native", return_value={"ok": True, "detail": ""})
+    def test_native_account_ticks_without_the_cli_or_a_sandbox(self, native):
+        self._push_native_codex_account()
+        with mock.patch("awewarm.transport.send_activation") as cli_path:
+            result = self.tick(at("03:00", seconds=30))
+        self.assertEqual(result["fired"], 1)
+        cli_path.assert_not_called()  # no CLI fires when none is installed
+        self.assertFalse(self.warm.sandbox_root.exists())  # and no sandbox is built
+        kwargs = native.call_args.kwargs
+        self.assertEqual(kwargs.get("timeout_seconds"), server.ACTIVATION_TIMEOUT_SECONDS)
+        self.assertEqual(native.call_args.args[0]["transport"]["kind"], "codex-cli")
+
+    @mock.patch("awewarm.transport.send_native", return_value={"ok": False, "detail": "credential rejected"})
+    def test_native_failure_lands_in_the_ladder_like_any_other(self, native):
+        self._push_native_codex_account()
+        result = self.tick(at("03:00", seconds=30))
+        self.assertEqual(result["fired"], 1)
+        cs = self.warm.state["connections"]["codex"]
+        self.assertEqual(cs["lastResult"], "failure")
+        self.assertIn("credential rejected", (cs.get("lastError") or ""))
+
+    @mock.patch("awewarm.transport.send_native", return_value={"ok": True, "detail": ""})
+    def test_run_now_uses_the_native_path_too(self, native):
+        self._push_native_codex_account()
+        result = self.warm.run_now("codex")
+        self.assertTrue(result["ok"])
+        native.assert_called_once()
 
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
     def test_delegated_account_fires_with_credential_and_sandbox(self, send):

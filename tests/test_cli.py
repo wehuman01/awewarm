@@ -1748,6 +1748,36 @@ class RemoteDelegationTests(IsolatedTestCase):
         self.assertIn(f"fingerprint {credential.fingerprint}", output_of(result))
         self.assertIn("source of truth", output_of(result))
 
+    def delegate_account_native(self):
+        # The same codex account, delegated to a server with no codex installed.
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        self.paired_config(conn, conn_id="codex")
+        credential = credstore.Credential('{"tokens": {"access_token": "one", "account_id": "acc"}}')
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=credential), \
+                mock.patch("awewarm.server.shutil.which", return_value=None):
+            result = invoke(["config", "set", "codex", "--remote", "--yes"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        return result
+
+    def test_account_delegation_names_the_native_mode(self):
+        result = self.delegate_account_native()
+        self.assertIn("natively over HTTPS", output_of(result))
+        entry = self.server_view()["connections"]["codex"]
+        self.assertEqual(entry["config"]["transport"]["exec"], "native")
+
+    def test_status_details_the_native_mode(self):
+        self.delegate_account_native()
+        result = invoke(["status", "codex"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("warmed natively over HTTPS", output_of(result))
+
+    def test_status_details_the_cli_mode_when_installed(self):
+        self.delegate_account()
+        result = invoke(["status", "codex"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("warmed by the server's own CLI copy", output_of(result))
+
     def test_config_set_remote_requires_a_paired_server(self):
         write_config(plan_connection())
         result = invoke(["config", "set", "claude-code-main", "--remote"])
