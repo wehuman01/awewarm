@@ -7,6 +7,7 @@ skip once it returns.
 """
 import http.client
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -367,6 +368,12 @@ class FakeCliAccountTests(ServerCase):
     def _fake_cli(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        if sys.platform == "win32":
+            # A stand-in the real shutil.which resolves (PATHEXT) and
+            # CreateProcess executes: a batch file echoing %CODEX_HOME%.
+            script = Path(tmp.name) / "codex.bat"
+            script.write_text("@echo %CODEX_HOME%\r\n")
+            return str(script)
         script = Path(tmp.name) / "codex"
         script.write_text('#!/bin/sh\necho "$CODEX_HOME"\n')
         script.chmod(0o755)
