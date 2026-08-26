@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -155,7 +156,8 @@ class ActivationEnvTests(unittest.TestCase):
             self.assertEqual(env, {"CODEX_HOME": str(Path(tmp) / "codex-1")})
             auth = Path(tmp) / "codex-1" / "auth.json"
             self.assertEqual(auth.read_text(), CODEX_AUTH)
-            self.assertEqual(auth.stat().st_mode & 0o777, 0o600)
+            if sys.platform != "win32":  # Windows has no POSIX modes; st_mode always reads 0o666
+                self.assertEqual(auth.stat().st_mode & 0o777, 0o600)
 
     def test_codex_rematerialization_discards_server_side_refresh(self):
         # The CLI may refresh tokens into its sandbox; the next fire rewrites

@@ -75,8 +75,9 @@ class ClaudeReadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, ".claude").mkdir()
             Path(tmp, ".claude", ".credentials.json").write_text(CLAUDE_CREDENTIALS)
+            # USERPROFILE matters too: Windows expanduser() ignores HOME.
             with mock.patch("sys.platform", "linux"), mock.patch.dict(
-                os.environ, {"HOME": tmp}, clear=False
+                os.environ, {"HOME": tmp, "USERPROFILE": tmp}, clear=False
             ):
                 credential = credstore.read_credential(account_connection())
         self.assertEqual(credential.raw, CLAUDE_CREDENTIALS)
@@ -84,7 +85,7 @@ class ClaudeReadTests(unittest.TestCase):
     def test_missing_file_is_an_actionable_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("sys.platform", "linux"), mock.patch.dict(
-                os.environ, {"HOME": tmp}, clear=False
+                os.environ, {"HOME": tmp, "USERPROFILE": tmp}, clear=False
             ):
                 with self.assertRaises(credstore.CredentialError) as ctx:
                     credstore.read_credential(account_connection())
