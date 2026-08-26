@@ -126,7 +126,8 @@ class ConnectionTests(ServerCase):
         conn = account_connection()
         with mock.patch("awewarm.server.shutil.which", return_value=None):
             result = remote_client.push_connection(
-                self.url, self.token, "claude", conn, '{"token": "c"}', TZ,
+                self.url, self.token, "claude", conn,
+                '{"claudeOAuthAccessToken": {"accessToken": "c"}}', TZ,
                 fingerprint="abcd1234abcd1234",
             )
         self.assertTrue(result["ok"])
@@ -137,11 +138,29 @@ class ConnectionTests(ServerCase):
         log = (self.data_dir / "awewarm-server.log").read_text()
         self.assertIn("natively over HTTPS", log)
 
+    def test_native_push_rejects_a_credential_that_cannot_ever_fire(self):
+        with mock.patch("awewarm.server.shutil.which", return_value=None):
+            with self.assertRaises(remote_client.RemoteError) as ctx:
+                remote_client.push_connection(
+                    self.url, self.token, "claude", account_connection(), '{"token": "c"}', TZ
+                )
+        self.assertIn("claude /login", str(ctx.exception))
+        self.assertEqual(self.view()["connections"], {})
+
+    def test_resolve_cli_understands_a_windows_path_pushed_to_posix(self):
+        command = r"C:\Users\Peng\AppData\Roaming\npm\codex.cmd"
+        with mock.patch(
+            "awewarm.server.shutil.which",
+            side_effect=lambda candidate: "/usr/local/bin/codex" if candidate == "codex" else None,
+        ):
+            self.assertEqual(self.warm._resolve_cli(command), "/usr/local/bin/codex")
+
     def test_repush_flips_a_native_account_back_to_the_cli_when_installed(self):
         conn = account_connection()
         with mock.patch("awewarm.server.shutil.which", return_value=None):
             remote_client.push_connection(
-                self.url, self.token, "claude", conn, '{"token": "c"}', TZ
+                self.url, self.token, "claude", conn,
+                '{"claudeOAuthAccessToken": {"accessToken": "c"}}', TZ,
             )
         self.assertEqual(self.view()["connections"]["claude"]["config"]["transport"]["exec"], "native")
         with mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/claude"):
@@ -280,7 +299,10 @@ class TickTests(ServerCase):
 
     def _push_native_codex_account(self):
         # The same codex account, but on a server with no codex installed.
-        return self._push_codex_account(cli_path=None)
+        return self._push_codex_account(
+            credential='{"tokens": {"access_token": "c", "account_id": "acc"}}',
+            cli_path=None,
+        )
 
     @mock.patch("awewarm.transport.send_native", return_value={"ok": True, "detail": ""})
     def test_native_account_ticks_without_the_cli_or_a_sandbox(self, native):

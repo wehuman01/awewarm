@@ -1,4 +1,5 @@
 import io
+import http.client
 import json
 import os
 import subprocess
@@ -396,8 +397,22 @@ class _BrokenStream:
     def __exit__(self, *exc):
         return False
 
-    def readline(self):
+    def readline(self, _size=-1):
         raise OSError("stream reset")
+
+
+class _IncompleteStream(_BrokenStream):
+    def readline(self, _size=-1):
+        raise http.client.IncompleteRead(b"partial")
+
+
+class _BoundedStream(_BrokenStream):
+    def __init__(self):
+        self.sizes = []
+
+    def readline(self, size=-1):
+        self.sizes.append(size)
+        return b""
 
 
 class SendNativeTests(unittest.TestCase):
@@ -434,6 +449,20 @@ class SendNativeTests(unittest.TestCase):
         self.assertTrue(result["ok"])
 
     @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_incomplete_sse_after_a_200_is_still_a_success(self, urlopen):
+        urlopen.return_value = _IncompleteStream()
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertTrue(result["ok"])
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    def test_sse_read_is_bounded(self, urlopen):
+        stream = _BoundedStream()
+        urlopen.return_value = stream
+        result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
+        self.assertTrue(result["ok"])
+        self.assertEqual(stream.sizes, [transport.NATIVE_SSE_CAP_BYTES])
+
+    @mock.patch("awewarm.transport.urllib.request.urlopen")
     def test_claude_success_reads_the_json_body(self, urlopen):
         urlopen.return_value = io.BytesIO(b'{"id":"msg_1"}')
         result = transport.send_native(account_connection(), CLAUDE_CREDENTIALS)
@@ -451,6 +480,7 @@ class SendNativeTests(unittest.TestCase):
         result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
         self.assertFalse(result["ok"])
         self.assertIn("credential rejected (HTTP 401)", result["detail"])
+        self.assertIn("codex login", result["detail"])
         self.assertIn("awewarm remote push", result["detail"])
 
     @mock.patch("awewarm.transport.urllib.request.urlopen")

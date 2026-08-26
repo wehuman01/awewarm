@@ -4,6 +4,7 @@ Builders (activation_argv / http_request_parts / activation_env /
 native_request_parts) are pure and unit-tested; senders do the I/O. Results
 never contain API keys, credentials, or auth headers.
 """
+import http.client
 import json
 import os
 import re
@@ -292,6 +293,27 @@ def native_request_parts(connection, credential):
     raise ValueError(f"a {kind} connection cannot fire natively")
 
 
+def validate_native_credential(connection, credential):
+    """Reject a native delegation whose credential cannot be used later.
+
+    This is deliberately offline validation: accepting the push must not send
+    a real activation, but it also must not promise a delegation whose first
+    scheduled tick is guaranteed to fail.
+    """
+    kind = connection["transport"]["kind"]
+    if kind == "codex-cli":
+        codex_auth(credential)
+        return
+    if kind == "claude-cli":
+        claude_access_token(credential)
+        return
+    raise ValueError(f"a {kind} connection cannot fire natively")
+
+
+def _login_command(connection):
+    return "codex login" if connection["transport"]["kind"] == "codex-cli" else "claude /login"
+
+
 def _sse_failure(text):
     """The error message in one `response.failed` SSE data line, if any."""
     marker = '"response.failed"'
@@ -331,7 +353,8 @@ def _send_native(connection, credential, timeout_seconds=None):
                 "ok": False,
                 "detail": f"credential rejected (HTTP {exc.code})"
                           + (f": {message}" if message else "")
-                          + " — log in again on the local machine, then: awewarm remote push",
+                          + f" — run `{_login_command(connection)}` on the local machine, "
+                            "then: awewarm remote push",
             }
         detail = f"HTTP {exc.code}"
         if message:
@@ -345,19 +368,19 @@ def _send_native(connection, credential, timeout_seconds=None):
             try:
                 drained = 0
                 while drained < NATIVE_SSE_CAP_BYTES:
-                    line = response.readline()
+                    line = response.readline(NATIVE_SSE_CAP_BYTES - drained)
                     if not line:
                         break
                     drained += len(line)
                     failure = _sse_failure(line.decode("utf-8", "replace"))
                     if failure:
                         return {"ok": False, "detail": failure}
-            except (OSError, TimeoutError):
+            except (OSError, TimeoutError, http.client.HTTPException):
                 pass
             return {"ok": True, "detail": ""}
         try:
             response.read(NATIVE_SSE_CAP_BYTES)
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError, http.client.HTTPException):
             pass
         return {"ok": True, "detail": ""}
 

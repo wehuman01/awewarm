@@ -1731,6 +1731,19 @@ class RemoteDelegationTests(IsolatedTestCase):
             result = invoke(["remote", "push"])
         self.assertIn("already in sync", output_of(result))  # matching fingerprint is a no-op
 
+    def test_background_sync_repushes_after_the_user_logs_in_again(self):
+        stale = credstore.Credential('{"tokens": {"access_token": "one"}}')
+        fresh = credstore.Credential('{"tokens": {"access_token": "two"}}')
+        self.delegate_account(credential=stale)
+        state = cfg.load_state()
+        state["lastRemoteSyncAt"] = None
+        with mock.patch("awewarm.cli.credstore.read_credential", return_value=fresh), \
+                mock.patch("awewarm.server.shutil.which", return_value="/usr/local/bin/codex"):
+            awewarm.cli._maybe_sync_remote(cfg.load_config(), state)
+        entry = self.server_view()["connections"]["codex"]
+        self.assertEqual(entry["credentialFingerprint"], fresh.fingerprint)
+        self.assertEqual(self.warm.keys["codex"], fresh.raw)
+
     def test_run_on_a_delegated_account_waits_out_the_cli(self):
         self.delegate_account()
         with mock.patch(
@@ -1771,6 +1784,22 @@ class RemoteDelegationTests(IsolatedTestCase):
         result = invoke(["status", "codex"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("warmed natively over HTTPS", output_of(result))
+
+    def test_status_tells_a_user_how_to_recover_an_expired_native_login(self):
+        self.delegate_account_native()
+        cs = self.warm.state["connections"]["codex"]
+        cs.update({
+            "lastResult": "failure",
+            "lastAttemptAt": "2026-08-20T06:40:00+08:00",
+            "lastError": (
+                "credential rejected (HTTP 401) — run `codex login` on the local machine, "
+                "then: awewarm remote push"
+            ),
+        })
+        result = invoke(["status", "codex"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("codex login", output_of(result))
+        self.assertIn("awewarm remote push", output_of(result))
 
     def test_status_details_the_cli_mode_when_installed(self):
         self.delegate_account()

@@ -67,7 +67,7 @@ import time
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from . import __version__, schedule, transport
 from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for, _write_json
@@ -237,7 +237,11 @@ class WarmServer:
         native HTTP transport (no CLI needed on this server).
         """
         name = (command or "").strip()
-        for candidate in (name, Path(name).name if name else ""):
+        windows_name = PureWindowsPath(name).name if name else ""
+        candidates = [name, Path(name).name, windows_name] if name else []
+        if PureWindowsPath(windows_name).suffix.lower() in (".bat", ".cmd", ".exe", ".ps1"):
+            candidates.append(PureWindowsPath(windows_name).stem)
+        for candidate in dict.fromkeys(candidates):
             if not candidate:
                 continue
             resolved = shutil.which(candidate)
@@ -274,6 +278,9 @@ class WarmServer:
             conn.setdefault("auth", {})["apiKeyRef"] = None  # the secret lives in RAM, not as a ref
             conn["timezone"] = tz_name
             conn["location"] = "remote"
+            errors = connection_errors(conn, conn_id)
+            if errors:
+                raise ApiError(400, "; ".join(errors))
             exec_mode = "cli"
             if kind == "account":
                 # The delegating machine's CLI path means nothing here; the
@@ -286,13 +293,14 @@ class WarmServer:
                 else:
                     conn["transport"]["exec"] = "native"
                     exec_mode = "native"
+                    try:
+                        transport.validate_native_credential(conn, secret)
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc))
                     self.log(
                         f"{conn_id}: {Path(conn['transport'].get('cliCommand') or 'the CLI').name or 'the CLI'}"
                         " not installed here — warming natively over HTTPS"
                     )
-            errors = connection_errors(conn, conn_id)
-            if errors:
-                raise ApiError(400, "; ".join(errors))
             with self._conn_lock(conn_id):  # an in-flight fire on the old copy finishes first
                 replaced = conn_id in self.config["connections"]
                 self.config["connections"][conn_id] = conn

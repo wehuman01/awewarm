@@ -113,7 +113,8 @@ def codex_auth(credential):
         payload = json.loads(credential)
     except ValueError:
         raise ValueError(
-            "credential format not recognized — log in again on the local machine, then: awewarm remote push"
+            "credential format not recognized — run `codex login` on the local machine, "
+            "then: awewarm remote push"
         )
     tokens = payload.get("tokens") if isinstance(payload, dict) else None
     if not isinstance(tokens, dict):
@@ -122,7 +123,8 @@ def codex_auth(credential):
     account = tokens.get("account_id")
     if not isinstance(token, str) or not token or not isinstance(account, str) or not account:
         raise ValueError(
-            "credential format not recognized — log in again on the local machine, then: awewarm remote push"
+            "credential format not recognized — run `codex login` on the local machine, "
+            "then: awewarm remote push"
         )
     return token, account
 
@@ -137,7 +139,8 @@ def claude_access_token(credential):
         payload = json.loads(credential)
     except ValueError:
         raise ValueError(
-            "credential format not recognized — log in again on the local machine, then: awewarm remote push"
+            "credential format not recognized — run `claude /login` on the local machine, "
+            "then: awewarm remote push"
         )
     token = None
     if isinstance(payload, dict):
@@ -148,6 +151,7 @@ def claude_access_token(credential):
             token = payload.get("accessToken")
     if not isinstance(token, str) or not token:
         raise ValueError(
-            "credential format not recognized — log in again on the local machine, then: awewarm remote push"
+            "credential format not recognized — run `claude /login` on the local machine, "
+            "then: awewarm remote push"
         )
     return token
