@@ -4,9 +4,9 @@
 
 AI coding plans all have usage windows. Claude Max gives you 5 hours from the first request. Codex and third-party token plans have windows of their own. You start at 9 AM, the window closes at 2 PM. You take a lunch break, come back at 3 PM, and your first request opens a brand new window — burning quota on a partial session. awewarm fixes this by sending one minimal request at the right time so the window is always already open when you sit down to code.
 
-The install is a single prompt: "Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it." The agent installs the package and the awewarm skill, then walks you through `awewarm init` in your terminal: it discovers your Claude Code login (macOS Keychain or `~/.claude/.credentials.json`) and your Codex login (`~/.codex/auth.json`), offers a full-day fixed-time grid when the window is known, adds subscription endpoints through `awewarm config add`, and registers the background scheduler (launchd on macOS, Task Scheduler on Windows, systemd on Linux). Two minutes later, `awewarm status` shows every connection `connected`. The learning cost of the tool moves from you to the agent.
+The install is a single prompt: "Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it." The agent installs the package and the awewarm skill, then walks you through `awewarm init` in your terminal: it discovers your Claude Code login (macOS Keychain or `~/.claude/.credentials.json`) and your Codex login (`~/.codex/auth.json`), offers a full-day fixed-time grid when the window is known, adds subscription endpoints through `awewarm config add`, and registers the background scheduler (launchd on macOS, Task Scheduler on Windows, systemd on Linux). Two minutes later, `awewarm status` shows every connection `connected`. The learning cost of the tool moves from you to the agent.
 
-GitHub: [github.com/mugpeng/awewarm](https://github.com/mugpeng/awewarm)
+GitHub: [github.com/wehuman01/awewarm](https://github.com/wehuman01/awewarm)
 
 ## Two Modes: Fixed and Interval
 
@@ -75,7 +75,7 @@ Three design decisions make it durable. The health ladder is **graduated, not bi
 
 Tell your agent:
 
-> "Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it."
+> "Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it."
 
 Then check the status:
 
@@ -102,4 +102,4 @@ awewarm is part of the aweteam ecosystem:
 - **[awerouter](https://github.com/mugpeng/awerouter)** — Smart LLM router that directs requests to Flash or Pro models using structural signals
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — AI coding session manager with profile-aware restoration
 - **[aweshare](https://github.com/wehuman01/aweshare)** — Local-first AI capability relay: share your GPU and API keys without exposing the keys
-- **[awewarm](https://github.com/mugpeng/awewarm)** — Subscription window warmer that keeps AI coding-plan windows predictably open
+- **[awewarm](https://github.com/wehuman01/awewarm)** — Subscription window warmer that keeps AI coding-plan windows predictably open

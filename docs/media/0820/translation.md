@@ -4,9 +4,9 @@
 
 所有 AI 编程订阅都有使用窗口期。就好像每个人的心里都有个牛来。Claude Max 从第一次请求起给你 5 小时；Codex 和第三方 token 计划也有各自的窗口。你早上 9 点开工，窗口到下午 2 点关闭。午休回来，下午 3 点再坐下，第一请求就会开启一个全新窗口——只为一段零散的会话烧掉配额。awewarm 解决这个问题：在正确的时间自动发送一次最小请求，让你坐下写代码时，订阅窗口已经提前打开。就好像牛来，或许你永远不会去电影院看它，但小某书、视频号，它的形象已经深入脑海。
 
-和awesome 的其他工具一样，awewarm 也是面向ai 的。所以安装只需一句话："Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it."（阅读这个 README 并照做。）有aweskill 的情况下，AI 智能体会装好包和 awewarm 技能，再带你跑一遍 `awewarm init`：自动发现你的 Claude Code 登录态（macOS Keychain 或 `~/.claude/.credentials.json`）和 Codex 登录态（`~/.codex/auth.json`），窗口已知时给出全天固定时间网格，订阅端点用 `awewarm config add` 添加，最后注册后台调度器（macOS 用 launchd，Windows 用 Task Scheduler，Linux 用 systemd）。两分钟后，`awewarm status` 里所有连接都是 connected。工具的上手成本从你转移到了 AI 智能体身上。
+和awesome 的其他工具一样，awewarm 也是面向ai 的。所以安装只需一句话："Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it."（阅读这个 README 并照做。）有aweskill 的情况下，AI 智能体会装好包和 awewarm 技能，再带你跑一遍 `awewarm init`：自动发现你的 Claude Code 登录态（macOS Keychain 或 `~/.claude/.credentials.json`）和 Codex 登录态（`~/.codex/auth.json`），窗口已知时给出全天固定时间网格，订阅端点用 `awewarm config add` 添加，最后注册后台调度器（macOS 用 launchd，Windows 用 Task Scheduler，Linux 用 systemd）。两分钟后，`awewarm status` 里所有连接都是 connected。工具的上手成本从你转移到了 AI 智能体身上。
 
-GitHub: [github.com/mugpeng/awewarm](https://github.com/mugpeng/awewarm)
+GitHub: [github.com/wehuman01/awewarm](https://github.com/wehuman01/awewarm)
 
 ## 两种模式：固定与间隔
 
@@ -116,7 +116,7 @@ awewarm 就是订阅的配额利用率优化器。它确保你付的每一个窗
 
 告诉你的 AI 智能体：
 
-> "Read https://github.com/mugpeng/awewarm/blob/main/README.ai.md and follow it."
+> "Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it."
 
 然后检查状态：
 
@@ -143,4 +143,4 @@ awewarm 属于 aweteam 生态：
 - **[awerouter](https://github.com/mugpeng/awerouter)** — 根据结构信号将请求路由到 Flash 或 Pro 模型的智能 LLM 路由器
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — 支持配置感知恢复的 AI 编程会话管理器
 - **[aweshare](https://github.com/wehuman01/aweshare)** — 本地优先的 AI 能力中继：共享 GPU 和 API key，但不暴露密钥本身
-- **[awewarm](https://github.com/mugpeng/awewarm)** — 让 AI 编程订阅窗口保持稳定可用的订阅窗口保温器
+- **[awewarm](https://github.com/wehuman01/awewarm)** — 让 AI 编程订阅窗口保持稳定可用的订阅窗口保温器

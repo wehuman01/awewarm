@@ -70,4 +70,4 @@ awewarm is part of the aweteam ecosystem:
 - **[awerouter](https://github.com/mugpeng/awerouter)** — Smart LLM router that directs requests to Flash or Pro models using structural signals
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — AI coding session manager with profile-aware restoration
 - **[aweshare](https://github.com/wehuman01/aweshare)** — Local-first AI capability relay: share your GPU and API keys without exposing the keys
-- **[awewarm](https://github.com/mugpeng/awewarm)** — Subscription window warmer that keeps AI coding-plan windows predictably open
+- **[awewarm](https://github.com/wehuman01/awewarm)** — Subscription window warmer that keeps AI coding-plan windows predictably open
