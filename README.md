@@ -1,6 +1,6 @@
 <div align="center">
   <img src="logo/hero2.webp" alt="awewarm" width="860">
-  <h1>awewarm: Subscription Window Warmer</h1>
+  <h1>awewarm: Subscription Window Warmer <a href="https://github.com/Webioinfo01/aweskill"><img src="https://raw.githubusercontent.com/Webioinfo01/aweskill/main/logo/aweskill-badge2.svg" alt="aweskill companion"></a></h1>
   <p><strong>Keep AI coding-plan windows warm with one minimal request.</strong></p>
   <p>Connect once; awewarm detects what your Claude Code / Codex account or subscription endpoint can do, then makes sure the next usage window is always already open.</p>
   <p>
