@@ -211,6 +211,21 @@ class ConnectionTests(ServerCase):
         self.assertNotIn("codex", self.view()["connections"])
         self.assertFalse((self.warm.data_dir / "codex-home" / "codex").exists())
 
+    def test_connection_id_cannot_escape_the_sandbox(self):
+        victim = self.data_dir.parent / "victim"
+        victim.mkdir()
+        (victim / "sentinel.txt").write_text("keep")
+        malicious = str(victim)
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            self.push_plan(malicious)
+        self.assertIn("connection id", str(ctx.exception))
+        self.assertTrue((victim / "sentinel.txt").exists())
+
+    def test_connection_id_may_keep_existing_safe_punctuation(self):
+        result = self.push_plan("team.alpha_v2")
+        self.assertTrue(result["ok"])
+        self.assertIn("team.alpha_v2", self.view()["connections"])
+
     def test_push_rejects_unknown_timezone(self):
         conn = plan_connection()
         with self.assertRaises(remote_client.RemoteError) as ctx:
@@ -435,6 +450,33 @@ class KeepaliveTests(ServerCase):
             self.assertEqual(response.status, 200)  # the answer arrives...
             response.read()
             self.assertEqual(conn.sock.recv(4096), b"")  # ...then silence ends the connection
+
+
+class HttpInputTests(ServerCase):
+    def test_json_body_must_be_an_object(self):
+        host, port = self.httpd.server_address
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request(
+            "POST", "/v1/claim", body="null",
+            headers={"Content-Type": "application/json"},
+        )
+        response = conn.getresponse()
+        self.assertEqual(response.status, 400)
+        self.assertIn(b"JSON object", response.read())
+
+    def test_negative_content_length_is_rejected_and_closed(self):
+        host, port = self.httpd.server_address
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.putrequest("POST", "/v1/claim")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "-1")
+        conn.endheaders()
+        response = conn.getresponse()
+        self.assertEqual(response.status, 400)
+        self.assertIn(b"non-negative", response.read())
+        self.assertEqual(response.getheader("Connection"), "close")
 
 
 class FakeCliAccountTests(ServerCase):

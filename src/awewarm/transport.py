@@ -234,7 +234,7 @@ def activation_env(connection, credential, sandbox_root=None, conn_id=None):
     if kind == "codex-cli":
         if sandbox_root is None:
             raise ValueError("a delegated codex connection needs its sandbox dir (internal error)")
-        home = Path(sandbox_root).expanduser() / (conn_id or "codex")
+        home = _sandbox_dir(sandbox_root, conn_id or "codex")
         home.mkdir(parents=True, exist_ok=True)
         auth = home / "auth.json"
         fd = os.open(auth, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -397,7 +397,26 @@ def send_native(connection, credential, timeout_seconds=None):
 
 def remove_sandbox(sandbox_root, conn_id):
     """Drop one connection's codex sandbox (takeback / delete on the server)."""
-    shutil.rmtree(Path(sandbox_root) / conn_id, ignore_errors=True)
+    try:
+        target = _sandbox_dir(sandbox_root, conn_id)
+    except ValueError:
+        return
+    shutil.rmtree(target, ignore_errors=True)
+
+
+def _sandbox_dir(sandbox_root, conn_id):
+    """A sandbox child proven to remain below its configured root."""
+    root = Path(sandbox_root).expanduser()
+    target = root / conn_id
+    resolved_root = root.resolve()
+    resolved_target = target.resolve()
+    try:
+        resolved_target.relative_to(resolved_root)
+    except ValueError:
+        raise ValueError("connection id escapes the codex sandbox")
+    if resolved_target == resolved_root:
+        raise ValueError("connection id resolves to the codex sandbox root")
+    return target
 
 
 def send_activation(connection, api_key=None, timeout_seconds=None, credential=None, sandbox_root=None, conn_id=None):

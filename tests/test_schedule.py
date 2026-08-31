@@ -51,6 +51,29 @@ class FixedTests(unittest.TestCase):
         self.assertEqual(actions[0]["type"], "activate")
         self.assertEqual(actions[0]["slot"], "06:35")
 
+    def test_catchup_crosses_midnight(self):
+        conn_state = default_conn_state()
+        actions = self.plan(
+            conn_state,
+            at(SATURDAY, "00:05"),
+            mode="fixed",
+            fixed_at=("23:50",),
+            days="every-day",
+        )
+        self.assertEqual(actions[0]["type"], "activate")
+        self.assertEqual(actions[0]["slotAt"], at(SATURDAY - timedelta(days=1), "23:50"))
+
+    def test_weekday_catchup_from_friday_fires_on_saturday(self):
+        actions = self.plan(
+            default_conn_state(),
+            at(SATURDAY, "00:05"),
+            mode="fixed",
+            fixed_at=("23:50",),
+            days="weekday",
+        )
+        self.assertEqual(actions[0]["type"], "activate")
+        self.assertEqual(actions[0]["slotAt"], at(SATURDAY - timedelta(days=1), "23:50"))
+
     def test_beyond_catchup_marks_skipped_and_never_fires(self):
         conn_state = default_conn_state()
         now = at(WEDNESDAY, "08:00")  # 85 minutes after the slot
@@ -406,6 +429,20 @@ class FailurePolicyTests(unittest.TestCase):
         self.assertEqual(actions[0]["type"], "skip-slot")
         self.assertTrue(actions[0].get("lost"))
 
+    def test_fixed_failed_slot_closes_after_deadline_crosses_midnight(self):
+        friday = SATURDAY - timedelta(days=1)
+        conn = self.fixed_conn(fixed_at=("23:50",), days="every-day")
+        conn_state = default_conn_state()
+        node = self.fixed_node(friday, "23:50")
+        schedule.record_failure(
+            conn_state, conn, at(friday, "23:55"), "fixed", "boom", node=node
+        )
+        actions = schedule.plan_actions(conn, conn_state, at(SATURDAY, "00:21"))
+        self.assertTrue(actions[0].get("lost"))
+        schedule.dispatch_actions(conn, conn_state, at(SATURDAY, "00:21"), lambda *_: None)
+        self.assertIsNone(conn_state["nodeKey"])
+        self.assertIn("23:50", conn_state["skippedSlots"][friday.isoformat()])
+
     def test_manual_failure_never_counts(self):
         conn = self.interval_conn()
         conn_state = default_conn_state()
@@ -570,7 +607,8 @@ class UserAnchorTests(unittest.TestCase):
 class GridTimesTests(unittest.TestCase):
     def test_300min_grid_from_default_anchor(self):
         self.assertEqual(
-            schedule.grid_times("06:35", 300), ["06:35", "11:40", "16:45", "21:50"]
+            schedule.grid_times("06:35", 300),
+            ["02:55", "06:35", "11:40", "16:45", "21:50"],
         )
 
     def test_grid_from_late_night_reset_covers_full_day(self):
@@ -581,6 +619,12 @@ class GridTimesTests(unittest.TestCase):
 
     def test_halfday_window_gives_two_slots(self):
         self.assertEqual(schedule.grid_times("09:00", 720), ["09:00", "21:05"])
+
+    def test_late_anchor_wraps_past_midnight(self):
+        self.assertEqual(
+            schedule.grid_times("23:00", 300),
+            ["04:05", "09:10", "14:15", "19:20", "23:00"],
+        )
 
     def test_short_window_grid_fills_the_whole_day(self):
         # The old range(8) guard cut short-window grids off mid-day.

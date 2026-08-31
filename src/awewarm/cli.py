@@ -113,7 +113,10 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True,
             return {"ok": False, "detail": "API key unavailable (missing from secrets.json)"}
     result = transport.send_activation(conn, api_key)
     if result["ok"]:
-        schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
+        schedule.record_success(
+            cs, conn, now, kind, slot, reset_due=reset_due,
+            slot_at=(node or {}).get("dueAt"),
+        )
         log_event(f"{conn_id} activation ({kind}) ok")
     else:
         schedule.record_failure(cs, conn, now, kind, result["detail"], node=node)

@@ -156,7 +156,11 @@ def grid_times(anchor_hhmm, window_minutes):
         return []
     start = int(match.group(1)) * 60 + int(match.group(2))
     step = window_minutes + 5
-    return [f"{minutes // 60:02d}:{minutes % 60:02d}" for minutes in range(start, 24 * 60, step)]
+    # Walk one full 24-hour cycle, not merely the remainder of the anchor's
+    # calendar day. A late anchor otherwise produced only one or two slots
+    # and left a long cold gap across midnight.
+    minutes = sorted((start + elapsed) % (24 * 60) for elapsed in range(0, 24 * 60, step))
+    return [f"{value // 60:02d}:{value % 60:02d}" for value in minutes]
 
 
 def compute_next_due(connection, success_at, jitter_seconds=None):
@@ -197,8 +201,6 @@ def _due_fixed(connection, conn_state, now):
     slot is marked skipped on that one failure, so it never refires.
     """
     fixed = connection["schedule"].get("fixed") or {}
-    if not is_active_day(now.date(), fixed.get("days", "weekday")):
-        return [], None
     defer = parse_ts(conn_state.get("deferUntil"))
     if defer is not None and now < defer:
         return [], None  # --start gate: slots fire late within catch-up once it lifts
@@ -207,36 +209,60 @@ def _due_fixed(connection, conn_state, now):
     skip_window = timedelta(
         minutes=fixed.get("skipIfActivatedWithinMinutes", DEFAULT_SKIP_IF_ACTIVATED_MINUTES)
     )
-    day_key = now.strftime("%Y-%m-%d")
-    done = set(conn_state["completedSlots"].get(day_key, []))
-    skipped = set(conn_state["skippedSlots"].get(day_key, []))
     last_ok = _last_success(conn_state)
     pending_skip = []
     activate = None
-    for hhmm in sorted(at_times):
-        if hhmm in done or hhmm in skipped:
+    # A catch-up window may cross midnight. Inspect yesterday first, but only
+    # while one of its slots can still be live; old days need no new skip row.
+    for day in (now.date() - timedelta(days=1), now.date()):
+        if not is_active_day(day, fixed.get("days", "weekday")):
             continue
-        slot_at = slot_datetime(now.date(), hhmm, now.tzinfo)
-        if slot_at is None or now < slot_at:
-            continue
-        if now > slot_at + catchup:
-            expired = {
-                "type": "skip-slot",
-                "slot": hhmm,
-                "why": "past-catchup",
-            }
-            node_key = conn_state.get("nodeKey")
-            if node_key == _fixed_node_key(day_key, hhmm) and conn_state.get("nodeAttempts"):
-                expired["lost"] = True
-            pending_skip.append(expired)
-            continue
-        if last_ok is not None and slot_at - last_ok < skip_window:
-            pending_skip.append({"type": "skip-slot", "slot": hhmm, "why": "recently-activated"})
-            continue
-        if _throttled(conn_state, now):
-            continue
-        activate = {"type": "activate", "reason": "fixed", "slot": hhmm, "slotAt": slot_at}
-        break
+        day_key = day.strftime("%Y-%m-%d")
+        done = set(conn_state["completedSlots"].get(day_key, []))
+        skipped = set(conn_state["skippedSlots"].get(day_key, []))
+        for hhmm in sorted(at_times):
+            if hhmm in done or hhmm in skipped:
+                continue
+            slot_at = slot_datetime(day, hhmm, now.tzinfo)
+            if slot_at is None or now < slot_at:
+                continue
+            if now > slot_at + catchup:
+                node_key = conn_state.get("nodeKey")
+                if day != now.date():
+                    if node_key == _fixed_node_key(day_key, hhmm) and conn_state.get("nodeAttempts"):
+                        pending_skip.append({
+                            "type": "skip-slot",
+                            "slot": hhmm,
+                            "slotAt": slot_at,
+                            "why": "past-catchup",
+                            "lost": True,
+                        })
+                    continue
+                expired = {
+                    "type": "skip-slot",
+                    "slot": hhmm,
+                    "why": "past-catchup",
+                }
+                if node_key == _fixed_node_key(day_key, hhmm) and conn_state.get("nodeAttempts"):
+                    expired["lost"] = True
+                pending_skip.append(expired)
+                continue
+            if last_ok is not None and slot_at - last_ok < skip_window:
+                skipped_action = {
+                    "type": "skip-slot",
+                    "slot": hhmm,
+                    "why": "recently-activated",
+                }
+                if day != now.date():
+                    skipped_action["slotAt"] = slot_at
+                pending_skip.append(skipped_action)
+                continue
+            if _throttled(conn_state, now):
+                continue
+            activate = {"type": "activate", "reason": "fixed", "slot": hhmm, "slotAt": slot_at}
+            break
+        if activate is not None:
+            break
     return pending_skip, activate
 
 
@@ -327,7 +353,7 @@ def dispatch_actions(connection, conn_state, now, activate):
     results, skipped = [], 0
     for action in plan_actions(connection, conn_state, now):
         if action["type"] == "skip-slot":
-            record_skip(conn_state, now, action["slot"], action["why"])
+            record_skip(conn_state, now, action["slot"], action["why"], action.get("slotAt"))
             skipped += 1
             if action.get("lost"):
                 close_lost_node(conn_state, connection, now, "catch-up window expired")
@@ -437,7 +463,7 @@ def record_attempt(conn_state, now):
     conn_state["lastAttemptAt"] = iso(now)
 
 
-def record_success(conn_state, connection, now, kind, slot=None, reset_due=True):
+def record_success(conn_state, connection, now, kind, slot=None, reset_due=True, slot_at=None):
     """Apply a successful activation: anchor, renewal chain, slot completion.
 
     reset_due=False keeps the interval chain's nextDueAt untouched, for manual
@@ -449,7 +475,7 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True)
     conn_state["deferUntil"] = None
     reset_ladder(conn_state)
     if kind == "fixed" and slot:
-        day_key = now.strftime("%Y-%m-%d")
+        day_key = (slot_at or now).strftime("%Y-%m-%d")
         slots = conn_state["completedSlots"].setdefault(day_key, [])
         if slot not in slots:
             slots.append(slot)
@@ -479,8 +505,8 @@ def record_failure(conn_state, connection, now, kind, error, node=None):
         close_lost_node(conn_state, connection, now, "catch-up exhausted")
 
 
-def record_skip(conn_state, now, slot, why):
-    day_key = now.strftime("%Y-%m-%d")
+def record_skip(conn_state, now, slot, why, slot_at=None):
+    day_key = (slot_at or now).strftime("%Y-%m-%d")
     slots = conn_state["skippedSlots"].setdefault(day_key, [])
     if slot not in slots:
         slots.append(slot)

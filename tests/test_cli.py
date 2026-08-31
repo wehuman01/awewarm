@@ -223,7 +223,8 @@ class ConfigAddPlanTests(IsolatedTestCase):
         self.assertEqual(conn["window"]["status"], "user-confirmed")
         self.assertEqual(conn["window"]["durationMinutes"], 300)
         self.assertEqual(
-            conn["schedule"]["fixed"]["at"], ["06:35", "11:40", "16:45", "21:50"]
+            conn["schedule"]["fixed"]["at"],
+            ["02:55", "06:35", "11:40", "16:45", "21:50"],
         )
         self.assertEqual(conn["schedule"]["fixed"]["days"], "every-day")
         self.assertEqual(conn["auth"]["apiKeyRef"], "file:glm-coding-plan")

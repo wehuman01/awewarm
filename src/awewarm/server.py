@@ -87,6 +87,27 @@ ACTIVATION_TIMEOUT_SECONDS = 15
 # One worker per potentially-slow activation; ticks submit one job per due
 # connection, so this bounds concurrent CLI subprocesses (and their RAM).
 TICK_WORKERS = 4
+MAX_REQUEST_THREADS = 64
+
+
+def validate_connection_id(conn_id):
+    """Reject ids that can become paths or forge line-oriented output.
+
+    Existing generated ids and harmless hand-written punctuation remain
+    valid; this is a safety boundary, not a new naming convention.
+    """
+    if not isinstance(conn_id, str) or not conn_id:
+        raise ApiError(400, "connection id required")
+    windows = PureWindowsPath(conn_id)
+    if (
+        "/" in conn_id
+        or "\\" in conn_id
+        or windows.drive
+        or conn_id in (".", "..")
+        or any(ord(char) < 32 or ord(char) == 127 for char in conn_id)
+    ):
+        raise ApiError(400, "connection id must not contain a path or control characters")
+    return conn_id
 
 class ApiError(Exception):
     def __init__(self, status, message):
@@ -95,11 +116,37 @@ class ApiError(Exception):
         self.message = message
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request HTTP with a fixed process-wide resource ceiling."""
+
+    daemon_threads = True
+
+    def __init__(self, *args, max_request_threads=MAX_REQUEST_THREADS, **kwargs):
+        self._request_slots = threading.BoundedSemaphore(max_request_threads)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
+
 class WarmServer:
     """All server state: config + state on disk, token in RAM, keys in RAM
     plus an owner-opt-in keys.json (see the module docstring)."""
 
-    def __init__(self, data_dir, fixed_token=None):
+    def __init__(self, data_dir, fixed_token=None, activation_pool=None):
         self.data_dir = Path(data_dir).expanduser()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.data_dir / "config.json"
@@ -121,7 +168,7 @@ class WarmServer:
         self.started_at = datetime.now().astimezone()
         self.last_tick_at = None
         self.conn_locks = {}  # conn_id → mutex serializing that connection's fires
-        self.pool = concurrent.futures.ThreadPoolExecutor(
+        self.pool = activation_pool or concurrent.futures.ThreadPoolExecutor(
             max_workers=TICK_WORKERS, thread_name_prefix="awewarm-activation"
         )
 
@@ -250,8 +297,7 @@ class WarmServer:
         return None
 
     def put_connection(self, conn_id, payload):
-        if not conn_id or not isinstance(conn_id, str):
-            raise ApiError(400, "connection id required")
+        validate_connection_id(conn_id)
         conn = payload.get("connection")
         secret = payload.get("apiKey")
         tz_name = payload.get("timezone")
@@ -334,6 +380,7 @@ class WarmServer:
             return result
 
     def delete_connection(self, conn_id):
+        validate_connection_id(conn_id)
         with self.lock:
             if conn_id not in self.config["connections"]:
                 raise ApiError(404, f"no such connection: {conn_id}")
@@ -354,6 +401,8 @@ class WarmServer:
     def put_keys(self, mapping):
         if not isinstance(mapping, dict) or not mapping:
             raise ApiError(400, "body must be {connectionId: apiKey}")
+        for conn_id in mapping:
+            validate_connection_id(conn_id)
         with self.lock:
             unknown = [cid for cid in mapping if cid not in self.config["connections"]]
             if unknown:
@@ -452,7 +501,10 @@ class WarmServer:
         else:
             result = transport.send_activation(conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS)
         if result["ok"]:
-            schedule.record_success(cs, conn, now, kind, slot, reset_due=reset_due)
+            schedule.record_success(
+                cs, conn, now, kind, slot, reset_due=reset_due,
+                slot_at=(node or {}).get("dueAt"),
+            )
         else:
             schedule.record_failure(cs, conn, now, kind, result["detail"], node=node)
         self.log(f"{conn_id} activation ({kind}) " + ("ok" if result["ok"] else f"failed: {result['detail']}"))
@@ -576,19 +628,34 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            raise ApiError(400, "Content-Length must be a non-negative integer")
+        if length < 0:
+            self.close_connection = True
+            raise ApiError(400, "Content-Length must be a non-negative integer")
         if length > BODY_LIMIT_BYTES:
+            # The body remains unread, so this HTTP/1.1 connection cannot be
+            # safely reused for another request.
+            self.close_connection = True
             raise ApiError(413, "body too large")
         if not length:
             return {}
         try:
-            return json.loads(self.rfile.read(length).decode())
+            body = json.loads(self.rfile.read(length).decode())
         except ValueError:
             raise ApiError(400, "body must be JSON")
+        if not isinstance(body, dict):
+            raise ApiError(400, "body must be a JSON object")
+        return body
 
     def _bearer(self):
         header = self.headers.get("Authorization") or ""
@@ -668,8 +735,7 @@ def make_server(data_dir, bind="127.0.0.1", port=8790, fixed_token=None):
     """Build one WarmServer plus its HTTP server. Port 0 picks a free one."""
     engine = WarmServer(data_dir, fixed_token=fixed_token)
     handler = type("BoundHandler", (_Handler,), {"warm": engine})
-    httpd = ThreadingHTTPServer((bind, port), handler)
-    httpd.daemon_threads = True
+    httpd = BoundedThreadingHTTPServer((bind, port), handler)
     return engine, httpd
 
 
@@ -698,7 +764,8 @@ def run(data_dir, bind="127.0.0.1", port=8790, fixed_token=None, tick_seconds=60
     engine, httpd = make_server(data_dir, bind=bind, port=port, fixed_token=fixed_token)
     actual = httpd.server_address[1]
     print(f"awewarm serve {__version__}")
-    print(f"  data dir: {engine.data_dir}  (config/state/log — no secrets ever written to disk)")
+    print(f"  data dir: {engine.data_dir}")
+    print("  delegated keys: RAM-only by default; owner-opted keys use plaintext keys.json (0600)")
     print(f"  listening: http://{bind}:{actual}")
     if fixed_token is not None:
         print("  auth: fixed token from --token (RAM only)")
