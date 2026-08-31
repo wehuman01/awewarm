@@ -407,7 +407,7 @@ awewarm self-update --check    # 只看版本，不升级
 export AWEWARM_NO_UPDATE_CHECK=1
 ```
 
-## 支持
+## 赞助与支持
 
 如果 awewarm 帮你省下了配额，欢迎支持：
 
