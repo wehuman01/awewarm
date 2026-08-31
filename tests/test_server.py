@@ -9,6 +9,7 @@ import http.client
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -477,6 +478,56 @@ class HttpInputTests(ServerCase):
         self.assertEqual(response.status, 400)
         self.assertIn(b"non-negative", response.read())
         self.assertEqual(response.getheader("Connection"), "close")
+
+    def test_overload_returns_503(self):
+        hold = threading.Event()
+        ready = threading.Event()
+        state = {"entered": 0}
+        state_lock = threading.Lock()
+
+        class HoldHandler(server._Handler):
+            def do_POST(self):
+                if self.path == "/v1/test/hold":
+                    with state_lock:
+                        state["entered"] += 1
+                        if state["entered"] >= 2:
+                            ready.set()
+                    hold.wait(timeout=5)
+                    self._send(200, {"ok": True})
+                else:
+                    super().do_POST()
+
+        test_dir = self.data_dir / "overload"
+        warm = server.WarmServer(test_dir, fixed_token=None)
+        handler = type("BoundHandler", (HoldHandler,), {"warm": warm})
+        httpd = server.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), handler, max_request_threads=2,
+        )
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
+        host, port = httpd.server_address
+
+        def hold_request():
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            conn.request("POST", "/v1/test/hold", body="{}")
+            conn.getresponse()
+
+        t1 = threading.Thread(target=hold_request, daemon=True)
+        t2 = threading.Thread(target=hold_request, daemon=True)
+        t1.start()
+        t2.start()
+
+        ready.wait(timeout=3)
+
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/v1/state")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 503)
+
+        hold.set()
+        t1.join(timeout=3)
+        t2.join(timeout=3)
 
 
 class FakeCliAccountTests(ServerCase):
