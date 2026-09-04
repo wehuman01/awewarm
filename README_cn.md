@@ -35,52 +35,119 @@ awewarm 管理两类连接：
 
 ## 快速开始
 
-需要 Python ≥ 3.9：
+要求 Python ≥ 3.9：
+
+### 1. 安装和使用 awewarm
+
+如果你在 Claude Code、Codex、Cursor 等 coding agent 中工作，直接告诉它：
+
+```text
+Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm.
+```
+
+Agent 会先安装 CLI，只读扫描本地帐号，然后告诉你扫描结果。之后你可以直接用自然语言让它查看状态、调整时间、暂停连接和诊断配置。
+
+<details>
+<summary>手动安装</summary>
 
 ```bash
 pip3 install awewarm
+awewarm -v
 ```
 
-后台调度器支持 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd 用户 timer —— 无桌面/SSH 账号先执行 `loginctl enable-linger $USER`）。没有 systemd 的环境可以用 cron 触发 tick：`* * * * * awewarm tick`。
+</details>
 
-所有密钥都保存在 `secrets.json` —— 环境变量引用方式已移除：后台调度器（launchd / systemd / 任务计划程序）读不到 shell 变量，会以 "API key unavailable" 静默失败。密钥文件使用原子写入；如果文件损坏或不可读，awewarm 会明确拒绝操作，不会把它静默覆盖。
+### 2. 在自己的终端完成首次配置
 
-### 让 AI agent 代装
-
-在 Claude Code、Codex 或其他编程 agent 里，对它说：
-
-```text
-阅读 https://github.com/wehuman01/awewarm/blob/main/README.ai.md 并按其指引安装和配置 awewarm。
-```
-
-Agent 会安装 CLI、只读扫描本机账号，并按你的要求调整调度。引导流程本身（`awewarm init`、`awewarm config add`）留在你的终端完成 —— 它需要交互式输入选项和 API key。装好之后可以直接问“下次保温是什么时候？”或“把 claude-code 改成 06:35 和 12:35”。
-
-### 手动安装
+首次配置有意设计成交互式：`awewarm init` 会询问要管理哪些已检测帐号、选择保温计划、为每条连接发送一次测试请求，并安装后台调度器。Agent 不会替你运行它。请在自己的终端执行：
 
 ```bash
-awewarm init        # 扫描本机账号、选择调度、安装后台调度器
-awewarm status      # 查看接下来会发生什么
+awewarm init
 ```
 
-无论账号还是 endpoint，添加时都会发一条测试请求 —— 模型名错误或 key 失效当场暴露，而不是等到早上六点。
-
-接入订阅 endpoint：
+如果不是使用本地 Claude Code 或 Codex 帐号，而是配置订阅 endpoint，请在自己的终端执行：
 
 ```bash
 awewarm config add
 ```
 
-依次选择协议、输入 API base URL、API key 和模型；awewarm 会先用一条最小请求测试 endpoint，然后把 API key 存入 `secrets.json`（0600）。同一条命令也能重新添加之前删掉的 `claude` / `codex` 本机账号 —— 它会列出在这台机器上检测到的所有可管理项。
+它会询问协议、API base URL、API key 和模型，用一次最小请求测试 endpoint，然后把 key 存入 `~/.config/awewarm/secrets.json`（权限 0600）。同一命令也可以重新添加之前移除的本地帐号。
+
+`awewarm init` 和 `config add` 都会发送真实的测试请求、消耗套餐额度，所以 agent 可以引导你，但不会静默替你触发。调度器安装于 macOS（launchd）、Windows（任务计划程序）和 Linux（systemd user timer）；无头 Linux/SSH 帐号先运行 `loginctl enable-linger $USER`，没有 systemd 的系统用 cron：`* * * * * awewarm tick`。
+
+### 3. 开始用自然语言管理保温
+
+终端配置完成后，awewarm 就可以直接用了。你可以这样告诉 agent：
+
+#### 查看下一次保温
+
+```text
+claude-code 下一次保温是什么时候，调度器健康吗？
+```
+
+<details>
+<summary>等价的 CLI 命令</summary>
+
+```bash
+awewarm status
+awewarm status claude-code
+awewarm status --json
+```
+
+</details>
+
+#### 修改保温时间
+
+```text
+把我的 GLM 套餐改成工作日 06:35、11:40 和 16:45 保温。
+```
+
+<details>
+<summary>等价的 CLI 命令</summary>
+
+```bash
+awewarm config set glm --times 06:35,11:40,16:45 --days weekday
+awewarm status glm
+```
+
+</details>
+
+#### 暂停或恢复连接
+
+```text
+我要休假，暂停所有保温，并告诉我之后怎么恢复。
+```
+
+<details>
+<summary>等价的 CLI 命令</summary>
+
+```bash
+awewarm config set glm --off
+awewarm config set glm --on
+awewarm status glm
+```
+
+</details>
+
+#### 诊断问题
+
+```text
+看看我的 awewarm 连接为什么没有保温，并修复第一个安全的配置问题。
+```
+
+Agent 可以检查 `discover`、`status` 和脱敏后的配置路径，然后建议或执行时间设置变更。除非你明确要求，它不会运行 `awewarm run`，因为那会发送真实请求并消耗套餐额度。
+
+> **进阶内容：** 调度模式、健康阶梯、睡眠/唤醒行为和远程服务器委派见下方参考章节 — 从[调度模式](#调度模式)开始。
 
 ## 配套工具
 
-awewarm 是 AI 编程 agent 工具家族的一员：
+awewarm 是一组面向 AI 编程 agent 的工具的一部分：
 
-- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** —— 多租户配套服务器：一台常驻服务器通过一次性邀请码，让整个团队的窗口保持温热。同一组织、同样的 MPL-2.0；底层引擎就是本包，锁定其 minor 版本。
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** —— Claude Code / Codex / OpenCode 的 agent profile 切换器。aweswitch 管理会话用哪个 provider 启动；awewarm 让该 provider 的订阅窗口在底下一直开着。如果你用 aweswitch 启动 coding-plan 套餐，awewarm 就是让这些 5 小时窗口夜里不凉掉的那一块拼图。
-- **[aweskill](https://github.com/Webioinfo01/aweskill)** —— AI agent 的 CLI skill 包管理器（支持 47+ agent）。
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** —— Claude Code / Codex 的会话书签管理器。
-- **[awerouter](https://github.com/mugpeng/awerouter)** —— 智能 LLM 路由器：按结构化信号切分 flash/pro。
+- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — 多租户配套服务器：一台常在线的机器通过一次性邀请，为整个团队保持窗口温热。同属 wehuman01，使用 MPL-2.0；底层引擎固定到本包的小版本。
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex 和 OpenCode 的 agent profile 切换器。aweswitch 管理会话使用哪个 provider，awewarm 在下面保持该订阅窗口活跃。
+- **[aweskill](https://aweskill.webioinfo.top/)** — 面向 AI agent 的 CLI skill 包管理器（支持 47+ agent）。
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — Claude Code 和 Codex 的会话收藏管理器。
+- **[awerouter](https://github.com/mugpeng/awerouter)** — 智能 LLM 路由器：按结构信号切分 flash/pro。
 
 ## 调度模式
 
@@ -407,6 +474,17 @@ awewarm self-update --check    # 只看版本，不升级
 export AWEWARM_NO_UPDATE_CHECK=1
 ```
 
+## 开发
+
+```bash
+pip install -e .
+python3 -m unittest discover -s tests
+```
+
+源码检出状态下 `awewarm -v` 会标注 `editable` 及 git 状态；pip 记录的元数据停在 `pip install -e .` 那一刻，版本号升级后重跑一次即可同步 `pip show`。检出状态下 `awewarm self-update` 会拒绝执行——请用 `git pull` + 重新安装代替。
+
+工程规范见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)，版本历史见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
+
 ## 赞助与支持
 
 如果 awewarm 帮你省下了配额，欢迎支持：
@@ -418,17 +496,6 @@ export AWEWARM_NO_UPDATE_CHECK=1
 <p align="center">
   <img src="assets/images/wechat-pay.jpg" alt="WeChat Pay" width="240">
 </p>
-
-## 开发
-
-```bash
-pip install -e .
-python3 -m unittest discover -s tests
-```
-
-源码检出状态下 `awewarm -v` 会标注 `editable` 及 git 状态；pip 记录的元数据停在 `pip install -e .` 那一刻，版本号升级后重跑一次即可同步 `pip show`。检出状态下 `awewarm self-update` 会拒绝执行——请用 `git pull` + 重新安装代替。
-
-工程规范见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)，版本历史见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
 
 ## Awesome 软件生态
 

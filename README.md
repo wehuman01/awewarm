@@ -37,48 +37,115 @@ It schedules those requests in two modes — `fixed` and `interval` — explaine
 
 Requires Python ≥ 3.9:
 
-```bash
-pip3 install awewarm
-```
+### 1. Install and use awewarm
 
-The background scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer — `loginctl enable-linger $USER` first on headless/SSH accounts). Where systemd is unavailable, cron the tick: `* * * * * awewarm tick`.
-
-All keys live in `secrets.json` — env-var references were removed because the background scheduler (launchd/systemd/Task Scheduler) cannot read shell variables and would silently fail with "API key unavailable". Writes are atomic; a malformed or unreadable secrets file is refused rather than silently replaced.
-
-### Let an AI agent set it up
-
-Working in Claude Code, Codex, or another coding agent? Tell it:
+If you are working in Claude Code, Codex, Cursor, or another coding agent, tell it:
 
 ```text
 Read https://github.com/wehuman01/awewarm/blob/main/README.ai.md and follow it to install and configure awewarm.
 ```
 
-The agent installs the CLI, scans your local accounts (read-only), and tunes schedules on request. Onboarding itself (`awewarm init`, `awewarm config add`) stays in your terminal — it prompts for choices and API keys. After setup you can ask things like "when is the next warm-up?" or "set claude-code to 06:35 and 12:35".
+The agent installs the CLI, scans your local accounts read-only, and tells you what it found. It can then explain status, adjust schedules, pause connections, and diagnose configuration in natural language.
 
-### Manual setup
+<details>
+<summary>Manual install</summary>
 
 ```bash
-awewarm init        # scan local accounts, pick a schedule, install the scheduler
-awewarm status      # see what will happen next
+pip3 install awewarm
+awewarm -v
 ```
 
-Every added connection — account or endpoint — gets one test request during setup, so a broken model or bad key surfaces immediately instead of at 6 a.m.
+</details>
 
-For a subscription endpoint instead:
+### 2. Finish the first setup in your terminal
+
+The first setup is intentionally interactive: `awewarm init` asks which detected accounts to manage, chooses a schedule, sends one test request per connection, and installs the background scheduler. An agent must not run it for you. In your own terminal, run:
+
+```bash
+awewarm init
+```
+
+For a subscription endpoint instead of a local Claude Code or Codex account, run this in your terminal:
 
 ```bash
 awewarm config add
 ```
 
-You will be asked for the protocol, API base URL, API key, and model; awewarm tests the endpoint with one minimal request, then stores the key in `secrets.json`. The same command also re-adds a local `claude` / `codex` account you removed earlier — it lists whatever is detected on this machine.
+It asks for the protocol, API base URL, API key, and model, tests the endpoint with one minimal request, then stores the key in `~/.config/awewarm/secrets.json` (0600). The same command can re-add a local account you removed earlier.
+
+`awewarm init` and `config add` both make real test requests. They consume quota, so the agent may guide you but will not trigger them silently. The scheduler installs on macOS (launchd), Windows (Task Scheduler), and Linux (systemd user timer); on headless Linux/SSH accounts run `loginctl enable-linger $USER` first, and where systemd is unavailable, cron the tick: `* * * * * awewarm tick`.
+
+### 3. Manage warm-ups through natural language
+
+Once the terminal setup finishes, awewarm is ready to use. Ask your agent things like:
+
+#### Check the next warm-up
+
+```text
+When is the next warm-up for claude-code, and is the scheduler healthy?
+```
+
+<details>
+<summary>Equivalent CLI commands</summary>
+
+```bash
+awewarm status
+awewarm status claude-code
+awewarm status --json
+```
+
+</details>
+
+#### Change a schedule
+
+```text
+Set my GLM plan to warm at 06:35, 11:40, and 16:45 on weekdays.
+```
+
+<details>
+<summary>Equivalent CLI commands</summary>
+
+```bash
+awewarm config set glm --times 06:35,11:40,16:45 --days weekday
+awewarm status glm
+```
+
+</details>
+
+#### Pause or resume a connection
+
+```text
+Pause all warm-ups while I'm on vacation, then tell me how to resume them.
+```
+
+<details>
+<summary>Equivalent CLI commands</summary>
+
+```bash
+awewarm config set glm --off
+awewarm config set glm --on
+awewarm status glm
+```
+
+</details>
+
+#### Diagnose a problem
+
+```text
+Check why my awewarm connection is not warming and fix the first safe configuration problem.
+```
+
+The agent can inspect `discover`, `status`, and the redacted config paths, then suggest or apply schedule changes. It will not run `awewarm run` unless you explicitly ask, because that sends a real request and consumes plan quota.
+
+> **Beyond the basics:** scheduling modes, the health ladder, sleep/wake behavior, and remote-server delegation are covered in the reference sections below — start with [Scheduling Modes](#scheduling-modes).
 
 ## Companion Tools
 
 awewarm is part of a small tool family for AI coding agents:
 
-- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0; its engine is this package, pinned to its minor version.
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath. If you launch coding-plan profiles with aweswitch, awewarm is the piece that keeps those 5-hour windows from going cold overnight.
-- **[aweskill](https://github.com/Webioinfo01/aweskill)** — CLI skill package manager for AI agents (47+ agents).
+- **[awewarm-hub](https://github.com/Webioinfo01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0; its engine is this package, pinned to its minor version.
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath.
+- **[aweskill](https://aweskill.webioinfo.top/)** — CLI skill package manager for AI agents (47+ agents).
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — session bookmark manager for Claude Code and Codex.
 - **[awerouter](https://github.com/mugpeng/awerouter)** — smart LLM router: flash/pro split by structural signals.
 
