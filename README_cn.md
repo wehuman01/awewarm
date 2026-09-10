@@ -365,6 +365,7 @@ awewarm config restore /safe/path.tar.gz          # 在新机器上执行；目�
 ```json
 {
   "version": 3,
+  "proxyUrl": null,
   "settings": {
     "catchupMinutes": 30,
     "catchupAttempts": 5,
@@ -425,6 +426,18 @@ settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每�
 
 一个刻意的不对称：**remote（已委托）连接永远不继承 global 层的 schedule** —— global 描述的是本机的一天。remote 连接的 schedule 只来自它自己的 settings 和 `connections.remote.settings`（knobs 仍全局继承），唯一例外是 `windowMinutes`——窗口时长是套餐事实而非某台机器的一天，global 层的窗口时长同样到达 remote 连接。继承来的 interval 模式不会弄坏窗口未验证的连接——这类连接保持 fixed，直到记录窗口。委托时会把当时的生效调度冻结为该连接自己的 settings，交接不会改变触发时刻。旧版程序保存的配置（knob 位置的 `windowMinutes`、schedule 位置的 `wakeWhenAsleep`）在首次加载时折入当前位置，且不再以旧拼写写出。
 
+### 网络出口 —— 默认直连
+
+awewarm 自身发出的每一个请求——hub 控制通道、订阅保温请求、更新检查——都**直连**，无视环境变量 `http_proxy`/`https_proxy`/`all_proxy`。机器级代理是环境噪音（通常是为 git/npm 或桌面 Clash 设的），不该捕获调度器的流量：保温系统卖的是确定性，把它路由进一个没人点名要用的代理，等于让它的可用性跟着代理走。默认直连也让交互命令和后台 tick（本来就不带 shell 环境）行为完全一致。网络确实需要走代理时，用顶层 `proxyUrl` 显式声明：
+
+```bash
+awewarm config proxy http://127.0.0.1:7890   # awewarm 自身的请求全部走这个代理
+awewarm config proxy                         # 查看当前出口
+awewarm config proxy none                    # 恢复直连
+```
+
+`codex`/`claude` 子进程不在此策略内——它们继承环境变量，自己决定代理。网络层失败时，错误信息会写明当时走的出口，该查哪一侧一目了然。
+
 ## 命令
 
 ```bash
@@ -442,6 +455,8 @@ awewarm config remove <id>            # 删除连接及其状态和存储的 API
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config template               # 打印参考配置结构（手工调整对照用）
 awewarm config path                   # 配置 / 状态 / 日志路径
+awewarm config proxy [<url>|none]     # 查看 / 设置 / 清除 awewarm 自身请求的出口代理
+                                       #   （环境变量代理始终被无视）
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
 awewarm status --remote / --local     # 只看委托连接（含服务器健康行）/ 只看本地调度的连接
 awewarm run [--force]                 # 立即触发所有启用的连接（无视调度计划；会确认提示，--force 跳过）

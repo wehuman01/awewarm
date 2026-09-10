@@ -126,6 +126,7 @@ KNOWN_CONN_KEYS = frozenset({
 CONFIG_TEMPLATE = """\
 {
   "version": 3,
+  "proxyUrl": null,
   "settings": {
     "catchupMinutes": 30,
     "catchupAttempts": 5,
@@ -614,12 +615,21 @@ def load_config(path=None):
             )
     global_settings = _resolve_settings(global_settings_raw)
 
+    proxy_url = data.get("proxyUrl")
+    errors = proxy_url_errors(proxy_url)
+    if errors:
+        die(
+            "config has invalid proxyUrl:\n  " + "\n  ".join(errors)
+            + "\nfix: awewarm config proxy <url>, or remove the key for direct egress"
+        )
+
     return {
         "version": CONFIG_VERSION,
         "global": data.get("global") or {},
         "settings": global_settings,
         "connectionDefaults": connection_defaults,
         "remote": data.get("remote") or {},
+        "proxyUrl": proxy_url,
         "connections": {
             conn_id: _expand_conn(conn_id, flat, group, global_settings, connection_defaults)
             for conn_id, (group, flat) in flat_connections.items()
@@ -831,6 +841,7 @@ def _compact_config(config):
         "version": CONFIG_VERSION,
         **({"global": config["global"]} if config.get("global") else {}),
         **({"remote": config["remote"]} if config.get("remote") else {}),
+        **({"proxyUrl": config["proxyUrl"]} if config.get("proxyUrl") else {}),
         "settings": settings,
         "connections": nested,
     }
@@ -906,6 +917,19 @@ def remote_errors(remote):
     return errors
 
 
+def proxy_url_errors(value):
+    """Problems with the top-level proxyUrl; empty means valid. None (absent)
+    means direct egress — environment proxy variables are never read."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        for scheme in ("http://", "https://"):
+            if stripped.startswith(scheme) and len(stripped) > len(scheme):
+                return []
+    return ["proxyUrl must be an http(s) URL like http://127.0.0.1:7890, or absent for direct egress"]
+
+
 def save_config(config, path=None):
     defaults = config.get("connectionDefaults") or {}
     blocks = [("settings", config.get("settings"))]
@@ -923,6 +947,9 @@ def save_config(config, path=None):
     errors = remote_errors(config.get("remote"))
     if errors:
         die("refusing to save invalid remote block:\n  " + "\n  ".join(errors))
+    errors = proxy_url_errors(config.get("proxyUrl"))
+    if errors:
+        die("refusing to save invalid proxyUrl:\n  " + "\n  ".join(errors))
     _write_json(path or config_path(), _compact_config(config))
 
 

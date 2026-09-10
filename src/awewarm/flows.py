@@ -10,7 +10,7 @@ import sys
 
 import click
 
-from . import discover, install, keystore, schedule, transport
+from . import discover, install, keystore, net, schedule, transport
 from .config import (
     DEFAULT_FIXED_AT,
     DEFAULT_MAX_TOKENS,
@@ -323,7 +323,7 @@ def _add_plan_flow():
         "fixed", _unknown_window(), DEFAULT_FIXED_AT, "weekday", True,
     )
     click.echo("\nTesting endpoint...")
-    result = transport.send_activation(draft, api_key)
+    result = transport.send_activation(draft, api_key, proxy=net.client_proxy())
     if result["ok"]:
         click.echo("✓ Authentication accepted, minimal request supported")
     else:
@@ -358,7 +358,7 @@ def _add_plan_flow():
             save_state(state)
             click.echo(f"✓ Verification request recorded at {cli._fmt_moment(now, now)}")
         elif click.confirm("Send the verification request now?", default=True):
-            verify_result = transport.send_activation(draft, api_key)
+            verify_result = transport.send_activation(draft, api_key, proxy=net.client_proxy())
             if verify_result["ok"]:
                 cs = conn_state(state, conn_id)
                 schedule.record_attempt(cs, now)

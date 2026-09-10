@@ -99,7 +99,7 @@ class SurfaceTests(IsolatedTestCase):
             self.assertNotIn(legacy, names)
 
     def test_group_help_lists_subcommands(self):
-        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "backup", "edit", "path", "remove", "restore", "set", "settings", "show", "template"])
+        self.assertEqual(command_names(invoke(["config", "--help"]).output), ["add", "backup", "edit", "path", "proxy", "remove", "restore", "set", "settings", "show", "template"])
         self.assertEqual(command_names(invoke(["scheduler", "--help"]).output), ["install", "uninstall"])
         self.assertEqual(command_names(invoke(["remote", "--help"]).output), ["connect", "disconnect", "push"])
 
@@ -2126,6 +2126,37 @@ class SettingsScopeTests(IsolatedTestCase):
         loaded = cfg.load_config()
         self.assertNotIn("local", loaded["connectionDefaults"])
         self.assertEqual(loaded["connections"]["claude-code-main"]["schedule"]["fixed"]["at"], ["06:35"])
+
+
+class ProxyCommandTests(IsolatedTestCase):
+    """`config proxy` — the explicit egress opt-in for awewarm's own requests."""
+
+    def test_shows_direct_by_default(self):
+        result = invoke(["config", "proxy"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("egress: direct", output_of(result))
+        self.assertIn("environment proxy variables are ignored", output_of(result))
+
+    def test_set_roundtrips_and_shows(self):
+        result = invoke(["config", "proxy", "http://127.0.0.1:7890"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertEqual(cfg.load_config()["proxyUrl"], "http://127.0.0.1:7890")
+        result = invoke(["config", "proxy"])
+        self.assertIn("egress: via http://127.0.0.1:7890", output_of(result))
+
+    def test_none_clears_back_to_direct(self):
+        invoke(["config", "proxy", "http://127.0.0.1:7890"])
+        result = invoke(["config", "proxy", "none"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIsNone(cfg.load_config().get("proxyUrl"))
+        self.assertIn("egress: direct", invoke(["config", "proxy"]).output)
+
+    def test_invalid_url_refused(self):
+        for bad in ("socks5://127.0.0.1:7890", "127.0.0.1:7890"):
+            result = invoke(["config", "proxy", bad])
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("proxyUrl must be an http(s) URL", output_of(result))
+        self.assertIsNone(cfg.load_config().get("proxyUrl"))
 
 
 class NewKnobLayerTests(IsolatedTestCase):

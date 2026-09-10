@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import __version__
+from . import __version__, net
 from .config import config_path
 
 CHECK_INTERVAL_S = 24 * 60 * 60
@@ -56,7 +56,7 @@ def _save_cache(path, data):
 def get_pypi_latest(package="awewarm"):
     url = f"https://pypi.org/pypi/{package}/json"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=5) as response:
+    with net.urlopen(request, 5, net.client_proxy()) as response:
         data = json.loads(response.read())
     return data["info"]["version"]
 

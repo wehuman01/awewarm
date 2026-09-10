@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import __version__, keystore
+from . import __version__, keystore, net
 from .config import config_path
 
 # Namespaced so no connection id can collide with it (slugify never emits ":").
@@ -99,8 +99,11 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS, 
     if token or machine:
         headers[MACHINE_HEADER] = machine or machine_id()
     request = urllib.request.Request(target, data=data, headers=headers, method=method)
+    # The hub control channel follows the egress policy like every other
+    # request: explicit proxyUrl, else direct — never ambient env proxies.
+    proxy = net.client_proxy()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with net.urlopen(request, timeout, proxy) as response:
             raw = response.read().decode()
     except urllib.error.HTTPError as exc:
         try:
@@ -115,7 +118,7 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS, 
         raise RemoteError(message)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", None) or exc
-        raise RemoteError(f"cannot reach the awewarm server at {url}: {reason}")
+        raise RemoteError(f"cannot reach the awewarm server at {url}: {reason}" + net.egress_hint(proxy))
     try:
         return json.loads(raw or "{}")
     except ValueError:

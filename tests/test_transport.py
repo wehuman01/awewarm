@@ -268,7 +268,7 @@ class SendCliTests(unittest.TestCase):
 
 
 class SendHttpTests(unittest.TestCase):
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_success(self, urlopen):
         urlopen.return_value.__enter__ = lambda self: io.BytesIO(b"{}")
         urlopen.return_value.__exit__ = mock.Mock(return_value=False)
@@ -278,21 +278,21 @@ class SendHttpTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://open.bigmodel.cn/api/anthropic/v1/messages")
         self.assertEqual(request.get_header("X-api-key"), "tok")
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_timeout_seconds_passed_through(self, urlopen):
         urlopen.return_value.__enter__ = lambda self: io.BytesIO(b"{}")
         urlopen.return_value.__exit__ = mock.Mock(return_value=False)
         transport.send_activation(plan_connection(), api_key="tok", timeout_seconds=15)
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 15)
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_timeout_defaults_to_sixty_seconds(self, urlopen):
         urlopen.return_value.__enter__ = lambda self: io.BytesIO(b"{}")
         urlopen.return_value.__exit__ = mock.Mock(return_value=False)
         transport.send_activation(plan_connection(), api_key="tok")
         self.assertEqual(urlopen.call_args.kwargs["timeout"], transport.HTTP_TIMEOUT_SECONDS)
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_http_error_extracted(self, urlopen):
         error = transport.urllib.error.HTTPError(
             "url", 401, "Unauthorized", None, io.BytesIO(b'{"error":{"message":"bad key"}}')
@@ -303,7 +303,7 @@ class SendHttpTests(unittest.TestCase):
         self.assertIn("401", result["detail"])
         self.assertIn("bad key", result["detail"])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_url_error(self, urlopen):
         urlopen.side_effect = transport.urllib.error.URLError("connection refused")
         result = transport.send_activation(plan_connection(), api_key="tok")
@@ -416,7 +416,7 @@ class _BoundedStream(_BrokenStream):
 
 
 class SendNativeTests(unittest.TestCase):
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_codex_success_reads_the_sse_stream(self, urlopen):
         urlopen.return_value = io.BytesIO(
             b'event: response.created\ndata: {"type":"response.created"}\n\n'
@@ -430,7 +430,7 @@ class SendNativeTests(unittest.TestCase):
         self.assertEqual(request.get_header("Chatgpt-account-id"), "acc-1")
         self.assertEqual(request.get_header("Openai-beta"), "responses=experimental")
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_codex_response_failed_is_a_failure_with_its_message(self, urlopen):
         urlopen.return_value = io.BytesIO(
             b'event: response.failed\n'
@@ -440,7 +440,7 @@ class SendNativeTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("usage limit reached", result["detail"])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_read_error_after_a_200_is_still_a_success(self, urlopen):
         # A 200 means the provider accepted the request; a dying stream must
         # not record a phantom failure that invites duplicate retries.
@@ -448,13 +448,13 @@ class SendNativeTests(unittest.TestCase):
         result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
         self.assertTrue(result["ok"])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_incomplete_sse_after_a_200_is_still_a_success(self, urlopen):
         urlopen.return_value = _IncompleteStream()
         result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)
         self.assertTrue(result["ok"])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_sse_read_is_bounded(self, urlopen):
         stream = _BoundedStream()
         urlopen.return_value = stream
@@ -462,7 +462,7 @@ class SendNativeTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(stream.sizes, [transport.NATIVE_SSE_CAP_BYTES])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_claude_success_reads_the_json_body(self, urlopen):
         urlopen.return_value = io.BytesIO(b'{"id":"msg_1"}')
         result = transport.send_native(account_connection(), CLAUDE_CREDENTIALS)
@@ -471,7 +471,7 @@ class SendNativeTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://api.anthropic.com/v1/messages")
         self.assertEqual(request.get_header("Anthropic-beta"), "oauth-2025-04-20")
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_rejected_credential_points_at_a_repush(self, urlopen):
         error = transport.urllib.error.HTTPError(
             "url", 401, "Unauthorized", None, io.BytesIO(b'{"detail":"bad token"}')
@@ -483,7 +483,7 @@ class SendNativeTests(unittest.TestCase):
         self.assertIn("codex login", result["detail"])
         self.assertIn("awewarm remote push", result["detail"])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_provider_error_passes_through(self, urlopen):
         error = transport.urllib.error.HTTPError(
             "url", 400, "Bad Request", None,
@@ -495,7 +495,7 @@ class SendNativeTests(unittest.TestCase):
         self.assertIn("HTTP 400", result["detail"])
         self.assertIn("not supported", result["detail"])
 
-    @mock.patch("awewarm.transport.urllib.request.urlopen")
+    @mock.patch("awewarm.net.urlopen")
     def test_network_failure(self, urlopen):
         urlopen.side_effect = transport.urllib.error.URLError("connection refused")
         result = transport.send_native(native_codex_connection(), CODEX_NATIVE_AUTH)

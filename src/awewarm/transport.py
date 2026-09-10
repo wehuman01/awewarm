@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import net
 from .config import die
 from .credstore import claude_access_token, codex_auth
 
@@ -188,7 +189,7 @@ def _send_cli(connection, env=None):
     return {"ok": False, "detail": _detail(proc.stderr or proc.stdout) or f"{command} exited {proc.returncode}"}
 
 
-def _send_http(connection, api_key, timeout_seconds=None):
+def _send_http(connection, api_key, timeout_seconds=None, proxy=None):
     parts = http_request_parts(connection, api_key)
     url, headers, body = parts
     if timeout_seconds is None:
@@ -197,7 +198,7 @@ def _send_http(connection, api_key, timeout_seconds=None):
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with net.urlopen(request, timeout=timeout_seconds, proxy=proxy) as response:
             response.read()
             return {"ok": True, "detail": ""}
     except urllib.error.HTTPError as exc:
@@ -212,7 +213,7 @@ def _send_http(connection, api_key, timeout_seconds=None):
         return {"ok": False, "detail": detail}
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
-        return {"ok": False, "detail": f"request failed: {reason}"}
+        return {"ok": False, "detail": f"request failed: {reason}" + net.egress_hint(proxy)}
 
 
 def activation_env(connection, credential, sandbox_root=None, conn_id=None):
@@ -329,7 +330,7 @@ def _sse_failure(text):
     return "the provider reported response.failed"
 
 
-def _send_native(connection, credential, timeout_seconds=None):
+def _send_native(connection, credential, timeout_seconds=None, proxy=None):
     """Fire one native account activation. A 2xx means the provider accepted
     the request — the warm-up already happened — so the codex SSE stream is
     drained best-effort and read errors after a 200 never count as failure
@@ -341,7 +342,7 @@ def _send_native(connection, credential, timeout_seconds=None):
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
     )
     try:
-        response = urllib.request.urlopen(request, timeout=timeout_seconds)
+        response = net.urlopen(request, timeout=timeout_seconds, proxy=proxy)
     except urllib.error.HTTPError as exc:
         try:
             body_bytes = exc.read()
@@ -362,7 +363,7 @@ def _send_native(connection, credential, timeout_seconds=None):
         return {"ok": False, "detail": detail}
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
-        return {"ok": False, "detail": f"request failed: {reason}"}
+        return {"ok": False, "detail": f"request failed: {reason}" + net.egress_hint(proxy)}
     with response:
         if connection["transport"]["kind"] == "codex-cli":
             try:
@@ -385,12 +386,12 @@ def _send_native(connection, credential, timeout_seconds=None):
         return {"ok": True, "detail": ""}
 
 
-def send_native(connection, credential, timeout_seconds=None):
+def send_native(connection, credential, timeout_seconds=None, proxy=None):
     """Send one minimal activation request natively (no provider CLI needed).
     Returns {"ok": bool, "detail": str}; ValueError from credential parsing
     becomes an activation failure pointing at a re-push."""
     try:
-        return _send_native(connection, credential, timeout_seconds)
+        return _send_native(connection, credential, timeout_seconds, proxy)
     except ValueError as exc:
         return {"ok": False, "detail": _detail(str(exc))}
 
@@ -419,7 +420,7 @@ def _sandbox_dir(sandbox_root, conn_id):
     return target
 
 
-def send_activation(connection, api_key=None, timeout_seconds=None, credential=None, sandbox_root=None, conn_id=None):
+def send_activation(connection, api_key=None, timeout_seconds=None, credential=None, sandbox_root=None, conn_id=None, proxy=None):
     """Send one minimal activation request. Returns {"ok": bool, "detail": str}.
 
     timeout_seconds caps an HTTP request (default 60); the delegation server
@@ -427,6 +428,8 @@ def send_activation(connection, api_key=None, timeout_seconds=None, credential=N
     transports always run at their own cap (CLI_TIMEOUT_SECONDS) instead.
     credential injects a delegated login into the CLI subprocess (with the
     codex sandbox under sandbox_root); a locally-fired CLI gets none.
+    proxy routes the HTTP egress (None = direct — environment proxy
+    variables are never read here); the client passes net.client_proxy().
     """
     if connection["transport"]["kind"] in CLI_TRANSPORT_KINDS:
         try:
@@ -436,4 +439,4 @@ def send_activation(connection, api_key=None, timeout_seconds=None, credential=N
         return _send_cli(connection, env or None)
     if not api_key:
         die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm config add")
-    return _send_http(connection, api_key, timeout_seconds)
+    return _send_http(connection, api_key, timeout_seconds, proxy)

@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from . import __version__, credstore, discover, display_version, install, keystore, remote, running_from_checkout, schedule, transport
+from . import __version__, credstore, discover, display_version, install, keystore, net, remote, running_from_checkout, schedule, transport
 from .clickext import WrapGroup
 from .flows import _add_account_flow, _config_add, _slots_proc
 from .locking import LockBusy, local_process_lock
@@ -46,6 +46,7 @@ from .config import (
     load_config,
     load_state,
     log_path,
+    proxy_url_errors,
     resolve_connection,
     save_config,
     save_state,
@@ -111,7 +112,7 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True,
             schedule.record_failure(cs, conn, now, kind, "API key unavailable (missing from secrets.json)", node=node)
             log_event(f"{conn_id} activation ({kind}) failed: API key unavailable")
             return {"ok": False, "detail": "API key unavailable (missing from secrets.json)"}
-    result = transport.send_activation(conn, api_key)
+    result = transport.send_activation(conn, api_key, proxy=net.client_proxy())
     if result["ok"]:
         schedule.record_success(
             cs, conn, now, kind, slot, reset_due=reset_due,
@@ -1253,6 +1254,45 @@ def config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_node
     every layer."""
     _config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_nodes,
                      window_minutes, prompt, max_tokens, times, days, mode, wake, reset)
+
+
+@config.command("proxy")
+@click.argument("url", required=False)
+def config_proxy(url):
+    """Show or set the egress proxy for awewarm's own HTTPS requests.
+
+    \b
+      awewarm config proxy                     # show the current egress
+      awewarm config proxy http://127.0.0.1:7890  # route awewarm's own traffic
+      awewarm config proxy none                # back to direct egress
+
+    awewarm ignores http_proxy/https_proxy/all_proxy from the environment:
+    a machine-wide proxy is ambient state and must not capture the hub control
+    channel or warm-up requests. Set a proxy URL here only when this network
+    genuinely requires one — every request awewarm itself makes then goes
+    through it. CLI subprocesses (codex/claude) keep the ambient environment
+    and decide for themselves."""
+    config = load_config()
+    if url is None:
+        current = config.get("proxyUrl")
+        if current:
+            click.echo(f"egress: via {current}")
+            click.echo("clear with: awewarm config proxy none")
+        else:
+            click.echo("egress: direct — environment proxy variables are ignored")
+            click.echo("if this network requires a proxy: awewarm config proxy <http://host:port>")
+        return
+    if url.lower() in ("none", "off", "direct"):
+        config.pop("proxyUrl", None)
+        save_config(config)
+        click.echo("✓ egress: direct (environment proxy variables stay ignored)")
+        return
+    errors = proxy_url_errors(url)
+    if errors:
+        die("\n".join(errors))
+    config["proxyUrl"] = url.strip()
+    save_config(config)
+    click.echo(f"✓ egress: via {url.strip()} (CLI subprocesses still use the ambient environment)")
 
 
 def _config_remove(connection):

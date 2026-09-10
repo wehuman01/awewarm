@@ -781,6 +781,49 @@ class RemoteBlockTests(IsolatedTestCase):
         self.assertEqual(config.remote_errors(conf["remote"])[0], config.remote_errors({"url": "warm.example.com", "tokenRef": "file:remote-token"})[0])
 
 
+class ProxyUrlTests(IsolatedTestCase):
+    def test_proxy_url_roundtrips(self):
+        conf = config.empty_config()
+        conf["proxyUrl"] = "http://127.0.0.1:7890"
+        conf["connections"]["glm"] = plan_connection()
+        config.save_config(conf)
+        self.assertEqual(config.load_config()["proxyUrl"], "http://127.0.0.1:7890")
+        self.assertEqual(
+            json.loads(Path(config.config_path()).read_text())["proxyUrl"],
+            "http://127.0.0.1:7890",
+        )
+
+    def test_absent_proxy_url_stays_absent_on_disk(self):
+        conf = config.empty_config()
+        conf["connections"]["glm"] = plan_connection()
+        config.save_config(conf)
+        self.assertNotIn("proxyUrl", json.loads(Path(config.config_path()).read_text()))
+        self.assertIsNone(config.load_config()["proxyUrl"])
+
+    def test_invalid_proxy_url_refuses_to_save(self):
+        conf = config.empty_config()
+        conf["proxyUrl"] = "socks5://127.0.0.1:7890"
+        conf["connections"]["glm"] = plan_connection()
+        with self.assertRaises(SystemExit):
+            config.save_config(conf)
+
+    def test_invalid_proxy_url_refuses_to_load(self):
+        Path(config.config_path()).write_text(json.dumps({
+            "version": 3,
+            "proxyUrl": "127.0.0.1:7890",
+            "connections": {},
+        }))
+        with self.assertRaises(SystemExit):
+            config.load_config()
+
+    def test_error_cases(self):
+        self.assertEqual(config.proxy_url_errors(None), [])
+        self.assertEqual(config.proxy_url_errors("http://p:1"), [])
+        self.assertEqual(config.proxy_url_errors("https://proxy.lan:3128"), [])
+        for bad in ("socks5://p:1", "127.0.0.1:7890", "http://", "", 7, [], {}):
+            self.assertTrue(config.proxy_url_errors(bad), bad)
+
+
 class TemplateTests(unittest.TestCase):
     def test_template_file_matches_constant(self):
         template_path = Path(__file__).resolve().parents[1] / "resources" / "config.template.json"

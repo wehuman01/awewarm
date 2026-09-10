@@ -365,6 +365,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 ```json
 {
   "version": 3,
+  "proxyUrl": null,
   "settings": {
     "catchupMinutes": 30,
     "catchupAttempts": 5,
@@ -425,6 +426,18 @@ Settings are layered three deep — every level carries the same knobs and a `sc
 
 One deliberate asymmetry: a delegated (`remote`) connection never follows the global schedule — it describes this machine's day. Remote connections resolve their schedule from their own settings and `connections.remote.settings` only (knobs still inherit globally) — with one exception: `windowMinutes` is a fact about the plan, not about any machine's day, so the global block's window duration reaches delegated connections too. An inherited interval mode never breaks a connection whose window is unverified — such connections stay on fixed until their window is recorded. Delegating a connection freezes its then-effective schedule as its own settings, so handover never changes what fires. Configs saved by slightly older builds (a knob-position `windowMinutes`, a schedule-position `wakeWhenAsleep`) fold into the current positions on first load and are never written back.
 
+### Network egress — direct by default
+
+Every request awewarm itself makes — the hub control channel, subscription warm-ups, update checks — goes **direct**, ignoring `http_proxy`/`https_proxy`/`all_proxy` from the environment. A machine-wide proxy is ambient state (usually set for git/npm or a desktop Clash) that must not capture the scheduler's traffic: a warm-up system sells determinism, and routing it through a proxy nobody asked for couples it to that proxy's failures. Direct-by-default also makes the interactive CLI and the background tick (which runs without your shell environment) behave identically. A network that genuinely requires egress through a proxy opts in explicitly with the top-level `proxyUrl`:
+
+```bash
+awewarm config proxy http://127.0.0.1:7890   # route awewarm's own requests through it
+awewarm config proxy                         # show the current egress
+awewarm config proxy none                    # back to direct
+```
+
+`codex`/`claude` subprocesses are outside this policy — they inherit the ambient environment and decide for themselves. Network-level failures name the egress they used in the error, so a broken route says which side to fix.
+
 ## Commands
 
 ```bash
@@ -442,6 +455,8 @@ awewarm config remove <id>            # delete a connection, its state, and its 
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config template               # print the reference config shape (what hand-edits must match)
 awewarm config path                   # config / state / log locations
+awewarm config proxy [<url>|none]     # show / set / clear the egress proxy for awewarm's own requests
+                                       #   (environment proxy variables are always ignored)
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
 awewarm status --remote / --local     # delegated connections only (with the server health line) / locally scheduled only
 awewarm run [--force]                 # fire every enabled connection now, ignoring the schedule (prompts; --force skips)
