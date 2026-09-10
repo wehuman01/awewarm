@@ -119,6 +119,28 @@ class InstallTests(IsolatedTestCase):
         with self.assertRaises(SystemExit):
             install.install_scheduler()
 
+    @posix_uid
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    @mock.patch("awewarm.install.shutil.which", return_value="/usr/local/bin/awewarm")
+    def test_detached_install_swaps_via_surviving_shell(self, which, uid):
+        # The self-heal runs inside the tick — which IS the launchd job. A
+        # synchronous bootout kills the caller and the reload never runs
+        # (observed on real installs: the scheduler died when local slots
+        # changed). The swap must go through a detached shell that waits for
+        # the tick to exit before swapping.
+        with mock.patch("awewarm.install.subprocess.Popen") as popen, mock.patch(
+            "awewarm.install.subprocess.run"
+        ) as run:
+            plist = install._install_launchd(detach=True)
+        self.assertTrue(plist.exists())
+        run.assert_not_called()  # nothing synchronous — run() would kill the caller
+        script = popen.call_args[0][0][2]
+        self.assertIn(f"kill -0 {os.getpid()}", script)  # waits for this tick to exit
+        self.assertIn("bootout", script)
+        self.assertIn("bootstrap", script)
+        self.assertIn("load", script)  # legacy fallback
+        self.assertTrue(popen.call_args[1]["start_new_session"])
+
 
 class UninstallTests(IsolatedTestCase):
     @posix_uid

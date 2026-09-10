@@ -118,9 +118,9 @@ def resolve_exe():
     )
 
 
-def install_scheduler():
+def install_scheduler(detach=False):
     if sys.platform == "darwin":
-        return _install_launchd()
+        return _install_launchd(detach=detach)
     if sys.platform == "win32":
         return _install_windows()
     if sys.platform.startswith("linux"):
@@ -175,12 +175,12 @@ def _maybe_self_heal_job(config=None):
             with open(plist, "rb") as handle:
                 data = plistlib.load(handle)
             if "tick" not in (data.get("ProgramArguments") or []):
-                install_scheduler()
+                install_scheduler(detach=True)
                 return
             if (data.get("StartCalendarInterval") or []) != calendar_entries(
                 config or load_config()
             ):
-                install_scheduler()
+                install_scheduler(detach=True)
             return
         if sys.platform == "win32":
             try:
@@ -214,12 +214,32 @@ def _maybe_self_heal_job(config=None):
         return
 
 
-def _install_launchd():
+def _install_launchd(detach=False):
     plist = plist_path()
     plist.parent.mkdir(parents=True, exist_ok=True)
     with open(plist, "wb") as handle:
         plistlib.dump(build_plist(resolve_exe(), calendar_entries(load_config())), handle)
     uid = os.getuid()
+    if detach:
+        # The self-heal calls this from inside the running tick — which IS
+        # the launchd job. A direct bootout would terminate this very process
+        # and the reload below would never run, leaving the scheduler dead
+        # (this exact sequence took down real installs when local slots
+        # changed). Hand the swap to a detached shell that waits for the tick
+        # to exit first — booting out mid-pass would kill a possibly due
+        # activation after its request was already sent but before it was
+        # recorded.
+        parent = os.getpid()
+        swap = (
+            f"while kill -0 {parent} 2>/dev/null; do sleep 1; done; "
+            f"launchctl bootout gui/{uid}/{LABEL} 2>/dev/null; "
+            f"launchctl bootstrap gui/{uid} '{plist}' || launchctl load '{plist}'"
+        )
+        subprocess.Popen(
+            ["/bin/sh", "-c", swap], start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return plist
     # A stale registration for the same label breaks bootstrap; ignore errors.
     subprocess.run(
         ["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True, timeout=30
