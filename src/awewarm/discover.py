@@ -31,6 +31,19 @@ PROVIDER_LABELS = {"claude-code": "Claude Code", "codex": "Codex"}
 PROVIDER_TRANSPORTS = {"claude-code": "claude-cli", "codex": "codex-cli"}
 PROVIDER_MODELS = {"claude-code": "haiku", "codex": None}
 
+# aweswitch official accounts: each one is a private CLI config dir under
+# ~/.config/aweswitch/accounts/<provider>/<name>/ holding its own login file.
+# Mapping from awewarm provider ids to aweswitch's dir names and the login
+# file aweswitch keeps inside (see aweswitch's ACCOUNT_CRED_FILENAME).
+AWESWITCH_PROVIDER_DIRS = {"claude-code": "claude", "codex": "codex"}
+AWESWITCH_CRED_FILES = {"claude-code": ".credentials.json", "codex": "auth.json"}
+
+
+def aweswitch_accounts_root():
+    return Path(
+        os.environ.get("AWESWITCH_CONFIG", "~/.config/aweswitch/config.json")
+    ).expanduser().parent / "accounts"
+
 
 def _cli_version(command):
     try:
@@ -70,31 +83,61 @@ def _codex_auth_found():
     return False, None
 
 
+def _base_finding(provider, cli_path, version):
+    return {
+        "provider": provider,
+        "label": PROVIDER_LABELS[provider],
+        "cliCommand": PROVIDER_CLIS[provider],
+        "cliPath": cli_path,
+        "installed": cli_path is not None,
+        "version": version,
+        "authFound": False,
+        "authDetail": None,
+        "authHome": None,
+        "builtinWindow": BUILTIN_WINDOWS[provider],
+    }
+
+
+def _aweswitch_findings(provider, cli_path, version):
+    """One extra finding per aweswitch official account that has a login on
+    disk. Existence-only: the login file is never read here. A dir without
+    its login file is not warmable and is skipped."""
+    root = aweswitch_accounts_root() / AWESWITCH_PROVIDER_DIRS[provider]
+    try:
+        dirs = sorted(path for path in root.iterdir() if path.is_dir())
+    except OSError:
+        return []
+    findings = []
+    cred_name = AWESWITCH_CRED_FILES[provider]
+    for account_dir in dirs:
+        cred = account_dir / cred_name
+        if not cred.exists():
+            continue
+        finding = _base_finding(provider, cli_path, version)
+        finding["label"] = f"{PROVIDER_LABELS[provider]} ({account_dir.name})"
+        finding["authFound"] = True
+        finding["authDetail"] = str(cred)
+        finding["authHome"] = str(account_dir)
+        findings.append(finding)
+    return findings
+
+
 def discover_accounts():
     """Scan local CLIs. Pure reads; no request is ever sent here."""
     findings = []
     for provider, command in PROVIDER_CLIS.items():
         cli_path = shutil.which(command)
-        finding = {
-            "provider": provider,
-            "label": PROVIDER_LABELS[provider],
-            "cliCommand": command,
-            # launchd's PATH lacks user-local install dirs, so connections
-            # must store the absolute path or ticks can't find the CLI.
-            "cliPath": cli_path,
-            "installed": cli_path is not None,
-            "version": None,
-            "authFound": False,
-            "authDetail": None,
-            "builtinWindow": BUILTIN_WINDOWS[provider],
-        }
+        version = _cli_version(command) if cli_path is not None else None
+        finding = _base_finding(provider, cli_path, version)
+        # launchd's PATH lacks user-local install dirs, so connections
+        # must store the absolute path or ticks can't find the CLI.
         if finding["installed"]:
-            finding["version"] = _cli_version(command)
             if provider == "claude-code":
                 finding["authFound"], finding["authDetail"] = _claude_auth_found()
             else:
                 finding["authFound"], finding["authDetail"] = _codex_auth_found()
         findings.append(finding)
+        findings.extend(_aweswitch_findings(provider, cli_path, version))
     return findings
 
 

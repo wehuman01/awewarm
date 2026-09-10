@@ -96,6 +96,60 @@ class RoundtripTests(IsolatedTestCase):
             config.save_config(data)
 
 
+class AuthHomeTests(IsolatedTestCase):
+    """authHome: the CLI config dir an account connection logs in from (an
+    aweswitch account dir) — the field that lets several logins of one
+    provider warm side by side."""
+
+    def test_auth_home_roundtrips(self):
+        data = config.empty_config()
+        conn = account_connection()
+        conn["authHome"] = "~/.config/aweswitch/accounts/claude/test1"
+        data["connections"]["claude-test1"] = conn
+        config.save_config(data)
+        loaded = config.load_config()["connections"]["claude-test1"]
+        self.assertEqual(loaded["authHome"], "~/.config/aweswitch/accounts/claude/test1")
+
+    def test_absent_auth_home_stays_absent(self):
+        data = config.empty_config()
+        data["connections"]["claude-code"] = account_connection()
+        config.save_config(data)
+        loaded = config.load_config()["connections"]["claude-code"]
+        self.assertNotIn("authHome", loaded)
+        self.assertNotIn("authHome", config.config_path().read_text())
+
+    def _write_config(self, conn):
+        config._write_json(config.config_path(), {
+            "version": config.CONFIG_VERSION,
+            "connections": {"local": {"acct": conn}},
+        })
+
+    def test_load_refuses_a_non_string_auth_home(self):
+        self._write_config({"cli": "claude", "authHome": 42})
+        with self.assertRaises(SystemExit) as ctx:
+            config.load_config()
+        self.assertIn("authHome must be a non-empty path string", str(ctx.exception))
+
+    def test_load_refuses_an_empty_auth_home(self):
+        self._write_config({"cli": "claude", "authHome": "   "})
+        with self.assertRaises(SystemExit):
+            config.load_config()
+
+    def test_load_refuses_auth_home_on_a_subscription(self):
+        self._write_config({"url": "https://api.example.com", "apiKey": "file:k", "authHome": "/x"})
+        with self.assertRaises(SystemExit) as ctx:
+            config.load_config()
+        self.assertIn("authHome belongs to account connections", str(ctx.exception))
+
+    def test_save_refuses_auth_home_on_a_subscription(self):
+        data = config.empty_config()
+        conn = plan_connection()
+        conn["authHome"] = "/x"
+        data["connections"]["plan"] = conn
+        with self.assertRaises(SystemExit):
+            config.save_config(data)
+
+
 class ValidationTests(unittest.TestCase):
     def test_valid_account_has_no_errors(self):
         self.assertEqual(config.connection_errors(account_connection(), "acct"), [])

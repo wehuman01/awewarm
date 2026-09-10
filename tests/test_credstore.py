@@ -92,6 +92,51 @@ class ClaudeReadTests(unittest.TestCase):
         self.assertIn("claude /login", str(ctx.exception))
 
 
+class AuthHomeTests(unittest.TestCase):
+    """A connection's authHome (an aweswitch account dir) redirects the read
+    away from the machine's default login — this is what keeps several
+    logins of one provider apart when delegating."""
+
+    def test_codex_auth_home_wins_over_the_env(self):
+        with tempfile.TemporaryDirectory() as env_home, tempfile.TemporaryDirectory() as auth_home:
+            Path(auth_home, "auth.json").write_text(CODEX_AUTH)
+            Path(env_home, "auth.json").write_text('{"tokens": {"access_token": "env"}}')
+            conn = codex_account_connection()
+            conn["authHome"] = auth_home
+            with mock.patch.dict(os.environ, {credstore.CODEX_HOME_ENV: env_home}):
+                credential = credstore.read_credential(conn)
+        self.assertEqual(credential.raw, CODEX_AUTH)
+
+    def test_codex_missing_login_in_auth_home_is_an_actionable_error(self):
+        with tempfile.TemporaryDirectory() as auth_home:
+            conn = codex_account_connection()
+            conn["authHome"] = auth_home
+            with self.assertRaises(credstore.CredentialError) as ctx:
+                credstore.read_credential(conn)
+        self.assertIn("auth.json", str(ctx.exception))
+
+    def test_claude_auth_home_reads_the_file_never_the_keychain(self):
+        with tempfile.TemporaryDirectory() as auth_home:
+            Path(auth_home, ".credentials.json").write_text(CLAUDE_CREDENTIALS)
+            conn = account_connection()
+            conn["authHome"] = auth_home
+            # darwin + a security binary that must never be invoked: the
+            # account dir's login is a file, the Keychain is machine-wide.
+            with mock.patch("sys.platform", "darwin"), mock.patch.object(
+                credstore.subprocess, "run", side_effect=AssertionError("keychain reached")
+            ):
+                credential = credstore.read_credential(conn)
+        self.assertEqual(credential.raw, CLAUDE_CREDENTIALS)
+
+    def test_claude_missing_login_in_auth_home_is_an_actionable_error(self):
+        with tempfile.TemporaryDirectory() as auth_home:
+            conn = account_connection()
+            conn["authHome"] = auth_home
+            with self.assertRaises(credstore.CredentialError) as ctx:
+                credstore.read_credential(conn)
+        self.assertIn(".credentials.json", str(ctx.exception))
+
+
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_sixteen_hex_and_stable(self):
         one = credstore.Credential(CODEX_AUTH)

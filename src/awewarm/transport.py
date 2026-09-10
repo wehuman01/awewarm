@@ -216,6 +216,28 @@ def _send_http(connection, api_key, timeout_seconds=None, proxy=None):
         return {"ok": False, "detail": f"request failed: {reason}" + net.egress_hint(proxy)}
 
 
+def home_env(connection):
+    """Env overlay pointing a locally-fired CLI at the connection's authHome —
+    the mechanism that lets several logins of one provider warm side by side
+    (each connection carries its own CLI config dir, an aweswitch account
+    dir). {} when the connection has no authHome: the CLI sees its default
+    config dir, exactly as before.
+    """
+    home = connection.get("authHome")
+    if not home:
+        return {}
+    path = str(Path(home).expanduser())
+    kind = connection["transport"]["kind"]
+    if kind == "codex-cli":
+        return {"CODEX_HOME": path}
+    if kind == "claude-cli":
+        # Claude Code reaches for the macOS Keychain by default; aweswitch
+        # account dirs keep the login as .credentials.json inside the dir,
+        # so the keychain must be off for the CLI to read that file.
+        return {"CLAUDE_CONFIG_DIR": path, "CLAUDE_CODE_DONT_USE_KEYCHAIN": "1"}
+    return {}
+
+
 def activation_env(connection, credential, sandbox_root=None, conn_id=None):
     """Env overlay that injects a delegated login credential into the CLI
     subprocess; {} when the connection fires locally with its own login.
@@ -436,7 +458,9 @@ def send_activation(connection, api_key=None, timeout_seconds=None, credential=N
             env = activation_env(connection, credential, sandbox_root=sandbox_root, conn_id=conn_id)
         except ValueError as exc:
             return {"ok": False, "detail": _detail(str(exc))}
-        return _send_cli(connection, env or None)
+        # No delegated credential means the CLI fires locally: point it at the
+        # connection's own authHome, if it carries one.
+        return _send_cli(connection, env or home_env(connection) or None)
     if not api_key:
         die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm config add")
     return _send_http(connection, api_key, timeout_seconds, proxy)

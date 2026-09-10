@@ -39,12 +39,15 @@ class Credential:
 
 def read_credential(conn):
     """The account connection's login credential; CredentialError when the
-    local login is missing or unreadable (the message says how to fix it)."""
+    local login is missing or unreadable (the message says how to fix it).
+    A connection with authHome reads its login from that CLI config dir (an
+    aweswitch account dir) instead of the machine's default one."""
+    home = conn.get("authHome")
     kind = (conn.get("transport") or {}).get("kind")
     if kind == "claude-cli":
-        return _read_claude()
+        return _read_claude(home)
     if kind == "codex-cli":
-        return _read_codex()
+        return _read_codex(home)
     raise CredentialError("not a CLI account connection — no login credential to read")
 
 
@@ -60,9 +63,19 @@ def _read_text(path, what, hint):
     return text
 
 
-def _read_claude():
+def _read_claude(home=None):
     """Claude Code keeps its login in the macOS Keychain, elsewhere in
-    ~/.claude/.credentials.json."""
+    ~/.claude/.credentials.json. An authHome (an aweswitch account dir)
+    always reads the .credentials.json file inside that dir — aweswitch
+    forces file credentials there precisely so accounts never share the
+    machine-wide Keychain entry."""
+    if home:
+        return Credential(_read_text(
+            Path(home).expanduser() / ".credentials.json",
+            "the Claude Code login",
+            "log in inside that config dir (e.g. `aweswitch account login claude <name>`),"
+            " then re-push: awewarm remote push",
+        ))
     if sys.platform == "darwin":
         try:
             proc = subprocess.run(
@@ -94,10 +107,12 @@ def _read_claude():
     ))
 
 
-def _read_codex():
-    home = os.environ.get(CODEX_HOME_ENV) or "~/.codex"
+def _read_codex(home=None):
+    # authHome (an aweswitch account dir) wins over CODEX_HOME: the
+    # connection names the login it warms, the env var only names a default.
+    resolved = home or os.environ.get(CODEX_HOME_ENV) or "~/.codex"
     return Credential(_read_text(
-        Path(home).expanduser() / "auth.json",
+        Path(resolved).expanduser() / "auth.json",
         "the Codex login",
         "log in with `codex login`, then re-push: awewarm remote push",
     ))

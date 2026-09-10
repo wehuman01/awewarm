@@ -213,6 +213,10 @@ def _account_connection(conn_id, finding, mode, fixed_at, days, wake_when_asleep
             "maxTokens": DEFAULT_MAX_TOKENS,
         },
         "settings": _own_schedule_settings(mode, fixed_at, days, wake_when_asleep),
+        # an aweswitch account's own config dir: local fires point the CLI at
+        # it (transport.home_env) and delegation reads the login from it
+        # (credstore) — this is what keeps several logins of one provider apart
+        **({"authHome": finding["authHome"]} if finding.get("authHome") else {}),
     }
     return resolve_connection(conn, load_config())
 

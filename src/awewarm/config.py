@@ -114,8 +114,11 @@ SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 # own overrides sit directly on it — `schedule` plus any knob — while
 # `settings` (the wrapped spelling), `location`, and a top-level
 # `windowMinutes` are legacy reads that fold away on load.
+# authHome points an account connection at a non-default CLI config dir (an
+# aweswitch account dir), which is what lets several logins of the same
+# provider warm side by side.
 KNOWN_CONN_KEYS = frozenset({
-    "label", "url", "protocol", "apiKey", "cli", "model",
+    "label", "url", "protocol", "apiKey", "cli", "model", "authHome",
     "schedule", "enabled", "hide", "persistKey", *KNOB_KEYS,
     "settings", "location", "windowMinutes",
 })
@@ -603,6 +606,20 @@ def load_config(path=None):
                     "  (schedule fields live under settings.schedule since version 3)\n"
                     + _template_fix(path or config_path())
                 )
+            auth_home = flat.get("authHome")
+            if auth_home is not None and (not isinstance(auth_home, str) or not auth_home.strip()):
+                die(
+                    f"connection '{conn_id}': authHome must be a non-empty path string "
+                    "(the CLI config dir this connection logs in from, e.g. "
+                    "~/.config/aweswitch/accounts/codex/cxo-peng)\n"
+                    + _template_fix(path or config_path())
+                )
+            if auth_home and flat.get("url"):
+                die(
+                    f"connection '{conn_id}': authHome belongs to account connections — "
+                    "subscriptions authenticate with an API key\n"
+                    + _template_fix(path or config_path())
+                )
             flat_connections[conn_id] = (location_block_id, flat)
 
     global_settings_raw = _fold_legacy_settings(data.get("settings"))
@@ -703,6 +720,7 @@ def _expand_conn(conn_id, flat, group, global_settings, connection_defaults):
         # are the resolved values the rest of the code reads
         "settings": own,
         **({"persistKey": True} if flat.get("persistKey") else {}),
+        **({"authHome": flat["authHome"]} if flat.get("authHome") else {}),
     }
     return _apply_resolved(conn, global_settings, connection_defaults)
 
@@ -794,6 +812,8 @@ def _compact_conn(conn, global_settings, connection_defaults):
         flat["hide"] = True
     if conn.get("persistKey"):
         flat["persistKey"] = True
+    if conn.get("authHome"):
+        flat["authHome"] = conn["authHome"]
     # location rides on the group the connection is nested under, never a field
     return flat
 
@@ -997,6 +1017,13 @@ def connection_errors(conn, conn_id="<connection>"):
     elif kind == KIND_ACCOUNT:
         if not isinstance(transport.get("cliCommand"), str) or not transport["cliCommand"]:
             errors.append(f"{conn_id}: account connections need transport.cliCommand")
+
+    auth_home = conn.get("authHome")
+    if auth_home is not None:
+        if not isinstance(auth_home, str) or not auth_home.strip():
+            errors.append(f"{conn_id}: authHome must be a non-empty path string")
+        elif kind == KIND_SUBSCRIPTION:
+            errors.append(f"{conn_id}: authHome belongs to account connections — subscriptions authenticate with an API key")
 
     window = conn.get("window")
     if not isinstance(window, dict) or window.get("status") not in WINDOW_STATUSES:

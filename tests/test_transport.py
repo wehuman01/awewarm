@@ -506,3 +506,59 @@ class SendNativeTests(unittest.TestCase):
         result = transport.send_native(native_codex_connection(), '{"tokens": {}}')
         self.assertFalse(result["ok"])
         self.assertIn("not recognized", result["detail"])
+
+
+class HomeEnvTests(unittest.TestCase):
+    """authHome: pointing a locally-fired CLI at its own CLI config dir —
+    the mechanism that lets several logins of one provider warm side by side."""
+
+    def test_no_auth_home_means_no_overlay(self):
+        self.assertEqual(transport.home_env(account_connection()), {})
+
+    def test_codex_home_env(self):
+        conn = account_connection()
+        conn["transport"] = {"kind": "codex-cli", "baseUrl": None, "cliCommand": "codex"}
+        conn["authHome"] = "~/accounts/cxo-peng"
+        self.assertEqual(
+            transport.home_env(conn), {"CODEX_HOME": os.path.expanduser("~/accounts/cxo-peng")}
+        )
+
+    def test_claude_config_dir_env_forces_file_credentials(self):
+        # The keychain flag is the other half of the contract: aweswitch
+        # account dirs keep the login as a file, which Claude Code reads
+        # only when the macOS Keychain is off.
+        conn = account_connection()
+        conn["authHome"] = "~/accounts/test1"
+        self.assertEqual(
+            transport.home_env(conn),
+            {
+                "CLAUDE_CONFIG_DIR": os.path.expanduser("~/accounts/test1"),
+                "CLAUDE_CODE_DONT_USE_KEYCHAIN": "1",
+            },
+        )
+
+    def test_empty_auth_home_means_no_overlay(self):
+        conn = account_connection()
+        conn["authHome"] = ""
+        self.assertEqual(transport.home_env(conn), {})
+
+    def test_local_fire_with_auth_home_layers_the_overlay(self):
+        with mock.patch("awewarm.transport.subprocess.run") as run, mock.patch(
+            "awewarm.transport.shutil.which", return_value="/usr/local/bin/claude"
+        ):
+            run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+            conn = account_connection()
+            conn["authHome"] = "/accounts/test1"
+            result = transport.send_activation(conn)
+        self.assertTrue(result["ok"])
+        env = run.call_args[1]["env"]
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], "/accounts/test1")
+        self.assertEqual(env["CLAUDE_CODE_DONT_USE_KEYCHAIN"], "1")
+
+    def test_local_fire_without_auth_home_still_passes_no_env(self):
+        with mock.patch("awewarm.transport.subprocess.run") as run, mock.patch(
+            "awewarm.transport.shutil.which", return_value="/usr/local/bin/claude"
+        ):
+            run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+            transport.send_activation(account_connection())
+        self.assertIsNone(run.call_args[1]["env"])

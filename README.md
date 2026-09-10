@@ -416,7 +416,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. A connection nested under `connections.remote` is ticked by the paired `awewarm serve` server (whose URL and token ref live in the top-level `remote` block); the group alone says so — no per-connection location field. The window duration (`windowMinutes`) is a schedule field inherited through the layers (below); a confirmed window unlocks interval renewal — it only takes effect while the schedule mode is interval, fixed connections merely record it. `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. An account connection may also carry `authHome` — the CLI config dir it logs in from (an [aweswitch](https://github.com/Webioinfo01/aweswitch) account dir); see [Multiple logins of one provider](#multiple-logins-of-one-provider--authhome). A connection nested under `connections.remote` is ticked by the paired `awewarm serve` server (whose URL and token ref live in the top-level `remote` block); the group alone says so — no per-connection location field. The window duration (`windowMinutes`) is a schedule field inherited through the layers (below); a confirmed window unlocks interval renewal — it only takes effect while the schedule mode is interval, fixed connections merely record it. `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
 
 Settings are layered three deep — every level carries the same knobs and a `schedule` block, and each field resolves through them. The split is semantic: the `schedule` block answers when a connection fires (`mode`, `times`, `days`, `skipIfActivatedMinutes`, `windowMinutes`, `graceSeconds`, `jitterSeconds`); the knobs answer how an activation behaves — `catchupMinutes`/`catchupAttempts`/`degradeAfterNodes` (catch-up and the degrade ladder), `wakeWhenAsleep` (may fixed slots wake a sleeping machine), and `prompt`/`maxTokens` (the warm-up request's prompt and token cap). Setting `windowMinutes` on a layer vouches for that duration for every connection under it without its own record, unlocking interval; a CLI account's builtin window is never overridden by a layer:
 
@@ -437,6 +437,15 @@ awewarm config proxy none                    # back to direct
 ```
 
 `codex`/`claude` subprocesses are outside this policy — they inherit the ambient environment and decide for themselves. Network-level failures name the egress they used in the error, so a broken route says which side to fix.
+
+### Multiple logins of one provider — authHome
+
+Several Claude Code or Codex logins can warm side by side, each on its own schedule. Official accounts managed by [aweswitch](https://github.com/Webioinfo01/aweswitch) (each lives in a private CLI config dir under `~/.config/aweswitch/accounts/<provider>/<name>/`) show up in `awewarm discover`, `awewarm config add`, and `awewarm init` as their own entries — `Codex (cxo-heck)`, `Codex (cxo-peng)`, `Claude Code (work)` — one per account dir that holds a login file. Adding one stores that dir on the connection as `authHome`, and from then on:
+
+- **locally**, the CLI subprocess is pointed at the dir: codex gets `CODEX_HOME`, claude gets `CLAUDE_CONFIG_DIR` plus `CLAUDE_CODE_DONT_USE_KEYCHAIN=1` (the flag makes Claude Code read the dir's file-based login instead of the machine-wide Keychain — the same env aweswitch itself launches with). Each connection fires as its own account;
+- **delegated**, the login is read from that dir for the push, and the background sync's fingerprint-drift re-push stays per connection — each account rotates independently. The server side is unchanged: its per-connection sandbox (or native fire) already keys off the pushed credential.
+
+A connection without `authHome` reads the machine's default login (`~/.codex`, the Keychain or `~/.claude`) — the old single-account behavior is exactly the absent-field case.
 
 ## Commands
 
