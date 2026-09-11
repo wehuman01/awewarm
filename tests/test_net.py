@@ -57,6 +57,29 @@ class ClientProxyTests(IsolatedTestCase):
         self.assertIsNone(net.client_proxy())
 
 
+class CliProxyEnvTests(unittest.TestCase):
+    def test_no_proxy_means_no_overlay(self):
+        self.assertEqual(net.cli_proxy_env(None), {})
+
+    def test_proxy_covers_the_four_http_spellings_only(self):
+        env = net.cli_proxy_env("http://127.0.0.1:7890")
+        self.assertEqual(
+            env,
+            {
+                "http_proxy": "http://127.0.0.1:7890",
+                "https_proxy": "http://127.0.0.1:7890",
+                "HTTP_PROXY": "http://127.0.0.1:7890",
+                "HTTPS_PROXY": "http://127.0.0.1:7890",
+            },
+        )
+        # CLI traffic speaks HTTP(S): no catch-all, no bypass list — one
+        # switch means one route.
+        self.assertNotIn("all_proxy", env)
+        self.assertNotIn("ALL_PROXY", env)
+        self.assertNotIn("no_proxy", env)
+        self.assertNotIn("NO_PROXY", env)
+
+
 class OpenerTests(unittest.TestCase):
     def test_direct_opener_carries_no_proxy_despite_environment(self):
         with mock.patch.dict(os.environ, ProxyEnv()):

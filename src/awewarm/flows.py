@@ -284,7 +284,7 @@ def _add_account_flow(config, state, finding, confirm_first=True):
     conn_id = unique_connection_id(config, finding["label"])
     conn = _account_connection(conn_id, finding, mode, fixed_at, days, wake)
     click.echo(f"\nTesting {finding['label']} warm-up (one minimal request)...")
-    test = transport.send_activation(conn)
+    test = transport.send_activation(conn, proxy=net.client_proxy())
     if test["ok"]:
         click.echo("✓ Activation test passed")
     else:

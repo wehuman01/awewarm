@@ -1259,40 +1259,42 @@ def config_settings(scope, catchup_minutes, catchup_attempts, degrade_after_node
 @config.command("proxy")
 @click.argument("url", required=False)
 def config_proxy(url):
-    """Show or set the egress proxy for awewarm's own HTTPS requests.
+    """Show or set the egress proxy for everything awewarm triggers.
 
     \b
-      awewarm config proxy                     # show the current egress
-      awewarm config proxy http://127.0.0.1:7890  # route awewarm's own traffic
-      awewarm config proxy none                # back to direct egress
+      awewarm config proxy                        # show the current egress
+      awewarm config proxy http://127.0.0.1:7890  # route every egress through it
+      awewarm config proxy none                   # back to direct egress
 
     awewarm ignores http_proxy/https_proxy/all_proxy from the environment:
     a machine-wide proxy is ambient state and must not capture the hub control
     channel or warm-up requests. Set a proxy URL here only when this network
-    genuinely requires one — every request awewarm itself makes then goes
-    through it. CLI subprocesses (codex/claude) keep the ambient environment
-    and decide for themselves."""
+    genuinely requires one — every HTTP(S) request awewarm makes then goes
+    through it, and the codex/claude subprocesses awewarm starts get it as
+    their proxy environment (the explicit URL wins over ambient variables).
+    Unset, the CLIs keep inheriting the ambient environment as always."""
     config = load_config()
     if url is None:
         current = config.get("proxyUrl")
         if current:
-            click.echo(f"egress: via {current}")
+            click.echo(f"egress: via {current} (awewarm's own requests and its CLI subprocesses)")
             click.echo("clear with: awewarm config proxy none")
         else:
             click.echo("egress: direct — environment proxy variables are ignored")
+            click.echo("CLI subprocesses inherit the ambient environment as usual")
             click.echo("if this network requires a proxy: awewarm config proxy <http://host:port>")
         return
     if url.lower() in ("none", "off", "direct"):
         config.pop("proxyUrl", None)
         save_config(config)
-        click.echo("✓ egress: direct (environment proxy variables stay ignored)")
+        click.echo("✓ egress: direct (environment proxy variables stay ignored; CLI subprocesses inherit the ambient environment)")
         return
     errors = proxy_url_errors(url)
     if errors:
         die("\n".join(errors))
     config["proxyUrl"] = url.strip()
     save_config(config)
-    click.echo(f"✓ egress: via {url.strip()} (CLI subprocesses still use the ambient environment)")
+    click.echo(f"✓ egress: via {url.strip()} (awewarm-started CLI subprocesses use it too)")
 
 
 def _config_remove(connection):

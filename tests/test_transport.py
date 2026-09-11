@@ -204,6 +204,33 @@ class SendCliEnvTests(unittest.TestCase):
         transport.send_activation(account_connection())
         self.assertIsNone(run.call_args[1]["env"])
 
+    @mock.patch("awewarm.transport.subprocess.run")
+    @mock.patch("awewarm.transport.shutil.which", return_value="/usr/local/bin/claude")
+    def test_config_proxy_beats_ambient_and_layers_into_the_cli_environment(self, which, run):
+        run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+        with mock.patch.dict(os.environ, {"https_proxy": "http://10.9.9.9:1"}):
+            result = transport.send_activation(account_connection(), proxy="http://127.0.0.1:7890")
+        self.assertTrue(result["ok"])
+        env = run.call_args[1]["env"]
+        for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+            self.assertEqual(env[key], "http://127.0.0.1:7890", key)
+        # the explicit config wins over the ambient spelling it shadows; an
+        # overlay, not a replacement: the rest of the environment survives
+        self.assertEqual(env["PATH"], os.environ["PATH"])
+
+    @mock.patch("awewarm.transport.subprocess.run")
+    @mock.patch("awewarm.transport.shutil.which", return_value="/usr/local/bin/claude")
+    def test_credential_and_proxy_overlays_coexist(self, which, run):
+        run.return_value = mock.Mock(returncode=0, stdout="ok\n", stderr="")
+        result = transport.send_activation(
+            account_connection(), credential=CLAUDE_CREDENTIALS, conn_id="claude",
+            proxy="http://127.0.0.1:7890",
+        )
+        self.assertTrue(result["ok"])
+        env = run.call_args[1]["env"]
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-test")
+        self.assertEqual(env["http_proxy"], "http://127.0.0.1:7890")
+
     def test_unrecognized_credential_is_a_failure_not_a_crash(self):
         result = transport.send_activation(
             account_connection(), credential=json.dumps({"no": "token"}), conn_id="claude"

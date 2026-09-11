@@ -2129,7 +2129,7 @@ class SettingsScopeTests(IsolatedTestCase):
 
 
 class ProxyCommandTests(IsolatedTestCase):
-    """`config proxy` — the explicit egress opt-in for awewarm's own requests."""
+    """`config proxy` — the explicit egress opt-in for everything awewarm triggers."""
 
     def test_shows_direct_by_default(self):
         result = invoke(["config", "proxy"])
@@ -2141,6 +2141,8 @@ class ProxyCommandTests(IsolatedTestCase):
         result = invoke(["config", "proxy", "http://127.0.0.1:7890"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertEqual(cfg.load_config()["proxyUrl"], "http://127.0.0.1:7890")
+        # one switch: the confirmation names the CLI subprocesses it now covers
+        self.assertIn("CLI subprocesses use it too", output_of(result))
         result = invoke(["config", "proxy"])
         self.assertIn("egress: via http://127.0.0.1:7890", output_of(result))
 

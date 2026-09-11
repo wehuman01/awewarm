@@ -450,8 +450,9 @@ def send_activation(connection, api_key=None, timeout_seconds=None, credential=N
     transports always run at their own cap (CLI_TIMEOUT_SECONDS) instead.
     credential injects a delegated login into the CLI subprocess (with the
     codex sandbox under sandbox_root); a locally-fired CLI gets none.
-    proxy routes the HTTP egress (None = direct — environment proxy
-    variables are never read here); the client passes net.client_proxy().
+    proxy routes HTTP egress and the HTTP(S) proxy environment of CLI
+    subprocesses (None = direct — environment proxy variables are never read
+    for awewarm's own HTTP requests); the client passes net.client_proxy().
     """
     if connection["transport"]["kind"] in CLI_TRANSPORT_KINDS:
         try:
@@ -459,8 +460,11 @@ def send_activation(connection, api_key=None, timeout_seconds=None, credential=N
         except ValueError as exc:
             return {"ok": False, "detail": _detail(str(exc))}
         # No delegated credential means the CLI fires locally: point it at the
-        # connection's own authHome, if it carries one.
-        return _send_cli(connection, env or home_env(connection) or None)
+        # connection's own authHome, if it carries one. The explicit proxy
+        # overlay comes last so config wins over any existing proxy spelling.
+        env = env or home_env(connection) or {}
+        env = {**env, **net.cli_proxy_env(proxy)}
+        return _send_cli(connection, env or None)
     if not api_key:
         die("no API key available for this subscription connection\nfix: re-add the plan with: awewarm config add")
     return _send_http(connection, api_key, timeout_seconds, proxy)

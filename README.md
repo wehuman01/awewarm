@@ -431,12 +431,12 @@ One deliberate asymmetry: a delegated (`remote`) connection never follows the gl
 Every request awewarm itself makes — the hub control channel, subscription warm-ups, update checks — goes **direct**, ignoring `http_proxy`/`https_proxy`/`all_proxy` from the environment. A machine-wide proxy is ambient state (usually set for git/npm or a desktop Clash) that must not capture the scheduler's traffic: a warm-up system sells determinism, and routing it through a proxy nobody asked for couples it to that proxy's failures. Direct-by-default also makes the interactive CLI and the background tick (which runs without your shell environment) behave identically. A network that genuinely requires egress through a proxy opts in explicitly with the top-level `proxyUrl`:
 
 ```bash
-awewarm config proxy http://127.0.0.1:7890   # route awewarm's own requests through it
+awewarm config proxy http://127.0.0.1:7890   # route every egress awewarm triggers through it
 awewarm config proxy                         # show the current egress
 awewarm config proxy none                    # back to direct
 ```
 
-`codex`/`claude` subprocesses are outside this policy — they inherit the ambient environment and decide for themselves. Network-level failures name the egress they used in the error, so a broken route says which side to fix. A `serve` (or hub) box follows the same rule as a client: its warm-up fires read the `proxyUrl` of the config on that machine — run `awewarm config proxy` there — and an absent or unreadable config means direct.
+One switch, one route: the configured `proxyUrl` carries awewarm's own requests, and the `codex`/`claude` subprocesses awewarm starts get it as their `http_proxy`/`https_proxy`/`HTTP_PROXY`/`HTTPS_PROXY` — the explicit URL wins over ambient proxy variables, while the rest of the child environment (delegated logins, `authHome` pointers, `PATH`, the codex sandbox) rides along unchanged. No `all_proxy` and no `NO_PROXY` are injected: CLI traffic speaks HTTP(S), and one switch means one route. Unset, nothing changes — awewarm's own requests stay direct with the environment ignored, and the CLIs keep inheriting the ambient environment. Network-level failures name the egress they used in the error, so a broken route says which side to fix. A `serve` (or hub) box follows the same rule as a client: its warm-up fires — subscription, native, and CLI-mode delegation alike — read the `proxyUrl` of the config on that machine — run `awewarm config proxy` there — and an absent or unreadable config means direct.
 
 ### Multiple logins of one provider — authHome
 
@@ -464,8 +464,8 @@ awewarm config remove <id>            # delete a connection, its state, and its 
 awewarm config show / edit            # print the on-disk config / open it in $EDITOR (validated on exit)
 awewarm config template               # print the reference config shape (what hand-edits must match)
 awewarm config path                   # config / state / log locations
-awewarm config proxy [<url>|none]     # show / set / clear the egress proxy for awewarm's own requests
-                                       #   (environment proxy variables are always ignored)
+awewarm config proxy [<url>|none]     # show / set / clear the egress proxy for everything awewarm triggers
+                                       #   (its own requests and the CLI subprocesses it starts)
 awewarm status [<id>] [--json]        # summary; one connection in detail; redacted machine-readable dump
 awewarm status --remote / --local     # delegated connections only (with the server health line) / locally scheduled only
 awewarm run [--force]                 # fire every enabled connection now, ignoring the schedule (prompts; --force skips)

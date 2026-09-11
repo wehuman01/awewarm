@@ -204,8 +204,8 @@ awewarm config set <id> --times HH:MM,...  # set fixed times
 awewarm config set <id> --mode ...         # switch mode
 awewarm config set <id> --on / --off       # resume / pause scheduling
 awewarm config set <id> --anchor HH:MM     # anchor past an already-open window (no request)
-awewarm config proxy [<url>|none]          # show / set / clear the egress proxy for awewarm's own
-                                           #   requests (http_proxy etc. are always ignored)
+awewarm config proxy [<url>|none]          # show / set / clear the egress proxy for everything
+                                           #   awewarm triggers (own requests + CLI subprocesses)
 awewarm config remove <id>                 # delete connection + stored API key (confirm first)
 awewarm scheduler install [--wake]         # background scheduler (launchd / Task Scheduler / systemd);
                                            # --wake arms RTC wake-from-sleep for slot/renewal moments

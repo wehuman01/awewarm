@@ -498,9 +498,7 @@ class WarmServer:
         secret = self.keys.get(conn_id)
         # The egress policy is this machine's, not a client-only concept: a
         # serve/hub box opts into a proxy with `awewarm config proxy` locally,
-        # exactly what the failure hint tells its operator to do. Only the
-        # HTTPS fire paths below consume it — a CLI subprocess keeps the
-        # ambient environment and decides for itself.
+        # exactly what the failure hint tells its operator to do.
         proxy = net.client_proxy()
         if conn["transport"]["kind"] in transport.CLI_TRANSPORT_KINDS:
             if conn["transport"].get("exec") == "native":
@@ -513,7 +511,8 @@ class WarmServer:
                 # A delegated account fires its CLI at the CLI cap (120 s), with
                 # the pushed credential injected (codex: into its sandbox).
                 result = transport.send_activation(
-                    conn, credential=secret, sandbox_root=self.sandbox_root, conn_id=conn_id
+                    conn, credential=secret, sandbox_root=self.sandbox_root, conn_id=conn_id,
+                    proxy=proxy,
                 )
         else:
             result = transport.send_activation(

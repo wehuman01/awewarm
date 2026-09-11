@@ -1,4 +1,4 @@
-"""Egress policy for awewarm's own HTTPS requests.
+"""Egress policy for awewarm's HTTP(S) requests and CLI subprocesses.
 
 Whether traffic needs a proxy is a property of the destination and the local
 network — which machine-wide environment variables (http_proxy/https_proxy/
@@ -7,10 +7,8 @@ of awewarm's own requests therefore go DIRECT and ignore those variables:
 the hub control channel must not inherit a proxy's failure domain, and the
 interactive CLI behaves exactly like the background tick, which runs without
 a shell environment. A network that genuinely requires a proxy opts in
-explicitly with `awewarm config proxy <url>`.
-
-CLI subprocesses (claude/codex) are outside this policy: they inherit the
-ambient environment and make their own proxy decisions.
+explicitly with `awewarm config proxy <url>`. That explicit proxy also becomes
+the HTTP(S) proxy environment for Claude and Codex subprocesses awewarm starts.
 """
 import urllib.request
 
@@ -40,6 +38,22 @@ def client_proxy(config=None):
     return None
 
 
+def cli_proxy_env(proxy):
+    """The HTTP(S) proxy overlay for CLI subprocesses, or no overlay.
+
+    All four spellings make the explicit config win over a CLI's ambient
+    environment without relying on platform- or CLI-specific precedence.
+    """
+    if not proxy:
+        return {}
+    return {
+        "http_proxy": proxy,
+        "https_proxy": proxy,
+        "HTTP_PROXY": proxy,
+        "HTTPS_PROXY": proxy,
+    }
+
+
 def opener(proxy=None):
     """A urllib opener: through the explicit proxy, or direct (env ignored).
 
@@ -65,6 +79,6 @@ def egress_hint(proxy=None):
     """One-line suffix for a network failure, naming the egress it used.
     Never contains the proxy URL itself — one can carry credentials."""
     if proxy:
-        return " (egress: the proxyUrl set with `awewarm config proxy`; check that the proxy itself is reachable)"
+        return " (egress: the proxyUrl set with `awewarm config proxy`; awewarm-started CLI subprocesses use it too; check that the proxy itself is reachable)"
     return (" (egress: direct — environment proxy variables are ignored; "
             "if this network needs a proxy: awewarm config proxy <url>)")

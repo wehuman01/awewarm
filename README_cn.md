@@ -431,12 +431,12 @@ settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每�
 awewarm 自身发出的每一个请求——hub 控制通道、订阅保温请求、更新检查——都**直连**，无视环境变量 `http_proxy`/`https_proxy`/`all_proxy`。机器级代理是环境噪音（通常是为 git/npm 或桌面 Clash 设的），不该捕获调度器的流量：保温系统卖的是确定性，把它路由进一个没人点名要用的代理，等于让它的可用性跟着代理走。默认直连也让交互命令和后台 tick（本来就不带 shell 环境）行为完全一致。网络确实需要走代理时，用顶层 `proxyUrl` 显式声明：
 
 ```bash
-awewarm config proxy http://127.0.0.1:7890   # awewarm 自身的请求全部走这个代理
+awewarm config proxy http://127.0.0.1:7890   # awewarm 触发的全部出口都走这个代理
 awewarm config proxy                         # 查看当前出口
 awewarm config proxy none                    # 恢复直连
 ```
 
-`codex`/`claude` 子进程不在此策略内——它们继承环境变量，自己决定代理。网络层失败时，错误信息会写明当时走的出口，该查哪一侧一目了然。`serve`（或 hub）所在的机器遵守同一条规则：它的保温请求读那台机器 config 里的 `proxyUrl`——在那台机器上执行 `awewarm config proxy` 即可——config 缺失或不可读就是直连。
+一个开关一条路：设置后的 `proxyUrl` 既承载 awewarm 自身的请求，也会作为 `http_proxy`/`https_proxy`/`HTTP_PROXY`/`HTTPS_PROXY` 注入它启动的 `codex`/`claude` 子进程——显式配置赢过环境里的代理变量，环境其余部分（委托登录、`authHome` 指向、`PATH`、codex 沙箱）原样继承。不注入 `all_proxy`，也不注入 `NO_PROXY`：CLI 流量只说 HTTP(S)，一个开关就是一条路。不设置则一切不变——awewarm 自身请求保持直连、无视环境变量，CLI 子进程照旧继承环境。网络层失败时，错误信息会写明当时走的出口，该查哪一侧一目了然。`serve`（或 hub）所在的机器遵守同一条规则：它的保温触发——订阅、native、CLI 委托一视同仁——读那台机器 config 里的 `proxyUrl`——在那台机器上执行 `awewarm config proxy` 即可——config 缺失或不可读就是直连。
 
 ### 同一供应商的多个登录 —— authHome
 
@@ -464,8 +464,8 @@ awewarm config remove <id>            # 删除连接及其状态和存储的 API
 awewarm config show / edit            # 打印磁盘上的配置 / 用 $EDITOR 打开编辑（退出时校验）
 awewarm config template               # 打印参考配置结构（手工调整对照用）
 awewarm config path                   # 配置 / 状态 / 日志路径
-awewarm config proxy [<url>|none]     # 查看 / 设置 / 清除 awewarm 自身请求的出口代理
-                                       #   （环境变量代理始终被无视）
+awewarm config proxy [<url>|none]     # 查看 / 设置 / 清除 awewarm 触发全部出口的代理
+                                       #   （awewarm 自身请求 + 它启动的 CLI 子进程）
 awewarm status [<id>] [--json]        # 摘要；单连接详情；脱敏机读输出
 awewarm status --remote / --local     # 只看委托连接（含服务器健康行）/ 只看本地调度的连接
 awewarm run [--force]                 # 立即触发所有启用的连接（无视调度计划；会确认提示，--force 跳过）

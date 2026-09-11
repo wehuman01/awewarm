@@ -321,6 +321,15 @@ class TickTests(ServerCase):
             self.tick(at("03:00", seconds=30))
         self.assertIsNone(send.call_args.kwargs["proxy"])
 
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_delegated_cli_fire_follows_the_serve_boxs_proxyurl(self, send):
+        # CLI-mode delegation is no exception: the server's proxyUrl also
+        # becomes the CLI subprocess's proxy environment.
+        self._push_codex_account()
+        with mock.patch("awewarm.server.net.client_proxy", return_value="http://10.0.0.8:3128"):
+            self.tick(at("03:00", seconds=30))
+        self.assertEqual(send.call_args.kwargs["proxy"], "http://10.0.0.8:3128")
+
     def _push_codex_account(self, credential='{"token": "c"}', fingerprint="abcd1234abcd1234",
                             cli_path="/usr/local/bin/codex"):
         conn = account_connection(fixed_at=("03:00",), days="every-day")
