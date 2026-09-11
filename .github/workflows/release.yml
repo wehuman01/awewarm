@@ -27,8 +27,9 @@ jobs:
           if tag != f"v{version}":
               sys.exit(f"tag {tag} does not match package version {version}")
         shell: python
-      - run: pip install -e .
-      - run: python -m unittest discover -s tests
+      - run: pip install -e . pytest
+      - run: ./verify
+        shell: bash
       - name: Extract release notes from CHANGELOG
         run: |
           python - <<'EOF'

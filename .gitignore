@@ -13,3 +13,4 @@ venv/
 /docs/media/0820/awewarm-ask-your-agent-to-install-zh-CN
 /docs/superpowers
 /docs/superpowers
+*.pyc
