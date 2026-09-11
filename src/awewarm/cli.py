@@ -98,18 +98,24 @@ def _resolve_api_key(conn):
     return keystore.load_api_key(ref)
 
 
-def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True, node=None):
+def _execute_activation(conn, conn_id, state, now, kind, slot=None, reset_due=True, node=None):
     """Send one real request and record the outcome in state.
+
+    State is persisted to disk before the log line is appended: the log is an
+    after-the-fact record, so it must never stand ahead of state — a logged
+    activation always has its record on disk.
 
     node ties the attempt to its scheduled node for ladder bookkeeping;
     manual/verify fires omit it so they never count as nodes.
     """
+    cs = conn_state(state, conn_id)
     schedule.record_attempt(cs, now)
     api_key = None
     if conn["kind"] == "subscription":
         api_key = _resolve_api_key(conn)
         if api_key is None:
             schedule.record_failure(cs, conn, now, kind, "API key unavailable (missing from secrets.json)", node=node)
+            save_state(state)
             log_event(f"{conn_id} activation ({kind}) failed: API key unavailable")
             return {"ok": False, "detail": "API key unavailable (missing from secrets.json)"}
     result = transport.send_activation(conn, api_key, proxy=net.client_proxy())
@@ -118,10 +124,13 @@ def _execute_activation(conn, conn_id, cs, now, kind, slot=None, reset_due=True,
             cs, conn, now, kind, slot, reset_due=reset_due,
             slot_at=(node or {}).get("dueAt"),
         )
-        log_event(f"{conn_id} activation ({kind}) ok")
     else:
         schedule.record_failure(cs, conn, now, kind, result["detail"], node=node)
-        log_event(f"{conn_id} activation ({kind}) failed: {result['detail']}")
+    save_state(state)
+    log_event(
+        f"{conn_id} activation ({kind}) "
+        + ("ok" if result["ok"] else f"failed: {result['detail']}")
+    )
     return result
 
 
@@ -173,7 +182,7 @@ def _tick():
         def _activate(action, node):
             reason = action["reason"]
             slot_note = f", slot {action['slot']}" if action.get("slot") else ""
-            result = _execute_activation(conn, conn_id, cs, now, reason, action.get("slot"), node=node)
+            result = _execute_activation(conn, conn_id, state, now, reason, action.get("slot"), node=node)
             mark = "✓" if result["ok"] else "✗"
             suffix = f" — {result['detail']}" if result["detail"] else ""
             click.echo(f"{mark} activated {conn_id} ({reason}{slot_note}){suffix}")
@@ -249,7 +258,7 @@ def _activate_now(target, reset_due=False):
     state = load_state()
     cs = conn_state(state, conn_id)
     now = _now(config)
-    result = _execute_activation(conn, conn_id, cs, now, "manual", reset_due=reset_due)
+    result = _execute_activation(conn, conn_id, state, now, "manual", reset_due=reset_due)
     save_state(state)
     if result["ok"]:
         due_at, _ = schedule.next_due(conn, cs, now)
@@ -314,7 +323,7 @@ def _fire_all():
                 f"(resume: awewarm config set {conn_id} --on)"
             )
             continue
-        result = _execute_activation(conn, conn_id, cs, now, "manual", reset_due=False)
+        result = _execute_activation(conn, conn_id, state, now, "manual", reset_due=False)
         mark = "✓" if result["ok"] else "✗"
         suffix = f" — {result['detail']}" if result["detail"] else ""
         click.echo(f"{mark} activated {conn_id}{suffix}")

@@ -665,6 +665,32 @@ class RunConnectionTests(IsolatedTestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("unknown connection", output_of(result))
 
+    def test_activation_log_is_appended_only_after_state_is_persisted(self):
+        # Regression: the log records; it must never lead state. A line that
+        # was appended before the persisted state could crash out as "the log
+        # says ok but the on-disk state is stale".
+        write_config(account_connection(mode="fixed"))
+        import awewarm.cli as cli_module
+        events = []
+        real_save, real_log = cli_module.save_state, cli_module.log_event
+
+        def save_and_mark(state, path=None):
+            real_save(state, path)
+            events.append("state-saved")
+
+        def log_and_mark(message):
+            real_log(message)
+            events.append(message)
+
+        with mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""}), \
+                mock.patch.object(cli_module, "save_state", side_effect=save_and_mark), \
+                mock.patch.object(cli_module, "log_event", side_effect=log_and_mark):
+            result = invoke(["run", "claude-code-main", "--force"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("state-saved", events)
+        log_index = next(i for i, event in enumerate(events) if "activation" in event)
+        self.assertLess(events.index("state-saved"), log_index)
+
     def anchored_interval_conn(self):
         write_config(account_connection(mode="interval", fixed_at=()))
         state = cfg.empty_state()

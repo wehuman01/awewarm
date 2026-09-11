@@ -480,6 +480,10 @@ class WarmServer:
             due_at, _ = schedule.next_due(conn, cs, now)
             result["nextDue"] = schedule.iso(due_at) if due_at else None
             self._save(self.state_path, self.state)
+        self.log(
+            f"{conn_id} activation (manual) "
+            + ("ok" if result["ok"] else f"failed: {result['detail']}")
+        )
         return result
 
     # --- the tick ---
@@ -525,7 +529,8 @@ class WarmServer:
             )
         else:
             schedule.record_failure(cs, conn, now, kind, result["detail"], node=node)
-        self.log(f"{conn_id} activation ({kind}) " + ("ok" if result["ok"] else f"failed: {result['detail']}"))
+        # The log line is appended by the caller only after the state change
+        # is on disk — the log records, it never leads state.
         return result
 
     def _tick_connection(self, conn_id, conn, cs, now_fn):
@@ -543,7 +548,14 @@ class WarmServer:
                 if conn_id not in held:
                     held.append(conn_id)
                 return None
-            return self._execute(conn, conn_id, cs, now, action["reason"], action.get("slot"), node)
+            result = self._execute(conn, conn_id, cs, now, action["reason"], action.get("slot"), node)
+            with self.lock:
+                self._save(self.state_path, self.state)
+            self.log(
+                f"{conn_id} activation ({action['reason']}) "
+                + ("ok" if result["ok"] else f"failed: {result['detail']}")
+            )
+            return result
 
         with self._conn_lock(conn_id):
             results, _skipped = schedule.dispatch_actions(conn, cs, now, activate)

@@ -426,6 +426,29 @@ class TickTests(ServerCase):
         self.assertEqual(result["fired"], 0)  # the slot closed; it will not refire
         send.assert_not_called()
 
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_activation_log_is_appended_only_after_state_is_persisted(self, send):
+        # Regression: same invariant as the local CLI — a log line must only
+        # land once the activation's state is on disk.
+        self.push_plan()
+        events = []
+        real_save, real_log = self.warm._save, self.warm.log
+
+        def save_and_mark(path, data):
+            real_save(path, data)
+            events.append("state-saved")
+
+        def log_and_mark(message):
+            real_log(message)
+            events.append(message)
+
+        with mock.patch.object(type(self.warm), "_save", side_effect=save_and_mark), \
+                mock.patch.object(type(self.warm), "log", side_effect=log_and_mark):
+            self.tick(at("03:00", seconds=30))
+        self.assertIn("state-saved", events)
+        log_index = next(i for i, event in enumerate(events) if "activation" in event)
+        self.assertLess(events.index("state-saved"), log_index)
+
     @mock.patch("awewarm.transport.send_activation", return_value={"ok": False, "detail": "HTTP 401"})
     def test_failed_activation_counts_node_not_hold(self, send):
         self.push_plan()
