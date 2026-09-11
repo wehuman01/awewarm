@@ -18,12 +18,20 @@ from .config import load_config
 
 
 def client_proxy(config=None):
-    """The proxyUrl the client config names, or None for direct egress.
+    """The proxyUrl the config on this machine names, or None for direct egress.
 
     Loads the client config when not handed one. The client file refuses an
     invalid value at load time; anything malformed that still slips through
-    falls back to direct — a bad proxy URL must never take a fire down."""
-    raw = (config if config is not None else load_config()).get("proxyUrl")
+    falls back to direct — a bad proxy URL (or an unreadable config on a
+    serve box, where no client command would ever surface the error) must
+    never take a fire down."""
+    if config is not None:
+        raw = config.get("proxyUrl")
+    else:
+        try:
+            raw = load_config().get("proxyUrl")
+        except SystemExit:
+            return None
     if isinstance(raw, str):
         stripped = raw.strip()
         for scheme in ("http://", "https://"):
@@ -48,8 +56,8 @@ def opener(proxy=None):
 
 
 def urlopen(request, timeout, proxy=None):
-    """urlopen through the egress policy. Callers decide the proxy: the client
-    passes client_proxy(), the delegation server passes nothing (direct)."""
+    """urlopen through the egress policy. Callers decide the proxy: client and
+    delegation server alike pass their own machine's client_proxy()."""
     return opener(proxy).open(request, timeout=timeout)
 
 

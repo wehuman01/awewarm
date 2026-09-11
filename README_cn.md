@@ -436,7 +436,7 @@ awewarm config proxy                         # 查看当前出口
 awewarm config proxy none                    # 恢复直连
 ```
 
-`codex`/`claude` 子进程不在此策略内——它们继承环境变量，自己决定代理。网络层失败时，错误信息会写明当时走的出口，该查哪一侧一目了然。
+`codex`/`claude` 子进程不在此策略内——它们继承环境变量，自己决定代理。网络层失败时，错误信息会写明当时走的出口，该查哪一侧一目了然。`serve`（或 hub）所在的机器遵守同一条规则：它的保温请求读那台机器 config 里的 `proxyUrl`——在那台机器上执行 `awewarm config proxy` 即可——config 缺失或不可读就是直连。
 
 ### 同一供应商的多个登录 —— authHome
 

@@ -939,13 +939,15 @@ def remote_errors(remote):
 
 def proxy_url_errors(value):
     """Problems with the top-level proxyUrl; empty means valid. None (absent)
-    means direct egress — environment proxy variables are never read."""
+    means direct egress — environment proxy variables are never read. The
+    scheme check is case-insensitive (RFC 3986), matching net.client_proxy."""
     if value is None:
         return []
     if isinstance(value, str):
         stripped = value.strip()
+        lowered = stripped.lower()
         for scheme in ("http://", "https://"):
-            if stripped.startswith(scheme) and len(stripped) > len(scheme):
+            if lowered.startswith(scheme) and len(stripped) > len(scheme):
                 return []
     return ["proxyUrl must be an http(s) URL like http://127.0.0.1:7890, or absent for direct egress"]
 

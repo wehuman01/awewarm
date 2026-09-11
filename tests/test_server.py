@@ -304,6 +304,23 @@ class TickTests(ServerCase):
         self.tick(at("03:00", seconds=30))
         self.assertEqual(send.call_args.kwargs["timeout_seconds"], server.ACTIVATION_TIMEOUT_SECONDS)
 
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_subscription_fire_follows_the_serve_boxs_proxyurl(self, send):
+        # The egress policy is the serve machine's, not a client-only concept:
+        # a box that needs a proxy opts in with `awewarm config proxy` there —
+        # exactly the fix its own failure hint names.
+        self.push_plan()
+        with mock.patch("awewarm.server.net.client_proxy", return_value="http://10.0.0.8:3128"):
+            self.tick(at("03:00", seconds=30))
+        self.assertEqual(send.call_args.kwargs["proxy"], "http://10.0.0.8:3128")
+
+    @mock.patch("awewarm.transport.send_activation", return_value={"ok": True, "detail": ""})
+    def test_subscription_fire_is_direct_without_a_local_proxyurl(self, send):
+        self.push_plan()
+        with mock.patch("awewarm.server.net.client_proxy", return_value=None):
+            self.tick(at("03:00", seconds=30))
+        self.assertIsNone(send.call_args.kwargs["proxy"])
+
     def _push_codex_account(self, credential='{"token": "c"}', fingerprint="abcd1234abcd1234",
                             cli_path="/usr/local/bin/codex"):
         conn = account_connection(fixed_at=("03:00",), days="every-day")
@@ -331,6 +348,13 @@ class TickTests(ServerCase):
         kwargs = native.call_args.kwargs
         self.assertEqual(kwargs.get("timeout_seconds"), server.ACTIVATION_TIMEOUT_SECONDS)
         self.assertEqual(native.call_args.args[0]["transport"]["kind"], "codex-cli")
+
+    @mock.patch("awewarm.transport.send_native", return_value={"ok": True, "detail": ""})
+    def test_native_account_fire_follows_the_serve_boxs_proxyurl(self, native):
+        self._push_native_codex_account()
+        with mock.patch("awewarm.server.net.client_proxy", return_value="http://10.0.0.8:3128"):
+            self.tick(at("03:00", seconds=30))
+        self.assertEqual(native.call_args.kwargs["proxy"], "http://10.0.0.8:3128")
 
     @mock.patch("awewarm.transport.send_native", return_value={"ok": False, "detail": "credential rejected"})
     def test_native_failure_lands_in_the_ladder_like_any_other(self, native):

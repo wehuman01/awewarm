@@ -870,6 +870,12 @@ class ProxyUrlTests(IsolatedTestCase):
         with self.assertRaises(SystemExit):
             config.load_config()
 
+    def test_scheme_case_is_accepted(self):
+        # RFC 3986: URL schemes are case-insensitive; net.client_proxy reads
+        # them that way, so the validator must not reject what it accepts.
+        self.assertEqual(config.proxy_url_errors("HTTP://127.0.0.1:7890"), [])
+        self.assertEqual(config.proxy_url_errors("  Https://p:1  "), [])
+
     def test_error_cases(self):
         self.assertEqual(config.proxy_url_errors(None), [])
         self.assertEqual(config.proxy_url_errors("http://p:1"), [])

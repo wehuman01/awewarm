@@ -69,7 +69,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 
-from . import __version__, schedule, transport
+from . import __version__, net, schedule, transport
 from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for, _write_json
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
@@ -496,11 +496,19 @@ class WarmServer:
     def _execute(self, conn, conn_id, cs, now, kind, slot, node, reset_due=True):
         schedule.record_attempt(cs, now)
         secret = self.keys.get(conn_id)
+        # The egress policy is this machine's, not a client-only concept: a
+        # serve/hub box opts into a proxy with `awewarm config proxy` locally,
+        # exactly what the failure hint tells its operator to do. Only the
+        # HTTPS fire paths below consume it — a CLI subprocess keeps the
+        # ambient environment and decides for itself.
+        proxy = net.client_proxy()
         if conn["transport"]["kind"] in transport.CLI_TRANSPORT_KINDS:
             if conn["transport"].get("exec") == "native":
                 # No CLI on this server: fire the CLI's own backend protocol
                 # over HTTPS with the pushed credential, at the HTTP cap.
-                result = transport.send_native(conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS)
+                result = transport.send_native(
+                    conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS, proxy=proxy
+                )
             else:
                 # A delegated account fires its CLI at the CLI cap (120 s), with
                 # the pushed credential injected (codex: into its sandbox).
@@ -508,7 +516,9 @@ class WarmServer:
                     conn, credential=secret, sandbox_root=self.sandbox_root, conn_id=conn_id
                 )
         else:
-            result = transport.send_activation(conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS)
+            result = transport.send_activation(
+                conn, secret, timeout_seconds=ACTIVATION_TIMEOUT_SECONDS, proxy=proxy
+            )
         if result["ok"]:
             schedule.record_success(
                 cs, conn, now, kind, slot, reset_due=reset_due,

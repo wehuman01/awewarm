@@ -436,7 +436,7 @@ awewarm config proxy                         # show the current egress
 awewarm config proxy none                    # back to direct
 ```
 
-`codex`/`claude` subprocesses are outside this policy — they inherit the ambient environment and decide for themselves. Network-level failures name the egress they used in the error, so a broken route says which side to fix.
+`codex`/`claude` subprocesses are outside this policy — they inherit the ambient environment and decide for themselves. Network-level failures name the egress they used in the error, so a broken route says which side to fix. A `serve` (or hub) box follows the same rule as a client: its warm-up fires read the `proxyUrl` of the config on that machine — run `awewarm config proxy` there — and an absent or unreadable config means direct.
 
 ### Multiple logins of one provider — authHome
 

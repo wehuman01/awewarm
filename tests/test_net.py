@@ -48,6 +48,14 @@ class ClientProxyTests(IsolatedTestCase):
             json.dump({"version": 3, "connections": {}, "proxyUrl": "http://10.0.0.8:3128"}, handle)
         self.assertEqual(net.client_proxy(), "http://10.0.0.8:3128")
 
+    def test_unreadable_config_file_falls_back_to_direct(self):
+        # A serve box may carry a broken client config that no client command
+        # ever surfaces; client_proxy must not take its fires down with it.
+        path = os.environ["AWEWARM_CONFIG"]
+        with open(path, "w") as handle:
+            handle.write("{ not json")
+        self.assertIsNone(net.client_proxy())
+
 
 class OpenerTests(unittest.TestCase):
     def test_direct_opener_carries_no_proxy_despite_environment(self):
